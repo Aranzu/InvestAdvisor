@@ -1,0 +1,15 @@
+# Entorno y secretos (¡NUNCA subir claves de API!)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Archivos generados en tiempo de ejecución
+*.log
+*.log.err
+exports/

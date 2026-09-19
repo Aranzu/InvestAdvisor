@@ -1,0 +1,24 @@
+{
+  "updated_at": "2026-09-18 17:57:00",
+  "user_notes": "Configuración editable del patrimonio consolidado del inversionista. Actualizar 'external_reserve_clp' cuando se modifique el capital reservado fuera de XTB.",
+  "xtb": {
+    "source": "Excel XTB (CLP_54846784_2026-01-01_2026-09-18.xlsx)",
+    "broker_reported_total_clp": 40780926.49,
+    "open_position_value_clp": 32937671.05,
+    "uninvested_cash_clp": 7743255.44,
+    "unrealized_pnl_clp": 2502074.17,
+    "positions_count": 15
+  },
+  "external_reserve": {
+    "label": "Reserva para compras al margen de XTB",
+    "amount_clp": 6000000.00,
+    "intended_use": "Compras adicionales / valor / growth picks desde el scanner"
+  },
+  "consolidated": {
+    "xtb_equity_clp": 40780926.49,
+    "external_reserve_clp": 6000000.00,
+    "total_wealth_clp": 46780926.49,
+    "total_capital_available_for_new_buys_clp": 13743255.44,
+    "note": "Capital disponible para nuevas compras = XTB cash + reserva externa"
+  }
+}

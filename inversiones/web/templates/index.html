@@ -1,0 +1,1340 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inversiones XTB · Portfolio Terminal</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>📈</text></svg>">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        // Paleta estilo eToro: negro / gris / rojo / amarillo / verde
+                        base: '#000000',          // fondo principal
+                        surface: '#0E0E0E',       // cards principales
+                        elevated: '#161616',      // cards elevadas (tabla)
+                        line: '#262626',          // bordes
+                        muted: '#8A8A8A',         // texto secundario
+                        ink: '#FFFFFF',           // texto principal
+                        green: '#16C784',         // ganancia / mantener
+                        greenDeep: '#0B6E4A',
+                        red: '#EF4444',           // pérdida / vender
+                        redDeep: '#7A1A1A',
+                        yellow: '#EAB308',        // observación / alerta
+                        yellowDeep: '#7A5C0C',
+                    }
+                }
+            }
+        }
+    </script>
+    <script src="{{ url_for('static', filename='chart.umd.js') }}"></script>
+    <script>
+        if (typeof Chart === 'undefined') {
+            document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js"><\/script>');
+        }
+    </script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @keyframes pulse-subtle { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .live-dot { animation: pulse-subtle 2.5s infinite; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #0E0E0E; }
+        ::-webkit-scrollbar-thumb { background: #262626; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #363636; }
+        body { background-color: #000000; color: #FFFFFF; font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; }
+        .sparkline-line { fill: none; stroke-width: 2; }
+        .sparkline-fill-green { fill: rgba(22, 199, 132, 0.15); }
+        .sparkline-fill-red { fill: rgba(239, 68, 68, 0.15); }
+        .sparkline-fill-yellow { fill: rgba(234, 179, 8, 0.15); }
+        .pie-segment { transition: opacity 0.2s; cursor: pointer; }
+        .pie-segment:hover { opacity: 0.85; }
+        .tier-badge-mantener { background: rgba(22,199,132,0.12); color: #16C784; border: 1px solid rgba(22,199,132,0.4); }
+        .tier-badge-observacion { background: rgba(234,179,8,0.12); color: #EAB308; border: 1px solid rgba(234,179,8,0.4); }
+        .tier-badge-vender { background: rgba(239,68,68,0.12); color: #EF4444; border: 1px solid rgba(239,68,68,0.4); }
+        .tab-btn-active { background: #FFFFFF; color: #000000; }
+        .tab-btn-inactive { background: transparent; color: #8A8A8A; }
+        .tab-btn-inactive:hover { color: #FFFFFF; }
+        .card-hover:hover { background: #1F1F1F; }
+    </style>
+</head>
+<body class="bg-base min-h-screen flex flex-col">
+
+    <!-- Header / Top Bar -->
+    <header class="border-b border-line bg-surface sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-green to-greenDeep flex items-center justify-center">
+                    <i class="fa-solid fa-chart-line text-black text-base font-bold"></i>
+                </div>
+                <div>
+                    <h1 class="text-base font-bold text-ink leading-none">Portfolio XTB</h1>
+                    <p class="text-[10px] text-muted mt-0.5">Yahoo Finance · TradingView · MarketScreener · Finviz · Macrotrends</p>
+                </div>
+            </div>
+
+            <!-- Tabs (eToro-style) -->
+            <nav class="hidden md:flex items-center bg-elevated rounded-xl p-1 gap-1">
+                <button onclick="switchTab('tab-portfolio')" id="btn-tab-portfolio" class="tab-btn-active px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-briefcase"></i><span>Portafolio</span>
+                </button>
+                <button onclick="switchTab('tab-metrics')" id="btn-tab-metrics" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-chart-line"></i><span>Métricas</span>
+                </button>
+                <button onclick="switchTab('tab-dividends')" id="btn-tab-dividends" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-sack-dollar"></i><span>Dividendos</span>
+                </button>
+                <button onclick="switchTab('tab-discovery')" id="btn-tab-discovery" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-satellite-dish"></i><span>Discovery</span>
+                </button>
+            </nav>
+
+            <div class="flex items-center gap-2">
+                <div class="hidden sm:flex items-center gap-2 px-3 py-1 rounded-lg bg-elevated border border-line">
+                    <i class="fa-solid fa-dollar-sign text-yellow text-xs"></i>
+                    <span class="text-[11px] text-muted">USD/CLP</span>
+                    <span id="fx-rate" class="font-bold text-yellow text-xs">—</span>
+                    <button onclick="refreshFx(true, true)" id="btn-refresh-fx" class="ml-1 p-0.5 rounded hover:bg-line text-yellow transition" title="Actualizar FX">
+                        <i class="fa-solid fa-arrows-rotate text-[10px]"></i>
+                    </button>
+                </div>
+                <button onclick="refreshAll()" class="px-3 py-1.5 rounded-lg bg-elevated hover:bg-line text-ink text-xs font-bold border border-line transition flex items-center gap-1.5" title="Refrescar todo">
+                    <i class="fa-solid fa-arrows-rotate" id="refresh-all-icon"></i>
+                    <span class="hidden sm:inline">Refrescar</span>
+                </button>
+            </div>
+        </div>
+        <!-- Subheader con info clave -->
+        <div class="border-t border-line">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                <div class="flex items-center gap-3 flex-wrap text-muted">
+                    <span class="flex items-center gap-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-green live-dot"></span>
+                        <span class="text-ink font-bold" id="header-positions-count">—</span> posiciones
+                    </span>
+                    <span>•</span>
+                    <span><span id="header-tier-mantener" class="text-green font-bold">0</span> mantener</span>
+                    <span>•</span>
+                    <span><span id="header-tier-observacion" class="text-yellow font-bold">0</span> observación</span>
+                    <span>•</span>
+                    <span><span id="header-tier-vender" class="text-red font-bold">0</span> vender</span>
+                    <span>•</span>
+                    <span>💰 Cash: <span id="header-cash" class="text-ink font-bold">CLP $0</span></span>
+                </div>
+                <div class="text-muted font-mono text-[10px]" id="header-time-badge">—</div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Mobile Tabs (small screens) -->
+    <nav class="md:hidden border-b border-line bg-surface px-4 py-2 flex items-center gap-1 overflow-x-auto">
+        <button onclick="switchTab('tab-portfolio')" class="tab-btn-active px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Portafolio</button>
+        <button onclick="switchTab('tab-metrics')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Métricas</button>
+        <button onclick="switchTab('tab-dividends')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Dividendos</button>
+        <button onclick="switchTab('tab-discovery')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Discovery</button>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex-1 w-full space-y-4">
+
+        <!-- ============================================================ -->
+        <!-- TAB 1: PORTAFOLIO (Hero + tabla de posiciones mejorada)    -->
+        <!-- ============================================================ -->
+        <section id="tab-portfolio" class="space-y-4">
+
+            <!-- Hero Portfolio Card -->
+            <div class="rounded-2xl border border-line bg-surface overflow-hidden">
+                <div class="p-5 md:p-6 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-[11px] uppercase tracking-wider text-muted font-bold">Patrimonio Total</p>
+                            <p class="text-[10px] text-muted mt-0.5">Posiciones XTB + cash XTB + reserva externa</p>
+                        </div>
+                        <div class="flex items-center gap-2 text-[11px]">
+                            <span class="text-muted">FX:</span>
+                            <span id="hero-fx-rate" class="text-yellow font-bold font-mono">—</span>
+                        </div>
+                    </div>
+
+                    <div class="flex items-baseline gap-4 flex-wrap">
+                        <div>
+                            <p class="text-4xl md:text-5xl font-bold text-ink font-mono leading-none" id="hero-total-usd">US $—</p>
+                            <p class="text-lg text-muted mt-2 font-mono" id="hero-total-clp">CLP $—</p>
+                        </div>
+                        <div class="flex flex-col gap-1 ml-auto">
+                            <div class="flex items-center gap-2">
+                                <span class="text-[10px] text-muted uppercase font-bold">Hoy</span>
+                                <span id="hero-daily-change" class="font-bold font-mono">—</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-[10px] text-muted uppercase font-bold">30d</span>
+                                <span id="hero-monthly-change" class="font-bold font-mono">—</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sparkline grande -->
+                    <div id="hero-sparkline" class="w-full h-24"></div>
+                </div>
+
+                <!-- Stats row (inversión, valor, cash, reserva) -->
+                <div class="grid grid-cols-2 md:grid-cols-4 border-t border-line divide-x divide-line">
+                    <div class="p-3 md:p-4">
+                        <p class="text-[10px] uppercase tracking-wider text-muted font-bold">Invertido</p>
+                        <p class="text-base font-bold text-ink mt-1 font-mono" id="hero-invested">US $—</p>
+                    </div>
+                    <div class="p-3 md:p-4">
+                        <p class="text-[10px] uppercase tracking-wider text-muted font-bold">Valor Posiciones</p>
+                        <p class="text-base font-bold text-ink mt-1 font-mono" id="hero-positions-value">US $—</p>
+                    </div>
+                    <div class="p-3 md:p-4">
+                        <p class="text-[10px] uppercase tracking-wider text-muted font-bold">Cash XTB</p>
+                        <p class="text-base font-bold text-yellow mt-1 font-mono" id="hero-cash">US $—</p>
+                    </div>
+                    <div class="p-3 md:p-4">
+                        <p class="text-[10px] uppercase tracking-wider text-muted font-bold">Reserva Externa</p>
+                        <p class="text-base font-bold text-green mt-1 font-mono" id="hero-external">CLP $—</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Fila: Tabla + Allocation pie -->
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+
+                <!-- Tabla de posiciones (3 columnas) -->
+                <div class="lg:col-span-3 rounded-2xl border border-line bg-surface overflow-hidden">
+                    <div class="p-4 border-b border-line flex items-center justify-between">
+                        <div>
+                            <h3 class="text-sm font-bold text-ink flex items-center gap-2">
+                                <i class="fa-solid fa-briefcase text-green"></i> Mis Posiciones
+                            </h3>
+                            <p class="text-[10px] text-muted mt-0.5">Recomendación MANTENER / OBSERVACIÓN / VENDER + SL/TP sugerido</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <select id="portfolio-filter" onchange="filterPortfolioTable(this.value)" class="px-2 py-1 bg-elevated border border-line rounded text-[11px] text-ink">
+                                <option value="ALL">Todas</option>
+                                <option value="MANTENER">🟢 Mantener</option>
+                                <option value="OBSERVACION">🟡 Observación</option>
+                                <option value="VENDER">🔴 Vender</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-[11px] border-collapse">
+                            <thead>
+                                <tr class="bg-elevated border-b border-line text-muted font-bold uppercase tracking-wider">
+                                    <th class="py-2 px-3">Ticker</th>
+                                    <th class="py-2 px-3 text-right">Acciones</th>
+                                    <th class="py-2 px-3 text-right">Entrada</th>
+                                    <th class="py-2 px-3 text-right">Ahora</th>
+                                    <th class="py-2 px-3 w-24">30d</th>
+                                    <th class="py-2 px-3 text-right">P&L</th>
+                                    <th class="py-2 px-3 text-center">Recomendación</th>
+                                    <th class="py-2 px-3 text-right">SL</th>
+                                    <th class="py-2 px-3 text-right">TP</th>
+                                    <th class="py-2 px-3 text-center">IA</th>
+                                </tr>
+                            </thead>
+                            <tbody id="portfolio-tbody" class="divide-y divide-line">
+                                <tr><td colspan="10" class="py-12 text-center text-muted">
+                                    <i class="fa-solid fa-circle-notch fa-spin text-2xl mb-2"></i>
+                                    <p class="text-xs">Cargando portafolio...</p>
+                                </td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="ai-analysis-panel" class="hidden m-3 p-3 rounded-lg border border-line bg-elevated text-[11px] whitespace-pre-wrap"></div>
+                </div>
+
+                <!-- Allocation by sector (1 columna) -->
+                <div class="rounded-2xl border border-line bg-surface p-4 space-y-4">
+                    <div>
+                        <h3 class="text-sm font-bold text-ink flex items-center gap-2">
+                            <i class="fa-solid fa-chart-pie text-yellow"></i> Distribución
+                        </h3>
+                        <p class="text-[10px] text-muted mt-0.5">Por sector (% del valor)</p>
+                    </div>
+
+                    <!-- Pie chart SVG (se llena con JS) -->
+                    <div id="allocation-pie" class="flex items-center justify-center" style="height: 200px;">
+                        <svg viewBox="0 0 100 100" class="w-40 h-40" id="pie-svg">
+                            <circle cx="50" cy="50" r="40" fill="transparent" stroke="#262626" stroke-width="20"></circle>
+                        </svg>
+                    </div>
+
+                    <div id="allocation-legend" class="space-y-1 text-[11px]"></div>
+
+                    <div class="pt-3 border-t border-line space-y-1">
+                        <p class="text-[10px] text-muted font-bold uppercase tracking-wider">Poder de Compra</p>
+                        <p class="text-base font-bold text-green font-mono" id="portfolio-buying-power">US $—</p>
+                        <p class="text-[10px] text-muted">XTB cash + reserva externa</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- TAB 2: MÉTRICAS (rendimiento histórico)                     -->
+        <!-- ============================================================ -->
+        <section id="tab-metrics" class="hidden space-y-4">
+
+            <!-- Selector de período + KPIs históricos -->
+            <div class="flex items-center justify-between flex-wrap gap-2">
+                <h2 class="text-base font-bold text-ink flex items-center gap-2">
+                    <i class="fa-solid fa-chart-line text-green"></i> Rendimiento Histórico
+                </h2>
+                <div class="flex items-center gap-1 bg-elevated rounded-lg p-1 border border-line">
+                    <button onclick="setMetricsPeriod(30)" id="btn-metrics-30" class="px-3 py-1 rounded text-[11px] font-bold tab-btn-active">30d</button>
+                    <button onclick="setMetricsPeriod(90)" id="btn-metrics-90" class="px-3 py-1 rounded text-[11px] font-bold tab-btn-inactive">90d</button>
+                    <button onclick="setMetricsPeriod(180)" id="btn-metrics-180" class="px-3 py-1 rounded text-[11px] font-bold tab-btn-inactive">180d</button>
+                    <button onclick="setMetricsPeriod(365)" id="btn-metrics-365" class="px-3 py-1 rounded text-[11px] font-bold tab-btn-inactive">1 año</button>
+                </div>
+            </div>
+
+            <!-- Big sparkline del portafolio -->
+            <div class="rounded-2xl border border-line bg-surface p-5">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <p class="text-[10px] text-muted uppercase font-bold tracking-wider">Valor del Portafolio</p>
+                        <p class="text-3xl font-bold text-ink font-mono mt-1" id="metrics-current-value">US $—</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-[10px] text-muted uppercase font-bold tracking-wider" id="metrics-period-label">Últimos 30 días</p>
+                        <p class="text-2xl font-bold font-mono mt-1" id="metrics-period-change">—</p>
+                    </div>
+                </div>
+                <div id="metrics-big-sparkline" class="w-full h-48"></div>
+            </div>
+
+            <!-- Tabla de rendimiento por posición -->
+            <div class="rounded-2xl border border-line bg-surface overflow-hidden">
+                <div class="p-4 border-b border-line">
+                    <h3 class="text-sm font-bold text-ink flex items-center gap-2">
+                        <i class="fa-solid fa-ranking-star text-yellow"></i> Performance por Posición
+                    </h3>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                            <tr class="bg-elevated border-b border-line text-muted font-bold uppercase tracking-wider">
+                                <th class="py-2 px-3">Ticker</th>
+                                <th class="py-2 px-3">Sector</th>
+                                <th class="py-2 px-3 text-right">P&L $</th>
+                                <th class="py-2 px-3 text-right">P&L %</th>
+                                <th class="py-2 px-3 w-32">30d</th>
+                                <th class="py-2 px-3 text-center">Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody id="metrics-tbody" class="divide-y divide-line">
+                            <tr><td colspan="6" class="py-12 text-center text-muted">
+                                <i class="fa-solid fa-circle-notch fa-spin text-2xl mb-2"></i>
+                                <p class="text-xs">Cargando histórico...</p>
+                            </td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Resumen rendimiento por tier -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="rounded-xl border border-green/40 bg-green/5 p-4">
+                    <p class="text-[10px] uppercase text-green font-bold tracking-wider">🟢 Mantener — P&L Total</p>
+                    <p class="text-2xl font-bold text-green font-mono mt-2" id="metrics-pnl-mantener">—</p>
+                </div>
+                <div class="rounded-xl border border-yellow/40 bg-yellow/5 p-4">
+                    <p class="text-[10px] uppercase text-yellow font-bold tracking-wider">🟡 Observación — P&L Total</p>
+                    <p class="text-2xl font-bold text-yellow font-mono mt-2" id="metrics-pnl-observacion">—</p>
+                </div>
+                <div class="rounded-xl border border-red/40 bg-red/5 p-4">
+                    <p class="text-[10px] uppercase text-red font-bold tracking-wider">🔴 Vender — P&L Total</p>
+                    <p class="text-2xl font-bold text-red font-mono mt-2" id="metrics-pnl-vender">—</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- TAB 3: DIVIDENDOS                                            -->
+        <!-- ============================================================ -->
+        <section id="tab-dividends" class="hidden space-y-4">
+            <div class="rounded-2xl border border-line bg-surface overflow-hidden">
+                <div class="p-4 border-b border-line">
+                    <h3 class="text-sm font-bold text-ink flex items-center gap-2">
+                        <i class="fa-solid fa-sack-dollar text-yellow"></i> Calendario de Dividendos
+                    </h3>
+                    <p class="text-[10px] text-muted mt-0.5">Ordenado por ex-date más reciente primero</p>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                            <tr class="bg-elevated border-b border-line text-muted font-bold uppercase tracking-wider">
+                                <th class="py-2 px-3">Ticker</th>
+                                <th class="py-2 px-3 text-right">Acciones</th>
+                                <th class="py-2 px-3 text-center">Ex-Dividendo</th>
+                                <th class="py-2 px-3 text-center">Pago</th>
+                                <th class="py-2 px-3 text-right">DPS</th>
+                                <th class="py-2 px-3 text-right">Total a Cobrar</th>
+                                <th class="py-2 px-3 text-right">Yield %</th>
+                                <th class="py-2 px-3 text-center">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dividends-tbody" class="divide-y divide-line">
+                            <tr><td colspan="8" class="py-12 text-center text-muted">
+                                <i class="fa-solid fa-circle-notch fa-spin text-2xl mb-2"></i>
+                                <p class="text-xs">Cargando dividendos...</p>
+                            </td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- TAB 4: DISCOVERY (potenciales compras)                     -->
+        <!-- ============================================================ -->
+        <section id="tab-discovery" class="hidden space-y-4">
+            <div class="p-4 rounded-xl border border-line bg-surface">
+                <h3 class="text-sm font-bold text-ink flex items-center gap-2">
+                    <i class="fa-solid fa-satellite-dish text-yellow"></i>
+                    Discovery · Búsqueda Dinámica de Oportunidades
+                </h3>
+                <p class="text-[11px] text-muted mt-1">Sin lista fija: defines filtros estructurales y el sistema escanea Finviz + evalúa con yfinance / TradingView / MarketScreener.</p>
+            </div>
+
+            <!-- Discovery Form -->
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                <div class="lg:col-span-3 p-5 rounded-xl border border-line bg-surface space-y-4">
+                    <div class="flex items-center justify-between">
+                        <h4 class="text-sm font-bold text-ink flex items-center gap-2">
+                            <i class="fa-solid fa-sliders text-green"></i> Filtros
+                        </h4>
+                        <button onclick="resetDiscoveryFilters()" class="text-[11px] text-muted hover:text-ink">
+                            <i class="fa-solid fa-rotate-left"></i> Reset
+                        </button>
+                    </div>
+
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-[11px]">
+                        <label class="block">
+                            <span class="text-muted">Sector</span>
+                            <select id="f-sector" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="technology">Tecnología</option>
+                                <option value="healthcare">Salud</option>
+                                <option value="financial">Financiero</option>
+                                <option value="consumer_cyclical">Consumo Cíclico</option>
+                                <option value="consumer_defensive">Consumo Defensivo</option>
+                                <option value="industrials">Industrial</option>
+                                <option value="energy">Energía</option>
+                                <option value="utilities">Utilities</option>
+                                <option value="real_estate">Real Estate</option>
+                                <option value="basic_materials">Materiales</option>
+                                <option value="communication">Telecom</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Market Cap</span>
+                            <select id="f-market-cap" multiple class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink h-12">
+                                <option value="mega">Mega (>$200B)</option>
+                                <option value="large">Large ($10B-200B)</option>
+                                <option value="mid">Mid ($2B-10B)</option>
+                                <option value="small">Small ($300M-2B)</option>
+                                <option value="micro">Micro ($50M-300M)</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">P/E máximo</span>
+                            <select id="f-pe" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="u10">&lt; 10</option>
+                                <option value="u15">&lt; 15</option>
+                                <option value="u20">&lt; 20</option>
+                                <option value="u25">&lt; 25</option>
+                                <option value="u30">&lt; 30</option>
+                                <option value="o50">&gt; 50</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">PEG máximo</span>
+                            <select id="f-peg" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="u1">&lt; 1</option>
+                                <option value="u2">&lt; 2</option>
+                                <option value="o2">&gt; 2</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Precio máximo</span>
+                            <select id="f-price" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="5to10">$5 - $10</option>
+                                <option value="10to20">$10 - $20</option>
+                                <option value="20to50">$20 - $50</option>
+                                <option value="50to100">$50 - $100</option>
+                                <option value="o100">&gt; $100</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Yield mínimo</span>
+                            <select id="f-div" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="o1">&gt; 1%</option>
+                                <option value="o3">&gt; 3%</option>
+                                <option value="o5">&gt; 5%</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Revenue Growth</span>
+                            <select id="f-rev-growth" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="pos">Positivo (5Y sales)</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">ROE mínimo</span>
+                            <select id="f-roe" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="pos">Positivo</option>
+                                <option value="o10">&gt; 10%</option>
+                                <option value="o20">&gt; 20%</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Top N resultados</span>
+                            <select id="f-top-n" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="10">10</option>
+                                <option value="20" selected>20</option>
+                                <option value="30">30</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Score mínimo</span>
+                            <select id="f-min-score" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="0">0</option>
+                                <option value="60">60</option>
+                                <option value="70" selected>70</option>
+                                <option value="80">80</option>
+                            </select>
+                        </label>
+                    </div>
+
+                    <div class="flex items-center gap-3 pt-2">
+                        <button onclick="runDiscoverySearch()" id="btn-discovery" class="flex-1 px-5 py-3 rounded-lg bg-green hover:bg-greenDeep text-black font-bold transition flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-rocket" id="discovery-icon"></i>
+                            <span id="discovery-text">Buscar con estos filtros</span>
+                        </button>
+                        <button onclick="saveCurrentFilters()" class="px-4 py-3 rounded-lg bg-elevated hover:bg-line text-ink text-[11px] font-bold border border-line transition flex items-center gap-2" title="Guardar esta búsqueda">
+                            <i class="fa-solid fa-bookmark text-yellow"></i>
+                            <span class="hidden md:inline">Guardar</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="p-4 rounded-xl border border-line bg-surface">
+                        <h4 class="text-sm font-bold text-ink flex items-center gap-2 mb-3">
+                            <i class="fa-solid fa-bolt text-yellow"></i> Presets Curados
+                        </h4>
+                        <div id="presets-list" class="space-y-1.5 max-h-96 overflow-y-auto">
+                            <div class="text-[11px] text-muted text-center py-2">Cargando...</div>
+                        </div>
+                    </div>
+                    <div class="p-4 rounded-xl border border-line bg-surface">
+                        <h4 class="text-sm font-bold text-ink flex items-center gap-2 mb-3">
+                            <i class="fa-solid fa-bookmark text-green"></i> Búsquedas Guardadas
+                        </h4>
+                        <div id="saved-searches-list" class="space-y-1.5 max-h-64 overflow-y-auto">
+                            <div class="text-[11px] text-muted text-center py-2">Ninguna aún</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Discovery Results -->
+            <div class="rounded-2xl border border-line bg-surface overflow-hidden">
+                <div class="p-4 border-b border-line flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div>
+                        <h4 class="text-sm font-bold text-ink flex items-center gap-2">
+                            <i class="fa-solid fa-magnifying-glass-chart text-green"></i> Resultados
+                        </h4>
+                        <p class="text-[10px] text-muted" id="discovery-meta">Define filtros arriba y presiona "Buscar"</p>
+                    </div>
+                    <span id="discovery-count-badge" class="text-[10px] px-2.5 py-1 rounded bg-elevated text-green border border-line font-mono">0 resultados</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                            <tr class="bg-elevated border-b border-line text-muted font-bold uppercase tracking-wider">
+                                <th class="py-2 px-3">Ticker</th>
+                                <th class="py-2 px-3">Sector</th>
+                                <th class="py-2 px-3 text-right">Precio</th>
+                                <th class="py-2 px-3 text-right">Upside</th>
+                                <th class="py-2 px-3 text-center">Score</th>
+                                <th class="py-2 px-3 text-right">Entrada</th>
+                                <th class="py-2 px-3 text-right">SL</th>
+                                <th class="py-2 px-3 text-right">TP</th>
+                                <th class="py-2 px-3 text-center">Conf.</th>
+                                <th class="py-2 px-3 text-center">IA</th>
+                                <th class="py-2 px-3 max-w-xs">Motivo / contexto</th>
+                            </tr>
+                        </thead>
+                        <tbody id="discovery-tbody" class="divide-y divide-line">
+                            <tr><td colspan="11" class="py-12 text-center text-muted">
+                                <i class="fa-solid fa-satellite-dish text-3xl mb-3 text-line"></i>
+                                <p class="text-xs">Listo para descubrir. Ajusta los filtros arriba y pulsa <strong>Buscar</strong>.</p>
+                            </td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="discovery-ai-panel" class="hidden m-3 p-3 rounded-lg border border-line bg-elevated text-[11px] whitespace-pre-wrap"></div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Sparkline library (inline SVG, sin dependencias externas) -->
+    <script src="{{ url_for('static', filename='sparkline.js') }}"></script>
+
+    <script>
+        let portfolioData = null;
+        let portfolioMetrics = null;
+        let portfolioHistory = null;
+        let metricsPeriod = 30;
+        let dividendData = null;
+        let currentTab = 'tab-portfolio';
+
+        document.addEventListener("DOMContentLoaded", () => {
+            refreshFx();
+            loadPortfolio();
+            loadDividends();
+            loadAndRenderPresets();
+            loadAndRenderSavedSearches();
+        });
+
+        // ─── TABS ───────────────────────────────────────────────────────
+        function switchTab(tabId) {
+            currentTab = tabId;
+            ['tab-portfolio', 'tab-metrics', 'tab-dividends', 'tab-discovery'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.classList.add('hidden');
+            });
+            ['btn-tab-portfolio', 'btn-tab-metrics', 'btn-tab-dividends', 'btn-tab-discovery'].forEach(btnId => {
+                const btn = document.getElementById(btnId);
+                if (btn) {
+                    btn.classList.remove('tab-btn-active');
+                    btn.classList.add('tab-btn-inactive');
+                }
+            });
+            const targetTab = document.getElementById(tabId);
+            if (targetTab) targetTab.classList.remove('hidden');
+            const activeBtn = document.getElementById(`btn-${tabId}`);
+            if (activeBtn) {
+                activeBtn.classList.remove('tab-btn-inactive');
+                activeBtn.classList.add('tab-btn-active');
+            }
+
+            // Cargar histórico al entrar a Métricas
+            if (tabId === 'tab-metrics' && !portfolioHistory) {
+                loadMetrics();
+            }
+        }
+
+        // ─── FX ────────────────────────────────────────────────────────
+        async function refreshFx(force = true, reloadData = false) {
+            try {
+                const res = await fetch(`/api/fx?force=${force}&_t=${Date.now()}`);
+                const data = await res.json();
+                if (data.rate) {
+                    document.getElementById("fx-rate").innerText = data.rate.toFixed(2);
+                    document.getElementById("hero-fx-rate").innerText = data.rate.toFixed(2);
+                    window._lastFx = data.rate;
+                }
+                if (data.timestamp) {
+                    document.getElementById("header-time-badge").innerText = `FX ${data.rate} · ${data.timestamp}`;
+                }
+                if (portfolioData) {
+                    renderHero(portfolioData);
+                }
+            } catch (err) {
+                console.error("Error FX:", err);
+            }
+            if (reloadData) {
+                loadPortfolio();
+                loadDividends();
+            }
+        }
+
+        // ─── PORTFOLIO ────────────────────────────────────────────────
+        async function loadPortfolio(force = false) {
+            try {
+                const res = await fetch(`/api/portfolio/current?refresh=${force}&_t=${Date.now()}`);
+                const data = await res.json();
+                portfolioData = data;
+                renderHero(data);
+                renderPortfolioTable(data);
+                renderAllocation(data);
+                updateHeaderCounts(data);
+            } catch (err) {
+                console.error("Error cargando portafolio:", err);
+            }
+        }
+
+        async function refreshAll() {
+            const icon = document.getElementById("refresh-all-icon");
+            if (icon) icon.classList.add("fa-spin");
+            await Promise.all([
+                refreshFx(true, false),
+                loadPortfolio(true),
+                loadDividends(true),
+            ]);
+            if (icon) icon.classList.remove("fa-spin");
+        }
+
+        function renderHero(data) {
+            const usd = data.summary_usd || {};
+            const total = usd.current_value || 0;
+            const invested = usd.total_invested || 0;
+            const pnl = usd.total_pnl || 0;
+            const pnlPct = usd.total_pnl_pct || 0;
+
+            const fx = window._lastFx || 940;
+            document.getElementById("hero-total-usd").innerText = `US $${total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            document.getElementById("hero-total-clp").innerText = `CLP $${Math.round(total * fx).toLocaleString('es-CL')}`;
+            document.getElementById("hero-invested").innerText = `US $${invested.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+            const positionsVal = (data.positions || []).reduce((acc, p) => acc + (p.market?.current_value || 0), 0);
+            document.getElementById("hero-positions-value").innerText = `US $${positionsVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+            // Cambio diario y mensual (placeholder, se actualiza con loadMetrics)
+            const dailyChangeEl = document.getElementById("hero-daily-change");
+            if (dailyChangeEl) dailyChangeEl.innerText = "—";
+            const monthlyChangeEl = document.getElementById("hero-monthly-change");
+            if (monthlyChangeEl) monthlyChangeEl.innerText = "—";
+        }
+
+        function renderPortfolioTable(data) {
+            const tbody = document.getElementById("portfolio-tbody");
+            if (!tbody) return;
+
+            const positions = data.positions || [];
+            const filter = document.getElementById("portfolio-filter")?.value || "ALL";
+            const filtered = filter === "ALL" ? positions : positions.filter(p => p.recommendation?.action === filter);
+
+            const priority = { "VENDER": 0, "OBSERVACION": 1, "MANTENER": 2 };
+            const sorted = [...filtered].sort((a, b) => {
+                const ap = priority[a.recommendation?.action] ?? 2;
+                const bp = priority[b.recommendation?.action] ?? 2;
+                return ap - bp;
+            });
+
+            if (sorted.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="10" class="py-8 text-center text-muted text-[11px]">Sin posiciones en este filtro.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = sorted.map(p => {
+                const m = p.market || {};
+                const r = p.recommendation || {};
+                const ticker = m.ticker || "?";
+                const action = r.action || "MANTENER";
+                const actionClass = `tier-badge-${action.toLowerCase()}`;
+                const badge = `<span class="${actionClass} px-2 py-0.5 rounded text-[10px] font-bold">${action === "OBSERVACION" ? "⚠️ " : ""}${action}</span>`;
+                const pnlPct = m.unrealized_pnl_pct || 0;
+                const pnlColor = pnlPct >= 0 ? "text-green" : "text-red";
+                const sparklineId = `spark-${ticker}`;
+
+                return `
+                <tr class="hover:bg-elevated transition">
+                    <td class="py-2 px-3">
+                        <div class="font-bold text-ink text-[12px]">${ticker}</div>
+                        <div class="text-[9px] text-muted truncate max-w-[120px]">${(m.name || "").slice(0, 25)}</div>
+                    </td>
+                    <td class="py-2 px-3 text-right font-mono text-ink">${(m.shares || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-muted">$${(m.entry_price || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-ink font-bold">$${(m.current_price || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3"><div id="${sparklineId}" class="h-6"></div></td>
+                    <td class="py-2 px-3 text-right font-mono ${pnlColor} font-bold">
+                        ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%
+                    </td>
+                    <td class="py-2 px-3 text-center">${badge}<div class="mt-1 max-w-[190px] text-[9px] leading-tight text-muted text-left">${(r.position_context?.headline || r.concise_rationale || "").slice(0, 145)}</div></td>
+                    <td class="py-2 px-3 text-right font-mono text-red text-[10px]">$${(r.suggested_stop_loss || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-green text-[10px]">$${(r.suggested_target_price || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-center"><button onclick="loadAiAnalysis('${ticker}')" class="px-2 py-1 rounded border border-line text-[9px] text-cyan hover:bg-elevated">Análisis IA</button></td>
+                </tr>`;
+            }).join("");
+
+            // Cargar sparklines individuales
+            loadPositionSparklines(positions.map(p => p.market?.ticker).filter(Boolean));
+        }
+
+        async function loadAiAnalysis(ticker) {
+            const panel = document.getElementById("ai-analysis-panel");
+            if (!panel) return;
+            panel.classList.remove("hidden");
+            panel.innerText = `Generando análisis complementario para ${ticker}...`;
+            try {
+                const res = await fetch(`/api/portfolio/${encodeURIComponent(ticker)}/ai-analysis`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "No se pudo generar el análisis");
+                panel.innerText = `[${data.provider}${data.cached ? " · caché" : ""}] ${data.disclaimer}\n\n${data.analysis}`;
+            } catch (err) {
+                panel.innerText = `Error de análisis IA: ${err.message}`;
+            }
+        }
+
+        async function loadPositionSparklines(tickers) {
+            try {
+                const res = await fetch(`/api/portfolio/positions-history?days=30&_t=${Date.now()}`);
+                const histories = await res.json();
+                tickers.forEach(ticker => {
+                    const id = `spark-${ticker}`;
+                    const el = document.getElementById(id);
+                    if (el && histories[ticker]) {
+                        el.innerHTML = renderSparklineSVG(histories[ticker], 80, 24);
+                    }
+                });
+            } catch (err) {
+                console.error("Error sparklines:", err);
+            }
+        }
+
+        function filterPortfolioTable(filter) {
+            if (portfolioData) renderPortfolioTable(portfolioData);
+        }
+
+        function renderAllocation(data) {
+            const positions = data.positions || [];
+            const bySector = {};
+            let total = 0;
+            positions.forEach(p => {
+                const s = (p.market?.sector || "Otros");
+                const v = p.market?.current_value || 0;
+                bySector[s] = (bySector[s] || 0) + v;
+                total += v;
+            });
+
+            if (total <= 0) return;
+
+            const items = Object.entries(bySector)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 8);
+            const colors = ["#16C784", "#EAB308", "#EF4444", "#3B82F6", "#A855F7", "#06B6D4", "#F97316", "#84CC16"];
+
+            // Pie SVG
+            let cumulative = 0;
+            const radius = 40;
+            const circumference = 2 * Math.PI * radius;
+            let pieHTML = `<circle cx="50" cy="50" r="${radius}" fill="transparent" stroke="#262626" stroke-width="20"></circle>`;
+
+            items.forEach(([sector, val], idx) => {
+                const pct = val / total;
+                const dashLength = pct * circumference;
+                const dashOffset = -cumulative * circumference;
+                cumulative += pct;
+                pieHTML += `<circle cx="50" cy="50" r="${radius}" fill="transparent" stroke="${colors[idx]}" stroke-width="20" stroke-dasharray="${dashLength} ${circumference}" stroke-dashoffset="${dashOffset}" transform="rotate(-90 50 50)" class="pie-segment"><title>${sector}: ${(pct*100).toFixed(1)}%</title></circle>`;
+            });
+
+            const pieSvg = document.getElementById("pie-svg");
+            if (pieSvg) pieSvg.innerHTML = pieHTML;
+
+            // Legend
+            const legend = document.getElementById("allocation-legend");
+            if (legend) {
+                legend.innerHTML = items.map(([sector, val], idx) => `
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-1.5 min-w-0">
+                            <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${colors[idx]}"></span>
+                            <span class="truncate">${sector}</span>
+                        </div>
+                        <span class="font-mono text-muted flex-shrink-0">${(val/total*100).toFixed(1)}%</span>
+                    </div>
+                `).join("");
+            }
+
+            // Cash + poder de compra
+            fetch("/api/cash").then(r => r.json()).then(cash => {
+                if (!cash) return;
+                const fx = window._lastFx || 940;
+                const heroCash = document.getElementById("hero-cash");
+                if (heroCash) heroCash.innerText = `US $${(cash.usd || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                document.getElementById("header-cash").innerText = `CLP $${Math.round(cash.clp).toLocaleString('es-CL')}`;
+            });
+
+            fetch("/api/wealth").then(r => r.json()).then(w => {
+                if (!w || !w.consolidated) return;
+                const fx = window._lastFx || 940;
+                const totalWealthCLP = w.consolidated.total_wealth_clp || 0;
+                const totalWealthUSD = totalWealthCLP / fx;
+                const totalUsdEl = document.getElementById("hero-total-usd");
+                const totalClpEl = document.getElementById("hero-total-clp");
+                if (totalUsdEl) totalUsdEl.innerText = `US $${totalWealthUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                if (totalClpEl) totalClpEl.innerText = `CLP $${Math.round(totalWealthCLP).toLocaleString('es-CL')}`;
+                const positionsHero = document.getElementById("hero-positions-value");
+                const positionsValueUsd = (w.xtb?.positions_value_clp || 0) / fx;
+                if (positionsHero) positionsHero.innerText = `US $${positionsValueUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                const cashHero = document.getElementById("hero-cash");
+                const cashUsd = (w.xtb?.uninvested_cash_clp || 0) / fx;
+                if (cashHero) cashHero.innerText = `US $${cashUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                const externalHero = document.getElementById("hero-external");
+                if (externalHero) externalHero.innerText = `CLP $${Math.round(w.external_reserve.amount_clp || 0).toLocaleString('es-CL')}`;
+                const buyingPowerUSD = (w.consolidated.total_capital_available_for_new_buys_clp || 0) / fx;
+                const bpEl = document.getElementById("portfolio-buying-power");
+                if (bpEl) bpEl.innerText = `US $${buyingPowerUSD.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+                window._lastBuyingPowerUSD = buyingPowerUSD;
+            });
+        }
+
+        function updateHeaderCounts(data) {
+            const positions = data.positions || [];
+            document.getElementById("header-positions-count").innerText = positions.length;
+            const counts = { MANTENER: 0, OBSERVACION: 0, VENDER: 0 };
+            positions.forEach(p => {
+                const a = p.recommendation?.action || "MANTENER";
+                if (counts[a] !== undefined) counts[a]++;
+            });
+            document.getElementById("header-tier-mantener").innerText = counts.MANTENER;
+            document.getElementById("header-tier-observacion").innerText = counts.OBSERVACION;
+            document.getElementById("header-tier-vender").innerText = counts.VENDER;
+        }
+
+        // ─── MÉTRICAS ─────────────────────────────────────────────────
+        async function loadMetrics() {
+            try {
+                const res = await fetch(`/api/portfolio/history?days=${metricsPeriod}&_t=${Date.now()}`);
+                portfolioHistory = await res.json();
+                renderMetrics(portfolioHistory);
+                renderMetricsByTier(portfolioData);
+            } catch (err) {
+                console.error("Error cargando métricas:", err);
+            }
+        }
+
+        async function setMetricsPeriod(days) {
+            metricsPeriod = days;
+            document.querySelectorAll("[id^='btn-metrics-']").forEach(b => {
+                b.classList.remove('tab-btn-active');
+                b.classList.add('tab-btn-inactive');
+            });
+            const active = document.getElementById(`btn-metrics-${days}`);
+            if (active) {
+                active.classList.remove('tab-btn-inactive');
+                active.classList.add('tab-btn-active');
+            }
+            await loadMetrics();
+        }
+
+        function renderMetrics(history) {
+            const series = history.series || [];
+            const dailyChange = history.daily_change || {};
+            const monthlyChange = history.monthly_change || {};
+
+            // Hero sparkline del portafolio
+            const heroEl = document.getElementById("metrics-big-sparkline");
+            if (heroEl) heroEl.innerHTML = renderSparklineSVG(series, 800, 200, true);
+
+            const cur = (series[series.length - 1] || {}).value || 0;
+            const start = (series[0] || {}).value || 0;
+            const change = cur - start;
+            const changePct = start ? (change / start * 100) : 0;
+
+            const color = change >= 0 ? "text-green" : "text-red";
+            const sign = change >= 0 ? "+" : "";
+
+            document.getElementById("metrics-current-value").innerText = `US $${cur.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            document.getElementById("metrics-period-change").innerText = `${sign}$${change.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (${sign}${changePct.toFixed(2)}%)`;
+            document.getElementById("metrics-period-change").className = `text-2xl font-bold font-mono mt-1 ${color}`;
+            document.getElementById("metrics-period-label").innerText = `Últimos ${metricsPeriod} días`;
+
+            // Hero portfolio (cambio diario y mensual)
+            const dailyEl = document.getElementById("hero-daily-change");
+            if (dailyEl && dailyChange.change_pct !== undefined) {
+                const c = dailyChange.change_pct;
+                const cUsd = dailyChange.change_usd || 0;
+                dailyEl.innerText = `${c >= 0 ? "+" : ""}${c.toFixed(2)}% (${c >= 0 ? "+" : ""}$${cUsd.toFixed(0)})`;
+                dailyEl.className = `font-bold font-mono ${c >= 0 ? "text-green" : "text-red"}`;
+            }
+            const monthlyEl = document.getElementById("hero-monthly-change");
+            if (monthlyEl && monthlyChange.change_pct !== undefined) {
+                const c = monthlyChange.change_pct;
+                const cUsd = monthlyChange.change_usd || 0;
+                monthlyEl.innerText = `${c >= 0 ? "+" : ""}${c.toFixed(2)}% (${c >= 0 ? "+" : ""}$${cUsd.toFixed(0)})`;
+                monthlyEl.className = `font-bold font-mono ${c >= 0 ? "text-green" : "text-red"}`;
+            }
+
+            // Tabla de performance por posición
+            renderMetricsTable();
+        }
+
+        function renderMetricsTable() {
+            const tbody = document.getElementById("metrics-tbody");
+            if (!tbody || !portfolioData) return;
+
+            const positions = portfolioData.positions || [];
+            const priority = { "VENDER": 0, "OBSERVACION": 1, "MANTENER": 2 };
+            const sorted = [...positions].sort((a, b) => {
+                const pnlA = a.market?.unrealized_pnl_pct || 0;
+                const pnlB = b.market?.unrealized_pnl_pct || 0;
+                return pnlB - pnlA;
+            });
+
+            tbody.innerHTML = sorted.map(p => {
+                const m = p.market || {};
+                const r = p.recommendation || {};
+                const pnl = m.unrealized_pnl || 0;
+                const pnlPct = m.unrealized_pnl_pct || 0;
+                const color = pnl >= 0 ? "text-green" : "text-red";
+                const sign = pnl >= 0 ? "+" : "";
+                const ticker = m.ticker || "?";
+                const action = r.action || "MANTENER";
+                const tierClass = `tier-badge-${action.toLowerCase()}`;
+                const tierBadge = `<span class="${tierClass} px-2 py-0.5 rounded text-[10px] font-bold">${action === "OBSERVACION" ? "⚠️ " : ""}${action}</span>`;
+
+                return `
+                <tr class="hover:bg-elevated transition">
+                    <td class="py-2 px-3 font-bold text-ink">${ticker}</td>
+                    <td class="py-2 px-3 text-muted">${(m.sector || "").slice(0, 22)}</td>
+                    <td class="py-2 px-3 text-right font-mono ${color} font-bold">${sign}$${pnl.toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono ${color} font-bold">${sign}${pnlPct.toFixed(2)}%</td>
+                    <td class="py-2 px-3"><div id="metrics-spark-${ticker}" class="h-6"></div></td>
+                    <td class="py-2 px-3 text-center">${tierBadge}</td>
+                </tr>`;
+            }).join("");
+
+            // Sparklines individuales
+            const tickers = positions.map(p => p.market?.ticker).filter(Boolean);
+            if (tickers.length > 0) {
+                fetch(`/api/portfolio/positions-history?days=${metricsPeriod}`)
+                    .then(r => r.json())
+                    .then(histories => {
+                        tickers.forEach(ticker => {
+                            const id = `metrics-spark-${ticker}`;
+                            const el = document.getElementById(id);
+                            if (el && histories[ticker]) {
+                                el.innerHTML = renderSparklineSVG(histories[ticker], 120, 24);
+                            }
+                        });
+                    });
+            }
+        }
+
+        function renderMetricsByTier(portfolio) {
+            if (!portfolio) return;
+            const positions = portfolio.positions || [];
+            const byTier = { MANTENER: 0, OBSERVACION: 0, VENDER: 0 };
+            positions.forEach(p => {
+                const a = p.recommendation?.action || "MANTENER";
+                if (byTier[a] !== undefined) byTier[a] += (p.market?.unrealized_pnl || 0);
+            });
+            const fmtPnl = (v) => `${v >= 0 ? "+" : ""}$${v.toFixed(0)}`;
+            const cls = (v) => v >= 0 ? "text-green" : "text-red";
+            const elM = document.getElementById("metrics-pnl-mantener");
+            const elO = document.getElementById("metrics-pnl-observacion");
+            const elV = document.getElementById("metrics-pnl-vender");
+            if (elM) { elM.innerText = fmtPnl(byTier.MANTENER); elM.className = `text-2xl font-bold font-mono mt-2 ${cls(byTier.MANTENER)}`; }
+            if (elO) { elO.innerText = fmtPnl(byTier.OBSERVACION); elO.className = `text-2xl font-bold font-mono mt-2 ${cls(byTier.OBSERVACION)}`; }
+            if (elV) { elV.innerText = fmtPnl(byTier.VENDER); elV.className = `text-2xl font-bold font-mono mt-2 ${cls(byTier.VENDER)}`; }
+        }
+
+        // ─── DIVIDENDOS ───────────────────────────────────────────────
+        async function loadDividends(force = false) {
+            try {
+                const res = await fetch(`/api/dividends?refresh=${force}&_t=${Date.now()}`);
+                const data = await res.json();
+                dividendData = data;
+                renderDividends(data);
+            } catch (err) {
+                console.error("Error dividendos:", err);
+            }
+        }
+
+        function renderDividends(data) {
+            const tbody = document.getElementById("dividends-tbody");
+            if (!tbody) return;
+
+            const items = (data.platforms && data.platforms.XTB) || [];
+            if (items.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" class="py-8 text-center text-muted text-[11px]">Sin dividendos próximos.</td></tr>`;
+                return;
+            }
+
+            // El backend ya ordena por ex-date más reciente primero
+            tbody.innerHTML = items.slice(0, 30).map(item => {
+                const hasDiv = item.has_dividend;
+                if (!hasDiv) {
+                    return `<tr><td colspan="8" class="py-2 px-3 text-muted">${item.ticker} - ${item.name} - Sin dividendo</td></tr>`;
+                }
+                const statusClass = item.status === "CONFIRMADA" ? "text-green" : "text-yellow";
+                const dps = item.dividend_per_share || 0;
+                const total = item.estimated_payout || 0;
+                return `
+                <tr class="hover:bg-elevated transition">
+                    <td class="py-2 px-3">
+                        <div class="font-bold text-ink">${item.ticker}</div>
+                        <div class="text-[9px] text-muted truncate max-w-[120px]">${(item.name || "").slice(0, 22)}</div>
+                    </td>
+                    <td class="py-2 px-3 text-right font-mono">${(item.shares || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-center font-mono ${statusClass}">${item.ex_date_display || "—"}</td>
+                    <td class="py-2 px-3 text-center font-mono">${item.payment_date_display || "—"}</td>
+                    <td class="py-2 px-3 text-right font-mono">$${dps.toFixed(4)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-yellow font-bold">$${total.toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-green">${item.dividend_yield || "—"}%</td>
+                    <td class="py-2 px-3 text-center text-[10px]">
+                        <span class="${statusClass} font-bold">${item.status_badge || "—"}</span>
+                    </td>
+                </tr>`;
+            }).join("");
+        }
+
+        // ─── DISCOVERY ────────────────────────────────────────────────
+        function getDiscoveryFilters() {
+            const multi = (id) => Array.from(document.getElementById(id)?.selectedOptions || []).map(o => o.value).filter(v => v);
+            const single = (id) => document.getElementById(id)?.value || null;
+            return {
+                sector: single("f-sector") || null,
+                market_cap: multi("f-market-cap") || null,
+                pe_max: single("f-pe") || null,
+                peg_max: single("f-peg") || null,
+                price_max: single("f-price") || null,
+                dividend_yield_min: single("f-div") || null,
+                revenue_growth: single("f-rev-growth") || null,
+                roe_min: single("f-roe") || null,
+            };
+        }
+
+        function resetDiscoveryFilters() {
+            ["f-sector", "f-market-cap", "f-pe", "f-peg", "f-price",
+             "f-div", "f-rev-growth", "f-roe"].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    if (el.multiple) Array.from(el.options).forEach(o => o.selected = false);
+                    else el.value = "";
+                }
+            });
+            document.getElementById("f-top-n").value = "20";
+            document.getElementById("f-min-score").value = "70";
+        }
+
+        async function runDiscoverySearch() {
+            const btn = document.getElementById("btn-discovery");
+            const icon = document.getElementById("discovery-icon");
+            const text = document.getElementById("discovery-text");
+            if (btn) btn.disabled = true;
+            if (icon) icon.classList.add("fa-spin");
+            if (text) text.innerText = "Buscando en Finviz + evaluando...";
+
+            const filters = getDiscoveryFilters();
+            const cleanedFilters = Object.fromEntries(
+                Object.entries(filters).filter(([_, v]) =>
+                    v !== null && v !== "" && !(Array.isArray(v) && v.length === 0))
+            );
+
+            try {
+                const res = await fetch("/api/opportunities/search", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        filters: cleanedFilters,
+                        top_n: parseInt(document.getElementById("f-top-n").value || "20"),
+                        min_score: parseInt(document.getElementById("f-min-score").value || "70"),
+                    }),
+                });
+                const data = await res.json();
+                renderDiscoveryResults(data);
+            } catch (err) {
+                console.error("Error discovery:", err);
+            } finally {
+                if (btn) btn.disabled = false;
+                if (icon) icon.classList.remove("fa-spin");
+                if (text) text.innerText = "Buscar con estos filtros";
+            }
+        }
+
+        function renderDiscoveryResults(data) {
+            const tbody = document.getElementById("discovery-tbody");
+            const badge = document.getElementById("discovery-count-badge");
+            const meta = document.getElementById("discovery-meta");
+            const results = data.results || [];
+
+            if (badge) badge.innerText = `${results.length} resultados`;
+            if (meta) meta.innerHTML = `Finviz query: <code class="text-yellow">${data.finviz_query || "—"}</code> · ${data.candidates_discovered || 0} descubiertos · ${data.scan_time_seconds || 0}s`;
+
+            if (!tbody) return;
+            if (results.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="11" class="py-12 text-center text-muted">
+                    <i class="fa-solid fa-circle-exclamation text-2xl mb-2 text-yellow"></i>
+                    <p>Sin resultados. Ajusta los filtros.</p>
+                </td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = results.map(op => {
+                const score = op.opportunity_score || 0;
+                const scoreColor = score >= 85 ? "text-green font-bold" : score >= 70 ? "text-green" : "text-muted";
+                const upside = op.upside_pct ? `+${op.upside_pct}%` : "—";
+                const upsideColor = (op.upside_pct || 0) >= 20 ? "text-green" : "text-muted";
+                const evaluated = op.evaluated !== false;
+                const badge = evaluated
+                    ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-green/10 text-green border border-green/30">yfinance ✓</span>`
+                    : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-yellow/10 text-yellow border border-yellow/30">Solo Finviz</span>`;
+                return `
+                <tr class="hover:bg-elevated transition">
+                    <td class="py-2 px-3">
+                        <div class="flex items-center gap-1.5">
+                            <span class="font-bold text-ink">${op.ticker}</span>
+                            ${badge}
+                        </div>
+                        <div class="text-[9px] text-muted truncate max-w-[140px]">${(op.name || "").slice(0, 25)}</div>
+                    </td>
+                    <td class="py-2 px-3 text-muted">${(op.sector || "").slice(0, 22)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-ink font-bold">$${(op.current_price || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono ${upsideColor}">${upside}</td>
+                    <td class="py-2 px-3 text-center font-mono ${scoreColor}">${score}</td>
+                    <td class="py-2 px-3 text-right font-mono text-green">$${(op.suggested_entry || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-red">$${(op.suggested_stop_loss || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-green">$${(op.suggested_take_profit || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-center font-mono text-ink">${op.confidence_10 || 0}/10</td>
+                    <td class="py-2 px-3 text-center"><button onclick='loadDiscoveryAiAnalysis(${JSON.stringify(op).replace(/'/g, "&#39;")})' class="px-2 py-1 rounded border border-line text-[9px] text-cyan hover:bg-elevated">Análisis IA</button></td>
+                    <td class="py-2 px-3 text-muted text-[10px]">${(op.entry_rationale || "").slice(0, 65)}<div class="mt-1 ${op.context_advisory?.label === "REVISAR" ? "text-yellow" : "text-muted"}">${op.context_advisory ? `${op.context_advisory.label}: noticias ${op.context_advisory.news_sentiment} · macro ${op.context_advisory.macro_risk}` : "Contexto no disponible"}</div></td>
+                </tr>`;
+            }).join("");
+        }
+
+        async function loadDiscoveryAiAnalysis(candidate) {
+            const panel = document.getElementById("discovery-ai-panel");
+            if (!panel) return;
+            panel.classList.remove("hidden");
+            panel.innerText = `Analizando ${candidate.ticker} con las métricas filtradas...`;
+            try {
+                const res = await fetch("/api/opportunities/ai-analysis", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(candidate),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "No se pudo generar el análisis");
+                panel.innerText = `[${data.provider}${data.cached ? " · caché" : ""}] ${data.disclaimer}\n\n${data.analysis}`;
+            } catch (err) {
+                panel.innerText = `Error de análisis IA: ${err.message}`;
+            }
+        }
+
+        async function loadAndRenderPresets() {
+            try {
+                const res = await fetch("/api/opportunities/presets");
+                const data = await res.json();
+                const container = document.getElementById("presets-list");
+                if (!container) return;
+                if (!data.presets || data.presets.length === 0) {
+                    container.innerHTML = `<div class="text-[11px] text-muted text-center py-2">Sin presets</div>`;
+                    return;
+                }
+                container.innerHTML = "";
+                data.presets.forEach(p => {
+                    const btn = document.createElement("button");
+                    btn.className = "w-full text-left px-3 py-2 rounded bg-elevated hover:bg-line text-ink text-[11px] transition flex items-start gap-2 text-left";
+                    btn.title = p.description;
+                    btn.onclick = () => applyPreset(p);
+                    btn.innerHTML = `
+                        <i class="fa-solid fa-bolt text-yellow mt-0.5 flex-shrink-0"></i>
+                        <span class="flex-1 min-w-0">
+                            <span class="font-bold block">${p.label}</span>
+                            <span class="text-[9px] text-muted block leading-tight">${p.description}</span>
+                        </span>
+                    `;
+                    container.appendChild(btn);
+                });
+            } catch (err) {
+                console.error("Error presets:", err);
+            }
+        }
+
+        function applyPreset(preset) {
+            const f = preset.filters || {};
+            const setVal = (id, val) => {
+                const el = document.getElementById(id);
+                if (el) el.value = val || "";
+            };
+            const setMulti = (id, vals) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    Array.from(el.options).forEach(o => {
+                        o.selected = vals && vals.includes(o.value);
+                    });
+                }
+            };
+            setVal("f-sector", f.sector);
+            setMulti("f-market-cap", f.market_cap);
+            setVal("f-pe", f.pe_max);
+            setVal("f-peg", f.peg_max);
+            setVal("f-price", f.price_max);
+            setVal("f-div", f.dividend_yield_min);
+            setVal("f-rev-growth", f.revenue_growth);
+            setVal("f-roe", f.roe_min);
+            runDiscoverySearch();
+        }
+
+        async function loadAndRenderSavedSearches() {
+            try {
+                const res = await fetch("/api/opportunities/saved-searches");
+                const data = await res.json();
+                const container = document.getElementById("saved-searches-list");
+                if (!container) return;
+                const items = data.saved_searches || [];
+                if (items.length === 0) {
+                    container.innerHTML = `<div class="text-[11px] text-muted text-center py-2">Ninguna. Usa "Guardar" arriba.</div>`;
+                    return;
+                }
+                container.innerHTML = "";
+                items.slice().reverse().forEach(item => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "flex items-center gap-1";
+                    const btn = document.createElement("button");
+                    btn.className = "flex-1 text-left px-2.5 py-1.5 rounded bg-elevated hover:bg-line text-ink text-[11px] transition flex items-start gap-1.5";
+                    btn.onclick = () => applyPreset({ filters: item.filters });
+                    btn.innerHTML = `
+                        <i class="fa-solid fa-bookmark text-green mt-0.5"></i>
+                        <span class="flex-1 truncate font-bold">${item.name}</span>
+                    `;
+                    const delBtn = document.createElement("button");
+                    delBtn.className = "px-2 py-1 rounded text-red hover:bg-red/10 text-xs";
+                    delBtn.onclick = (e) => { e.stopPropagation(); deleteSavedSearch(item.id); };
+                    delBtn.innerHTML = `<i class="fa-solid fa-xmark"></i>`;
+                    wrap.appendChild(btn);
+                    wrap.appendChild(delBtn);
+                    container.appendChild(wrap);
+                });
+            } catch (err) {
+                console.error("Error saved searches:", err);
+            }
+        }
+
+        async function saveCurrentFilters() {
+            const name = prompt("Nombre para guardar esta búsqueda:", "Mi búsqueda");
+            if (!name) return;
+            const filters = getDiscoveryFilters();
+            const cleanedFilters = Object.fromEntries(
+                Object.entries(filters).filter(([_, v]) =>
+                    v !== null && v !== "" && !(Array.isArray(v) && v.length === 0))
+            );
+            try {
+                await fetch("/api/opportunities/saved-searches", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name, filters: cleanedFilters }),
+                });
+                loadAndRenderSavedSearches();
+            } catch (err) {
+                alert("Error al guardar: " + err.message);
+            }
+        }
+
+        async function deleteSavedSearch(id) {
+            if (!confirm("¿Eliminar esta búsqueda?")) return;
+            await fetch(`/api/opportunities/saved-searches/${id}`, { method: "DELETE" });
+            loadAndRenderSavedSearches();
+        }
+
+    </script>
+</body>
+</html>

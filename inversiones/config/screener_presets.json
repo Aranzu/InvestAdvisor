@@ -1,0 +1,122 @@
+{
+  "_meta": {
+    "description": "Filtros curados del screener Finviz. Cada preset traduce parámetros UI-friendly a códigos Finviz reales.",
+    "url_base": "https://finviz.com/screener.ashx?v=152&f="
+  },
+  "presets": [
+    {
+      "id": "value_classic",
+      "label": "Value Clásico (P/E < 15)",
+      "description": "Acciones baratas con múltiplos bajos (P/E < 15, PEG < 2)",
+      "filters": {
+        "market_cap": ["large", "mega"],
+        "pe_max": "u15",
+        "peg_max": "u2"
+      }
+    },
+    {
+      "id": "growth_value",
+      "label": "Growth + Value",
+      "description": "Crecimiento alto Y múltiplos razonables (P/E < 25)",
+      "filters": {
+        "market_cap": ["large", "mega"],
+        "pe_max": "u25",
+        "revenue_growth": "pos",
+        "earnings_growth": "pos"
+      }
+    },
+    {
+      "id": "tech_undervalued",
+      "label": "Tech Subvaluado",
+      "description": "Tecnología con P/E bajo + buen growth",
+      "filters": {
+        "sector": "technology",
+        "pe_max": "u20",
+        "revenue_growth": "pos"
+      }
+    },
+    {
+      "id": "ai_pure",
+      "label": "IA Pura (Semis + Cloud)",
+      "description": "Semis, IA infrastructure, software IA",
+      "filters": {
+        "industries": ["semiconductors", "software_application", "information_technology_services"],
+        "revenue_growth": "pos",
+        "earnings_growth": "pos"
+      }
+    },
+    {
+      "id": "small_cap_growth",
+      "label": "Small Caps con Crecimiento",
+      "description": "Capitalización < 2B pero con growth + momentum",
+      "filters": {
+        "market_cap": ["small", "micro"],
+        "revenue_growth": "pos",
+        "earnings_growth": "pos"
+      }
+    },
+    {
+      "id": "high_quality_compounders",
+      "label": "Alta Calidad (ROE > 20%)",
+      "description": "ROE > 20% con market cap > 10B (Finviz ya no filtra margen deuda)",
+      "filters": {
+        "roe_min": "o20",
+        "market_cap": ["large", "mega"]
+      }
+    },
+    {
+      "id": "value_dividend",
+      "label": "Value con Dividendo",
+      "description": "Yield > 3%, P/E < 20, market cap > 10B",
+      "filters": {
+        "dividend_yield_min": "o3",
+        "pe_max": "u20",
+        "market_cap": ["large", "mega"]
+      }
+    },
+    {
+      "id": "metals_miners",
+      "label": "Oro/Plata/Minería",
+      "description": "Sector metales preciosos",
+      "filters": {
+        "industries": ["gold", "silver", "other_precious_metals_mining"]
+      }
+    },
+    {
+      "id": "esg_healthcare",
+      "label": "Healthcare Defensivo",
+      "description": "Sector salud con market cap > 10B",
+      "filters": {
+        "sector": "healthcare",
+        "market_cap": ["large", "mega"]
+      }
+    },
+    {
+      "id": "momentum_breakout",
+      "label": "Momentum / Breakout",
+      "description": "Performance reciente fuerte + market cap medio-grande (Finviz ya no filtra RSI)",
+      "filters": {
+        "performance_4w": "up",
+        "market_cap": ["mid", "large", "mega"]
+      }
+    },
+    {
+      "id": "deep_value",
+      "label": "Deep Value (P/E < 10)",
+      "description": "Múltiplos muy bajos, candidatos a reversión",
+      "filters": {
+        "pe_max": "u10",
+        "market_cap": ["mid", "large"]
+      }
+    },
+    {
+      "id": "small_buys",
+      "label": "Small Buys (< $20)",
+      "description": "Acciones baratas (< $20) con oportunidad",
+      "filters": {
+        "price_max": "5to10",
+        "market_cap": ["small", "mid", "large"]
+      }
+    }
+  ]
+}
