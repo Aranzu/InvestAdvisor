@@ -14,7 +14,7 @@ import time
 import pandas as pd
 import numpy as np
 
-from data_fetchers.web_sources import fetch_tradingview, normalize_ticker_input, to_yfinance_ticker
+from data_fetchers.web_sources import fetch_tradingview, fetch_finviz, normalize_ticker_input, to_yfinance_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,12 @@ _tech_cache: Dict[str, Dict[str, Any]] = {}
 _tech_cache_ts: Dict[str, float] = {}
 _TECH_CACHE_TTL = 30 * 60
 _tv_lock = threading.Lock()
+
+
+def clear_technical_cache() -> None:
+    """Clear cached indicators after a user requests a portfolio refresh."""
+    _tech_cache.clear()
+    _tech_cache_ts.clear()
 
 
 def _cache_get(ticker: str) -> Optional[Dict[str, Any]]:
@@ -81,6 +87,18 @@ def _calculate_indicators_pandas(df: pd.DataFrame) -> Dict[str, Any]:
         macd_signal = round(float(signal_line.iloc[-1]), 4)
         macd_hist = round(float(hist.iloc[-1]), 4)
 
+    atr_14 = None
+    if len(close) >= 15 and {"High", "Low"}.issubset(df.columns):
+        previous_close = close.shift(1)
+        true_range = pd.concat([
+            df["High"] - df["Low"],
+            (df["High"] - previous_close).abs(),
+            (df["Low"] - previous_close).abs(),
+        ], axis=1).max(axis=1)
+        atr_value = true_range.rolling(window=14).mean().iloc[-1]
+        if pd.notna(atr_value):
+            atr_14 = round(float(atr_value), 2)
+
     bb_upper, bb_lower = None, None
     if len(close) >= 20:
         std20 = close.rolling(window=20).std().iloc[-1]
@@ -120,6 +138,7 @@ def _calculate_indicators_pandas(df: pd.DataFrame) -> Dict[str, Any]:
 
     return {
         "source": "Algoritmo Cuantitativo (Pandas)",
+        "data_quality": "COMPLETE",
         "recommendation": recommendation,
         "buy_signals": buy_count,
         "sell_signals": sell_count,
@@ -128,6 +147,7 @@ def _calculate_indicators_pandas(df: pd.DataFrame) -> Dict[str, Any]:
         "macd": macd_val,
         "macd_signal": macd_signal,
         "macd_hist": macd_hist,
+        "atr_14": atr_14,
         "sma_20": round(sma_20, 2) if sma_20 else None,
         "sma_50": round(sma_50, 2) if sma_50 else None,
         "sma_200": round(sma_200, 2) if sma_200 else None,
@@ -166,8 +186,9 @@ def _compute_technical_analysis(ticker: str) -> Dict[str, Any]:
     # 1) TradingView vía web_sources (parser HTML)
     tv = fetch_tradingview(ticker)
     if tv.get("ok") and tv.get("recommendation"):
-        return {
+        tv_result = {
             "source": "TradingView (web_sources)",
+            "data_quality": "COMPLETE",
             "recommendation": tv.get("recommendation", "NEUTRAL"),
             "buy_signals": tv.get("buy_count", 0),
             "sell_signals": tv.get("sell_count", 0),
@@ -176,6 +197,7 @@ def _compute_technical_analysis(ticker: str) -> Dict[str, Any]:
             "macd": None,
             "macd_signal": None,
             "macd_hist": None,
+            "atr_14": None,
             "sma_20": tv.get("sma_20"),
             "sma_50": tv.get("sma_50"),
             "sma_200": tv.get("sma_200"),
@@ -184,6 +206,48 @@ def _compute_technical_analysis(ticker: str) -> Dict[str, Any]:
             "bb_upper": None,
             "bb_lower": None,
         }
+        # The TradingView HTML can expose its aggregate label while omitting the
+        # individual indicators. Never treat those missing fields as zero/neutral:
+        # calculate them from the same ticker's price history instead.
+        missing_indicators = (
+            tv_result["rsi"] is None
+            or tv_result["sma_200"] is None
+            or (tv_result["buy_signals"] + tv_result["sell_signals"] + tv_result["neutral_signals"] == 0)
+        )
+        if not missing_indicators:
+            return tv_result
+        try:
+            import yfinance as yf
+            hist = yf.Ticker(to_yfinance_ticker(ticker)).history(period="1y")
+            if not hist.empty and len(hist) >= 20:
+                calculated = _calculate_indicators_pandas(hist)
+                # Preserve TradingView's aggregate view, but use calculated values
+                # only to fill the fields that TradingView did not publish.
+                for key in ("rsi", "sma_20", "sma_50", "sma_200"):
+                    if tv_result[key] is None:
+                        tv_result[key] = calculated[key]
+                if tv_result["buy_signals"] + tv_result["sell_signals"] + tv_result["neutral_signals"] == 0:
+                    for key in ("buy_signals", "sell_signals", "neutral_signals"):
+                        tv_result[key] = calculated[key]
+                for key in ("macd", "macd_signal", "macd_hist", "atr_14", "ema_20", "ema_50", "bb_upper", "bb_lower"):
+                    tv_result[key] = calculated[key]
+                tv_result["source"] = "TradingView + Algoritmo Cuantitativo (Pandas)"
+                tv_result["data_quality"] = "COMPLETE"
+                return tv_result
+        except Exception as e:
+            logger.debug(f"No se pudo completar técnico desde histórico para {ticker}: {e}")
+
+        # Finviz can sometimes provide RSI when neither TradingView nor the
+        # historical provider returns it. It does not replace SMA/MACD data.
+        try:
+            finviz = fetch_finviz(ticker)
+            if finviz.get("ok") and tv_result["rsi"] is None and finviz.get("rsi") is not None:
+                tv_result["rsi"] = finviz["rsi"]
+                tv_result["source"] = "TradingView + Finviz (RSI)"
+        except Exception:
+            pass
+        tv_result["data_quality"] = "PARTIAL"
+        return tv_result
 
     # 2) tradingview_ta legacy (si está instalado)
     if HAS_TRADINGVIEW_TA:
@@ -210,6 +274,7 @@ def _compute_technical_analysis(ticker: str) -> Dict[str, Any]:
                 rsi_val = round(float(rsi_val), 2)
             return {
                 "source": "TradingView TA Scanner",
+                "data_quality": "COMPLETE",
                 "recommendation": rec,
                 "buy_signals": int(summary.get("BUY", 0)),
                 "sell_signals": int(summary.get("SELL", 0)),
@@ -241,6 +306,7 @@ def _compute_technical_analysis(ticker: str) -> Dict[str, Any]:
     # 4) Datos neutros por defecto
     return {
         "source": "No disponible",
+        "data_quality": "UNAVAILABLE",
         "recommendation": "NEUTRAL",
         "buy_signals": 0,
         "sell_signals": 0,

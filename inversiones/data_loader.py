@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 import logging
 import warnings
+from datetime import datetime
 import pandas as pd
 from config.settings import BASE_DIR
 
@@ -19,6 +20,33 @@ logger = logging.getLogger(__name__)
 POSICIONES_DIR = BASE_DIR / "Posiciones"
 
 
+def get_xtb_report_status(folder_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Describe the latest XTB Excel report without opening or modifying it."""
+    base_folder = Path(folder_path or POSICIONES_DIR)
+    if not base_folder.exists():
+        return {"available": False, "status": "MISSING", "message": "Carpeta de posiciones no encontrada."}
+    reports = sorted(
+        (f for f in base_folder.glob("*.xlsx") if not f.name.startswith("~$")),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+    if not reports:
+        return {"available": False, "status": "MISSING", "message": "No hay un reporte Excel de XTB."}
+    report = reports[0]
+    modified = datetime.fromtimestamp(report.stat().st_mtime).astimezone()
+    age_minutes = max(0, int((datetime.now().astimezone() - modified).total_seconds() // 60))
+    freshness = "CURRENT" if age_minutes <= 60 else "STALE" if age_minutes <= 1440 else "OUTDATED"
+    return {
+        "available": True,
+        "status": freshness,
+        "file_name": report.name,
+        "modified_at": modified.isoformat(),
+        "mtime": report.stat().st_mtime,
+        "age_minutes": age_minutes,
+        "message": "Reporte XTB detectado." if freshness == "CURRENT" else "El reporte XTB no es reciente; exporta uno nuevo desde xStation.",
+    }
+
+
 def parse_us_number(value: str) -> float:
     """Parsea números en formato US (coma para miles y punto para decimal)."""
     if not isinstance(value, str):
@@ -26,9 +54,8 @@ def parse_us_number(value: str) -> float:
     clean = value.strip().replace("US", "").replace("$", "").strip()
     if not clean or clean == "-":
         return 0.0
-    if "," in clean and "." in clean:
-        clean = clean.replace(",", "")
-    elif "," in clean:
+    # Eliminar separador de miles (coma) en cualquier caso
+    if "," in clean:
         clean = clean.replace(",", "")
     try:
         return float(clean)

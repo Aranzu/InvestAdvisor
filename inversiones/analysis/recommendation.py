@@ -37,10 +37,14 @@ def generate_recommendation(
     current_price = market_data.get("current_price", 0.0)
     entry_price = market_data.get("entry_price", 0.0)
     pnl_pct = market_data.get("unrealized_pnl_pct", 0.0)
+    data_coverage_pct = float(scores.get("data_coverage_pct", 100.0) or 0.0)
 
     reasons: List[str] = []
     risks: List[str] = []
     observation_flags: List[str] = []
+
+    if data_coverage_pct < 70:
+        observation_flags.append(f"Cobertura de datos limitada ({data_coverage_pct:.0f}%)")
 
     rsi = tech_data.get("rsi")
     sma_200 = tech_data.get("sma_200")
@@ -132,7 +136,26 @@ def generate_recommendation(
     confidence = 70.0
     risk_level = "MEDIO"
 
-    if global_score <= -25:
+    # Anchored to entry and tightened with price/volatility below. This avoids
+    # moving the protective level down every time the portfolio is refreshed.
+    entry_stop_floor = entry_price * 0.90 if entry_price > 0 else 0.0
+    stop_breached = bool(entry_stop_floor and current_price > 0 and current_price <= entry_stop_floor)
+
+    if stop_breached:
+        action = "VENDER"
+        action_type = "STOP_LOSS"
+        confidence = 88.0
+        risk_level = "ALTO"
+        summary_verdict = f"El precio actual cruzó el stop de protección anclado a la entrada (${entry_stop_floor:.2f}). Reducir riesgo y reevaluar la tesis."
+
+    elif data_coverage_pct < 55:
+        action = "OBSERVACION"
+        action_type = "DATOS_INSUFICIENTES"
+        confidence = 45.0
+        risk_level = "MEDIO"
+        summary_verdict = "La cobertura de datos es insuficiente para una recomendación concluyente. Actualizar fuentes antes de aumentar o vender."
+
+    elif global_score <= -25:
         action = "VENDER"
         action_type = "VENDER_URGENTE"
         confidence = min(95.0, 60.0 + abs(global_score) * 0.4)
@@ -153,11 +176,11 @@ def generate_recommendation(
             risk_level = "ALTO"
             summary_verdict = f"La posición acumula una pérdida de {pnl_pct}% y no se observan catalizadores inmediatos de recuperación. Cortar pérdidas para reasignar capital a oportunidades más sólidas."
         else:
-            action = "VENDER"
-            action_type = "VENDER"
-            confidence = 72.0
+            action = "OBSERVACION"
+            action_type = "MONITOREAR"
+            confidence = 68.0
             risk_level = "MEDIO"
-            summary_verdict = "El balance de riesgos supera al potencial de subida en el corto/mediano plazo. Se sugiere cerrar o reducir la posición."
+            summary_verdict = "El balance de riesgos se deterioró frente al potencial de subida. Esperar confirmación adicional antes de una venta total y monitorear la posición de cerca."
 
     elif global_score >= 35:
         # Aunque el score es fuerte, si hay flags de OBSERVACION, monitorear
@@ -202,10 +225,13 @@ def generate_recommendation(
 
     if current_price > 0:
         bb_lower = tech_data.get("bb_lower")
-        if bb_lower and bb_lower < current_price and (current_price - bb_lower) / current_price <= 0.14:
-            stop_loss = round(bb_lower, 2)
-        else:
-            stop_loss = round(current_price * 0.90, 2)
+        atr_14 = tech_data.get("atr_14")
+        candidates = [entry_stop_floor, current_price * 0.85]
+        if atr_14 and atr_14 > 0:
+            candidates.append(current_price - (2 * atr_14))
+        if bb_lower and bb_lower < current_price:
+            candidates.append(bb_lower)
+        stop_loss = round(max(value for value in candidates if value > 0), 2)
 
         if target_mean and target_mean > current_price:
             target_price = round(target_mean, 2)
@@ -225,6 +251,7 @@ def generate_recommendation(
                 action_type = "MONITOREAR"
                 summary_verdict = f"⚠️ Posición cerca del stop-loss ({distance_to_sl:.1f}%): {' | '.join(observation_flags)}"
 
+    confidence = min(confidence, max(35.0, 40.0 + data_coverage_pct * 0.55))
     confidence_10 = int(round(max(1.0, min(10.0, confidence / 10.0))))
 
     tech_bullish = tech_score > 15
@@ -325,4 +352,5 @@ def generate_recommendation(
         "take_profit_pct": take_profit_pct,
         "current_price": current_price,
         "pnl_pct": pnl_pct,
+        "data_coverage_pct": round(data_coverage_pct, 1),
     }

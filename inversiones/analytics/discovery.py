@@ -40,14 +40,11 @@ PRESETS_FILE = BASE_DIR / "config" / "screener_presets.json"
 SAVED_SEARCHES_FILE = BASE_DIR / "config" / "saved_searches.json"
 
 
-# ────────────────────────── Mapeo UI → Finviz ────────────────────────── #
-
-# Nota: Finviz renovó su taxonomía de códigos. Verificado empíricamente (feb 2026):
-#   - cap_mega reemplaza al antiguo cap_megaover
-#   - Los grupos fa_profit_*, fa_sales_qoq_*, fa_eps_qoq_*, fa_debtratio_* y ta_rsi_*
-#     ya NO se aplican (son ignorados silenciosamente → universo completo).
-#     Los que sí responden: pe (u*/o*), peg (u1/u2/o2), roe (*), fa_epsyoy_pos,
-#     fa_sales5years_pos, ta_perf_4w*, sec_*, ind_*, sh_price_*, fa_div_*.
+# Nota: Finviz soporta filtros de Descriptive, Fundamental y Technical usando códigos como:
+#   - cap_mega, cap_large, sec_*, ind_*, sh_price_*, fa_div_*
+#   - fa_pe_*, fa_fpe_*, fa_peg_*, fa_pfcf_*, fa_roe_*, fa_netmargin_*, fa_debteq_*
+#   - fa_sales5years_*, fa_salesqoq_*, fa_epsyoy_*, fa_epsqoq_*
+#   - ta_rsi_*, ta_perf_4w*, ta_sma200_*, targetprice_*, an_recom_*, sh_avgvol_*
 MARKET_CAP_MAP = {
     "mega": "cap_mega",
     "large": "cap_large",
@@ -167,11 +164,31 @@ PE_RANGE_MAP = {
     "o50": "fa_pe_o50",
 }
 
+FORWARD_PE_MAP = {
+    "any": None,
+    "u10": "fa_fpe_u10",
+    "u15": "fa_fpe_u15",
+    "u20": "fa_fpe_u20",
+    "u25": "fa_fpe_u25",
+    "u30": "fa_fpe_u30",
+    "o30": "fa_fpe_o30",
+}
+
 PEG_MAP = {
     "any": None,
     "u1": "fa_peg_u1",
     "u2": "fa_peg_u2",
     "o2": "fa_peg_o2",
+}
+
+PFCF_MAP = {
+    "any": None,
+    "low": "fa_pfcf_low",
+    "u5": "fa_pfcf_u5",
+    "u10": "fa_pfcf_u10",
+    "u15": "fa_pfcf_u15",
+    "u20": "fa_pfcf_u20",
+    "u30": "fa_pfcf_u30",
 }
 
 PRICE_RANGE_MAP = {
@@ -198,21 +215,38 @@ DIVIDEND_YIELD_MAP = {
     "o10": "fa_div_o10",
 }
 
-# El grupo fa_sales_qoq_* (Revenue Growth QoQ) fue removido por Finviz.
-# "pos" usa ahora Sales Growth 5Y (proxy de crecimiento de ingresos).
 REVENUE_GROWTH_MAP = {
     "any": None,
     "pos": "fa_sales5years_pos",
+    "5y_pos": "fa_sales5years_pos",
+    "5y_o10": "fa_sales5years_o10",
+    "5y_o20": "fa_sales5years_o20",
+    "qoq_pos": "fa_salesqoq_pos",
+    "qoq_high": "fa_salesqoq_high",
+    "qoq_o10": "fa_salesqoq_o10",
+    "qoq_o20": "fa_salesqoq_o20",
 }
 
-# El grupo fa_eps_qoq_* fue removido; "pos" usa EPS Growth YoY.
 EARNINGS_GROWTH_MAP = {
     "any": None,
     "pos": "fa_epsyoy_pos",
+    "yoy_pos": "fa_epsyoy_pos",
+    "yoy_o10": "fa_epsyoy_o10",
+    "yoy_o25": "fa_epsyoy_o25",
+    "qoq_pos": "fa_epsqoq_pos",
+    "qoq_high": "fa_epsqoq_high",
+    "next5y_pos": "fa_epsnext5years_pos",
+    "next5y_high": "fa_epsnext5years_high",
 }
 
-# Profit Margin (fa_profit_*) ya no es soportado por Finviz → sin mapeo.
-PROFIT_MARGIN_MAP = {}
+PROFIT_MARGIN_MAP = {
+    "any": None,
+    "pos": "fa_netmargin_pos",
+    "high": "fa_netmargin_high",
+    "o10": "fa_netmargin_o10",
+    "o20": "fa_netmargin_o20",
+    "o30": "fa_netmargin_o30",
+}
 
 ROE_MAP = {
     "any": None,
@@ -226,11 +260,23 @@ ROE_MAP = {
     "o30": "fa_roe_o30",
 }
 
-# Debt/Equity (fa_debtratio_*) ya no es soportado por Finviz → sin mapeo.
-DEBT_TO_EQUITY_MAP = {}
+DEBT_TO_EQUITY_MAP = {
+    "any": None,
+    "low": "fa_debteq_low",
+    "u0.5": "fa_debteq_u0.5",
+    "u1": "fa_debteq_u1",
+    "high": "fa_debteq_high",
+}
 
-# RSI (ta_rsi_*) ya no es soportado por Finviz → sin mapeo.
-RSI_MAP = {}
+RSI_MAP = {
+    "any": None,
+    "os30": "ta_rsi_os30",
+    "os40": "ta_rsi_os40",
+    "ob70": "ta_rsi_ob70",
+    "ob80": "ta_rsi_ob80",
+    "nos50": "ta_rsi_nos50",
+    "nob50": "ta_rsi_nob50",
+}
 
 PERFORMANCE_4W_MAP = {
     "any": None,
@@ -241,6 +287,35 @@ PERFORMANCE_4W_MAP = {
     "down": "ta_perf_4wdown",
     "down10": "ta_perf_4wdown10",
     "down20": "ta_perf_4wdown20",
+}
+
+TARGET_PRICE_MAP = {
+    "any": None,
+    "above": "targetprice_above",
+    "a10": "targetprice_a10",
+    "a20": "targetprice_a20",
+    "a30": "targetprice_a30",
+    "a50": "targetprice_a50",
+}
+
+ANALYST_RECOM_MAP = {
+    "any": None,
+    "strongbuy": "an_recom_strongbuy",
+    "buybetter": "an_recom_buybetter",
+    "holdbetter": "an_recom_holdbetter",
+}
+
+SMA200_MAP = {
+    "any": None,
+    "pa": "ta_sma200_pa",
+    "pb": "ta_sma200_pb",
+}
+
+AVG_VOLUME_MAP = {
+    "any": None,
+    "o100": "sh_avgvol_o100",
+    "o500": "sh_avgvol_o500",
+    "o1000": "sh_avgvol_o1000",
 }
 
 
@@ -293,9 +368,17 @@ def build_finviz_filters(filters: Dict[str, Any]) -> Dict[str, str]:
     if pe:
         out[pe] = ""
 
+    fpe = _map_value(filters.get("forward_pe_max"), FORWARD_PE_MAP)
+    if fpe:
+        out[fpe] = ""
+
     peg = _map_value(filters.get("peg_max"), PEG_MAP)
     if peg:
         out[peg] = ""
+
+    pfcf = _map_value(filters.get("pfcf_max"), PFCF_MAP)
+    if pfcf:
+        out[pfcf] = ""
 
     price = _map_value(filters.get("price_max"), PRICE_RANGE_MAP)
     if price:
@@ -313,7 +396,7 @@ def build_finviz_filters(filters: Dict[str, Any]) -> Dict[str, str]:
     if eps:
         out[eps] = ""
 
-    pm = _map_value(filters.get("profit_margin_min"), PROFIT_MARGIN_MAP)
+    pm = _map_value(filters.get("profit_margin_min") or filters.get("net_margin_min"), PROFIT_MARGIN_MAP)
     if pm:
         out[pm] = ""
 
@@ -332,6 +415,22 @@ def build_finviz_filters(filters: Dict[str, Any]) -> Dict[str, str]:
     perf = _map_value(filters.get("performance_4w"), PERFORMANCE_4W_MAP)
     if perf:
         out[perf] = ""
+
+    tp = _map_value(filters.get("target_price"), TARGET_PRICE_MAP)
+    if tp:
+        out[tp] = ""
+
+    recom = _map_value(filters.get("analyst_recom"), ANALYST_RECOM_MAP)
+    if recom:
+        out[recom] = ""
+
+    sma200 = _map_value(filters.get("sma200"), SMA200_MAP)
+    if sma200:
+        out[sma200] = ""
+
+    vol = _map_value(filters.get("avg_volume_min"), AVG_VOLUME_MAP)
+    if vol:
+        out[vol] = ""
 
     return out
 
@@ -465,11 +564,12 @@ def search_opportunities(
     results: List[Dict[str, Any]] = []
     sector_mismatches = 0
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        _MAX_EVALUATE = 80  # límite para no saturar yfinance/TradingView
         future_to_row = {
             executor.submit(
                 _analyze_finviz_row, row, top_n=top_n, min_score=min_score
             ): row
-            for row in raw_rows[:80]
+            for row in raw_rows[:_MAX_EVALUATE]
         }
         for future in as_completed(future_to_row):
             try:
@@ -491,10 +591,12 @@ def search_opportunities(
                         logger.debug(f"Discovery: descartando {ticker} — sector '{actual_sector}' no match")
                         continue
 
-                # Post-filtro por industria
-                if industry_keywords and actual_sector:
-                    if not _matches_category(actual_sector, industry_keywords):
+                # Post-filtro por industria (usar actual_industry, NO actual_sector)
+                actual_industry = (res.get("industry") or "").lower()
+                if industry_keywords and actual_industry:
+                    if not _matches_category(actual_industry, industry_keywords):
                         sector_mismatches += 1
+                        logger.debug(f"Discovery: descartando {ticker} — industry '{actual_industry}' no match")
                         continue
 
                 results.append(res)
@@ -543,6 +645,7 @@ def search_opportunities(
         "finviz_query": finviz_str,
         "candidates_discovered": len(raw_rows),
         "candidates_evaluated": len(results),
+        "evaluation_cap": 80,
         "results": results,
         "scan_time_seconds": round(time.time() - started, 2),
     }
@@ -573,6 +676,7 @@ def _analyze_finviz_row(row: Dict[str, Any], top_n: int = 20, min_score: int = 5
             "market_cap_str": row.get("market cap", ""),
             "pe_str": row.get("p/e", ""),
             "peg_str": row.get("peg", ""),
+            "target_price_str": row.get("target_price", ""),
             "country": row.get("country", ""),
             "industry": row.get("industry", ""),
             "price_str": row.get("price", ""),
@@ -602,6 +706,19 @@ def _build_raw_finviz_result(row: Dict[str, Any], evaluated: bool = False) -> Di
     except (ValueError, TypeError):
         pass
 
+    # Parse target price
+    target_price_str = row.get("target_price", "")
+    analyst_target = None
+    try:
+        if target_price_str and target_price_str != "-":
+            analyst_target = float(target_price_str.replace("$", "").replace(",", "").strip())
+    except (ValueError, TypeError):
+        pass
+
+    upside_pct = None
+    if current_price and analyst_target and current_price > 0:
+        upside_pct = round(((analyst_target - current_price) / current_price) * 100, 2)
+
     # Parse P/E
     pe_str = row.get("p/e", "")
     pe = None
@@ -628,16 +745,16 @@ def _build_raw_finviz_result(row: Dict[str, Any], evaluated: bool = False) -> Di
         "debt_to_equity": None,
         "dividend_yield_pct": None,
         "analyst_consensus": None,
-        "analyst_target": None,
-        "upside_pct": None,
+        "analyst_target": analyst_target,
+        "upside_pct": upside_pct,
         # Score dummy basado en P/E si está disponible
         "opportunity_score": _finviz_quick_score(pe, row),
         "entry_type": "Solo Finviz",
         "suggested_entry": current_price,
         "suggested_stop_loss": round(current_price * 0.90, 2) if current_price else None,
         "stop_loss_pct": -10.0,
-        "suggested_take_profit": round(current_price * 1.20, 2) if current_price else None,
-        "take_profit_pct": 20.0,
+        "suggested_take_profit": analyst_target or (round(current_price * 1.20, 2) if current_price else None),
+        "take_profit_pct": upside_pct if upside_pct is not None else 20.0,
         "confidence_10": 5,
         "entry_rationale": f"Solo Finviz (yfinance sin datos). {sector}. P/E: {pe_str or '-'}",
         "score_breakdown": {"finviz_only": True},
@@ -656,7 +773,7 @@ def _build_raw_finviz_result(row: Dict[str, Any], evaluated: bool = False) -> Di
 
 
 def _finviz_quick_score(pe, row) -> int:
-    """Score aproximado basado solo en métricas de Finviz (sin yfinance)."""
+    """Score aproximado basado en métricas de Finviz (sin yfinance)."""
     score = 50
     try:
         if pe and pe > 0:
@@ -667,5 +784,26 @@ def _finviz_quick_score(pe, row) -> int:
             elif pe > 50:
                 score -= 20
     except Exception:
+        pass
+    # Incorporar EPS growth y Sales growth si disponibles en la fila Finviz
+    try:
+        eps_str = row.get("eps_this_y", "") or ""
+        if eps_str and eps_str not in ("-", ""):
+            eps_pct = float(eps_str.strip("%").replace(",", ""))
+            if eps_pct > 15:
+                score += 8
+            elif eps_pct < 0:
+                score -= 8
+    except (ValueError, TypeError, AttributeError):
+        pass
+    try:
+        sales_str = row.get("sales_past_5y", "") or ""
+        if sales_str and sales_str not in ("-", ""):
+            sales_pct = float(sales_str.strip("%").replace(",", ""))
+            if sales_pct > 10:
+                score += 5
+            elif sales_pct < 0:
+                score -= 5
+    except (ValueError, TypeError, AttributeError):
         pass
     return max(20, min(85, score))

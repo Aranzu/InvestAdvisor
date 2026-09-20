@@ -26,7 +26,7 @@ from portfolio_analyzer import (
     analyze_portfolio,
     analyze_single_position,
 )
-from analysis.llm_explainer import generate_ai_analysis, generate_discovery_ai_analysis
+from analysis.llm_explainer import generate_ai_analysis, generate_discovery_ai_analysis, get_deepseek_usage_summary
 from analytics.monthly_analytics import get_monthly_performance_report
 from analytics.opportunities import (
     scan_opportunities,
@@ -45,20 +45,19 @@ from analytics.discovery import (
 )
 from analytics.dividends import get_dividend_schedule_for_positions
 from analytics.portfolio_history import (
-    get_portfolio_history,
     get_all_positions_history,
     get_allocation_by_sector,
-    get_daily_change,
-    get_monthly_change,
 )
+from analytics.portfolio_news import get_portfolio_news
 from data_fetchers.web_sources import (
     search_hints_for_ticker,
     aggregate_for_ticker,
     cache_clear as clear_web_cache,
     list_supported_sources,
 )
-from data_loader import get_cash_balance_from_excel
+from data_loader import get_cash_balance_from_excel, get_xtb_report_status
 from data_fetchers.fx import get_usdclp_rate
+from data_fetchers.technical import clear_technical_cache
 from analytics.wealth import get_consolidated_wealth, get_buying_power, compute_purchase_plan
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -92,10 +91,14 @@ def add_no_cache_headers(response):
     response.headers["Expires"] = "0"
     return response
 
+import threading
+
 logger = logging.getLogger(__name__)
 
 _cached_portfolio_report = None
 _cached_monthly_report = None
+_portfolio_lock = threading.Lock()
+_monthly_lock = threading.Lock()
 
 _TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.=-]{0,14}$")
 
@@ -182,9 +185,11 @@ def get_monthly_analytics():
     """Analítica mensual de XTB."""
     global _cached_monthly_report
     force = request.args.get("refresh", "false").lower() == "true"
-    if _cached_monthly_report is None or force:
-        _cached_monthly_report = get_monthly_performance_report()
-    return jsonify(_cached_monthly_report)
+    with _monthly_lock:
+        if _cached_monthly_report is None or force:
+            _cached_monthly_report = get_monthly_performance_report()
+        report = _cached_monthly_report
+    return jsonify(report)
 
 
 @app.route("/api/portfolio", methods=["GET"])
@@ -195,10 +200,45 @@ def get_current_portfolio():
     force = request.args.get("refresh", "false").lower() == "true"
     if force:
         clear_web_cache()
-    if _cached_portfolio_report is None or force:
-        positions = load_positions()
-        _cached_portfolio_report = analyze_portfolio(positions)
-    return jsonify(_cached_portfolio_report)
+        clear_technical_cache()
+    with _portfolio_lock:
+        if _cached_portfolio_report is None or force:
+            positions = load_positions()
+            _cached_portfolio_report = analyze_portfolio(positions)
+        report = _cached_portfolio_report
+    return jsonify({**report, "xtb_report": get_xtb_report_status()})
+
+
+@app.route("/api/portfolio/sync-status", methods=["GET"])
+def get_portfolio_sync_status():
+    """Return freshness metadata for the newest manually exported XTB report."""
+    return jsonify(get_xtb_report_status())
+
+
+@app.route("/api/ai/usage", methods=["GET"])
+def get_ai_usage():
+    """Local DeepSeek token/cost telemetry. Contains no prompts, outputs, or credentials."""
+    return jsonify_clean(get_deepseek_usage_summary())
+
+
+@app.route("/api/portfolio/news", methods=["GET"])
+def get_portfolio_news_endpoint():
+    """Recent headlines linked to the current holdings, loaded on demand."""
+    return jsonify_clean(get_portfolio_news(load_positions()))
+
+
+@app.route("/api/portfolio/sync", methods=["POST"])
+def sync_portfolio_from_xtb_report():
+    """Reload the newest XTB Excel report; no credentials or broker automation involved."""
+    global _cached_portfolio_report, _cached_monthly_report
+    status = get_xtb_report_status()
+    if not status.get("available"):
+        return jsonify({"error": status.get("message", "Reporte XTB no disponible")}), 404
+    clear_web_cache()
+    clear_technical_cache()
+    _cached_portfolio_report = analyze_portfolio(load_positions())
+    _cached_monthly_report = None
+    return jsonify({"success": True, "xtb_report": status, "portfolio": _cached_portfolio_report})
 
 
 @app.route("/api/portfolio/<ticker>/ai-analysis", methods=["GET"])
@@ -263,22 +303,13 @@ def add_position():
 def delete_position(ticker):
     global _cached_portfolio_report
     ticker_clean = ticker.strip().upper()
+    if not _valid_ticker(ticker_clean):
+        return jsonify({"error": "ticker con formato invalido"}), 400
     positions = load_positions()
     new_positions = [p for p in positions if p.get("ticker", "").upper() != ticker_clean]
     save_portfolio_to_file(new_positions)
     _cached_portfolio_report = None
     return jsonify({"success": True, "positions": new_positions})
-
-
-@app.route("/api/portfolio/history", methods=["GET"])
-def get_portfolio_history_endpoint():
-    """Histórico agregado del portafolio para sparkline."""
-    positions = load_positions()
-    days = _bounded_int(request.args.get("days"), default=30, minimum=1, maximum=3650)
-    result = get_portfolio_history(positions, days=days)
-    result["daily_change"] = get_daily_change(positions)
-    result["monthly_change"] = get_monthly_change(positions)
-    return jsonify(_sanitize_json(result))
 
 
 @app.route("/api/portfolio/positions-history", methods=["GET"])
@@ -387,7 +418,9 @@ def get_discovery_ai_analysis():
 
 @app.route("/api/opportunities/discover", methods=["GET"])
 def get_finviz_screener():
-    """Screener bulk de Finviz (modo legacy, devuelve filas crudas sin scoring)."""
+    """[DEPRECATED] Screener bulk de Finviz — usar /api/opportunities/search en su lugar."""
+    import warnings
+    warnings.warn("/api/opportunities/discover está deprecado; usar /api/opportunities/search", DeprecationWarning, stacklevel=2)
     sec = request.args.get("sec", "technology")
     sh_price = request.args.get("sh_price", "5to20")
     top_n = _bounded_int(request.args.get("top_n"), default=20, minimum=1, maximum=100)
@@ -498,8 +531,11 @@ def add_favorite():
 
 @app.route("/api/opportunities/favorites/<ticker>", methods=["DELETE"])
 def del_favorite(ticker):
+    ticker_clean = ticker.strip().upper()
+    if not _valid_ticker(ticker_clean):
+        return jsonify({"error": "ticker con formato invalido"}), 400
     items = load_candidates_watchlist()
-    new_items = [c for c in items if c["ticker"].upper() != ticker.strip().upper()]
+    new_items = [c for c in items if c["ticker"].upper() != ticker_clean]
     save_candidates_watchlist(new_items)
     return jsonify({"success": True, "favorites": new_items})
 

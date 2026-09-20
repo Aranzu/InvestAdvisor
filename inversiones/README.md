@@ -23,6 +23,13 @@ Sistema cuantitativo de inversiones enfocado 100% en la cuenta **XTB** (USD). An
 
 - **Google News RSS** → titulares y sentimiento financiero (para contexto en análisis)
 
+### 🤖 IA opcional
+
+- La IA se usa solo como segunda opinión explicativa; no ejecuta órdenes ni modifica el score cuantitativo.
+- Para DeepSeek, configura `LLM_PROVIDER=deepseek` y una clave nueva en `.env`; usa [`.env.example`](.env.example) como plantilla y nunca subas claves al repositorio.
+- Portafolio usa `deepseek-v4-pro` con razonamiento `high`; Discovery usa `deepseek-flash` con razonamiento `low` para contener costo y latencia.
+- DeepSeek aplica caché de prefijo automáticamente. El proyecto mantiene instrucciones estables al inicio del prompt y registra únicamente uso agregado en `data/deepseek_usage.jsonl` (ignorado por Git). Consulta `GET /api/ai/usage` para ver tokens/costo estimado local.
+
 ---
 
 ## 🚀 Dashboard Web
@@ -41,7 +48,15 @@ Abre en: **`http://127.0.0.1:5000`**
 - NVDA, META, GOOGL, AVGO, AMD, AMZN, CRM, CEG, MELI, MUX, NEE, SNDK, SPCX, UBER.
 - Métricas: precio actual, % día, % retorno vs compra.
 - **Recomendación MANTENER/VENDER** + Stop-Loss (precio y %) + Take-Profit + Confianza (1-10) + fundamento.
+- Columna **Datos**: cobertura de señales y fuentes que respalda cada recomendación; con cobertura insuficiente el motor baja confianza y pasa a observación.
 - Filtros: Todas / Solo XTB / A Vender / A Mantener.
+- Análisis IA bajo demanda por posición: segunda opinión explicativa que no cambia la recomendación cuantitativa ni ejecuta operaciones.
+- Botón Sincronizar XTB: recarga el último Excel exportado y muestra su antigüedad.
+
+### Noticias del Portafolio
+- Pestaña cargada bajo demanda con titulares relacionados con todas las posiciones.
+- Agrupa ticker, fuente, fecha y sentimiento positivo/neutral/negativo.
+- Usa Yahoo Finance y Google News RSS. Los titulares son informativos y no cambian recomendaciones automáticamente.
 
 ### 3. 🎯 Potenciales Compras (Scanner 40+ Candidatos Value/Growth)
 - **Score de Oportunidad (0-100)** combinando:
@@ -51,6 +66,8 @@ Abre en: **`http://127.0.0.1:5000`**
   - **Calidad** (20 pts): márgenes > 10%, ROE > 12%, deuda/patrimonio < 100
 - Botón **"Escanear Oportunidades Ahora"** fuerza fetch en vivo desde las 4 fuentes.
 - Entrada sugerida, stop-loss (-10%), take-profit (+25% o target analistas).
+- Análisis IA categórico por candidato: `COMPRAR PRIORITARIAMENTE`, `COMPRAR EN PULLBACK`, `ESPERAR CONFIRMACIÓN`, `MANTENER EN WATCHLIST` o `EVITAR / DESCARTAR`.
+- El análisis IA no modifica el score ni el ranking.
 
 ### 4. 💰 Calendario de Dividendos XTB (Yahoo Finance)
 - Fecha Ex-Dividendo (corte) y Fecha de Pago (confirmada o estimada).
@@ -58,10 +75,30 @@ Abre en: **`http://127.0.0.1:5000`**
 - Datos históricos de `tk.dividends` + calendar oficial de yfinance.
 - Filtros: Todas / XTB / Solo Pagadores.
 
-### 5. 🔍 Descubrimiento Masivo (Finviz Screener)
-- Endpoint `GET /api/opportunities/discover?sec=technology&sh_price=5to20&top_n=20`.
-- Devuelve filas crudas del screener Finviz para encontrar candidatos nuevos
-  no incluidos en la watchlist.
+### 5. 🛰️ Discovery: Búsqueda Dinámica de Oportunidades (Finviz Screener en Vivo)
+- Sin listas fijas: escanea el universo completo del mercado en tiempo real combinando Finviz con evaluación profunda multifuente (yfinance + TradingView + MarketScreener).
+- **19 filtros configurables y sincronizados**:
+  - **Valuación**: P/E, Forward P/E, PEG, Price/Free Cash Flow (P/FCF).
+  - **Calidad & Balance**: Deuda/Equity, Margen Neto, ROE, Yield dividendo.
+  - **Crecimiento**: Revenue Growth (5Y y QoQ), EPS Growth (YoY, QoQ y proyección 5Y).
+  - **Técnico & Timing**: RSI (14), Tendencia sobre media móvil SMA200, Rendimiento a 4 semanas.
+  - **Consenso Wall Street**: Upside a Target Price (>10%, >20%, >30%, >50%), Calificación de consenso de analistas (Buy o mejor / Strong Buy).
+  - **Universo & Liquidez**: Sector, Market Cap, Rango de precio nominal, Volumen promedio (>100K, >500K, >1M).
+- **12 Presets Curados de Alta Convicción** (blindados contra trampas de valor y quiebra):
+  1. 🎯 *Sweet Spot*: P/E<20 + EPS Growth + ROE>10% + Deuda controlada + Margen positivo.
+  2. 💻 *Tech Subvaluado*: Mid/Large Tech + P/E<25 + Revenue Growth + Sobre SMA200.
+  3. 🤖 *IA / Semis Mid-Cap*: Semis/Cloud/IT + Growth + Volumen >100K.
+  4. 🚀 *Small Caps Calidad*: Small/Micro + Crecimiento real + Sin deuda tóxica.
+  5. 💰 *Value + Dividendo Seguro*: Yield>3% + P/E<20 + ROE>10% + Deuda<1.
+  6. ⚡ *Deep Value Real*: P/E<10 + EPS Growth + Deuda<0.5 + Margen positivo.
+  7. 💸 *Baratas con Momentum*: $10–$50 + 4W Up + EPS Growth + Sobre SMA200.
+  8. 🌊 *Dip-Buying en Calidad*: Empresas excelentes (ROE>15%, Deuda<1) con RSI sobrevendido (<40).
+  9. 💎 *Reyes de Caja Libre (FCF)*: P/FCF < 15 + Margen Neto alto + Balance sólido.
+  10. 🚀 *GARP Peter Lynch*: PEG < 1 + Forward P/E < 25 + Crecimiento.
+  11. 🎯 *Consenso Wall Street*: Calificación Buy + Upside a Target Price > 20%.
+  12. 📈 *Momentum con Fundamentos*: Sobre SMA200 + Aceleración EPS QoQ + Rendimiento 4W al alza.
+- Sistema de **Búsquedas Guardadas (CRUD)** para persistir criterios personalizados.
+- Análisis IA explicativo bajo demanda por candidato (`COMPRAR PRIORITARIAMENTE`, `PULLBACK`, `ESPERAR`, etc.) sin alterar el score cuantitativo.
 
 ---
 
@@ -88,6 +125,9 @@ python main.py --dividendos --markdown
 # Dashboard web
 python main.py --web
 
+# Análisis IA complementario bajo demanda en consola
+python main.py --ai
+
 # Exportar reporte
 python main.py --markdown --export reporte.txt
 ```
@@ -102,6 +142,8 @@ C:\repo\inversiones\
 │   └── xtb*.xlsx                       # Exportación XTB
 ├── config\
 │   ├── candidates.json                  # 40+ candidatos value/growth
+│   ├── screener_presets.json            # 12 presets curados de Finviz Discovery
+│   ├── saved_searches.json              # Búsquedas guardadas por el usuario
 │   ├── default_portfolio.json           # Snapshot XTB (CRUD web)
 │   └── settings.py
 ├── data_fetchers\
@@ -117,7 +159,9 @@ C:\repo\inversiones\
 │   └── llm_explainer.py                 # Memo cualitativo (opcional, con LLM)
 ├── analytics\
 │   ├── monthly_analytics.py             # P&L mensual XTB
-│   ├── opportunities.py                 # ⭐ Scanner value/growth + discover Finviz
+│   ├── opportunities.py                 # Scanner value/growth (watchlist estática)
+│   ├── discovery.py                     # Motor Discovery dinámico (19 filtros + 12 presets)
+│   ├── portfolio_news.py                # Noticias agregadas del portafolio
 │   └── dividends.py                     # Calendario dividendos (Yahoo Finance)
 ├── web\
 │   ├── app.py                           # Flask + API REST
@@ -127,6 +171,10 @@ C:\repo\inversiones\
 ├── main.py                              # Entry point
 └── tests\                               # 31 tests unitarios
 ```
+
+### Sincronización XTB
+
+XTB no ofrece actualmente una API pública para conectar la cuenta directamente. El proyecto utiliza el último informe `.xlsx` exportado desde xStation en `Posiciones/`. El dashboard detecta cambios del archivo, muestra su antigüedad y permite recargarlo con **Sincronizar XTB**. Los precios de mercado se actualizan mediante Yahoo Finance; posiciones y cash provienen del informe XTB.
 
 ### Flujo de Datos (por posición)
 
@@ -179,7 +227,7 @@ Score final = suma de los 4 componentes (rango 10-99).
 python -m unittest discover tests -v
 ```
 
-**31 tests** cubren:
+Las pruebas unitarias y de regresión cubren:
 - `web_sources` (TradingView, MarketScreener, Finviz, Macrotrends — Investing/Bloomberg removidos)
 - Pipeline yfinance (mercado, técnico, fundamental, scoring, recomendación)
 - Scanner value/growth + screener Finviz

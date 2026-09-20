@@ -29,9 +29,12 @@ Cada fetch se cachea 30 min en memoria por ticker+fuente.
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+_logger = logging.getLogger(__name__)
 
 try:
     import requests
@@ -42,14 +45,16 @@ except ImportError:
 from bs4 import BeautifulSoup
 
 from config.settings import DEFAULT_HEADERS
-
+import threading
 
 CACHE: Dict[str, Tuple[float, Any]] = {}
 CACHE_TTL_SECONDS = 60 * 30
+_CACHE_LOCK = threading.RLock()
 
 
 def cache_clear() -> None:
-    CACHE.clear()
+    with _CACHE_LOCK:
+        CACHE.clear()
 
 
 def _cache_key(prefix: str, ticker: str) -> str:
@@ -57,18 +62,20 @@ def _cache_key(prefix: str, ticker: str) -> str:
 
 
 def _cache_get(key: str) -> Optional[Any]:
-    entry = CACHE.get(key)
-    if not entry:
-        return None
-    ts, value = entry
-    if (time.time() - ts) > CACHE_TTL_SECONDS:
-        CACHE.pop(key, None)
-        return None
-    return value
+    with _CACHE_LOCK:
+        entry = CACHE.get(key)
+        if not entry:
+            return None
+        ts, value = entry
+        if (time.time() - ts) > CACHE_TTL_SECONDS:
+            CACHE.pop(key, None)
+            return None
+        return value
 
 
 def _cache_set(key: str, value: Any) -> None:
-    CACHE[key] = (time.time(), value)
+    with _CACHE_LOCK:
+        CACHE[key] = (time.time(), value)
 
 
 def normalize_ticker_input(ticker: str) -> str:
@@ -169,8 +176,9 @@ def _safe_get(url: str, timeout: int = 10) -> Optional[str]:
         res = requests.get(url, headers=DEFAULT_HEADERS, timeout=timeout)
         if res.status_code == 200:
             return res.text
-    except Exception:
-        return None
+        _logger.debug(f"HTTP {res.status_code} para {url}")
+    except Exception as e:
+        _logger.debug(f"Error HTTP para {url}: {type(e).__name__}: {e}")
     return None
 
 
@@ -208,14 +216,11 @@ def parse_tradingview_technicals(html: str) -> Dict[str, Any]:
     }
     lower = text.lower()
 
-    if "strong buy" in lower:
-        out["recommendation"] = "STRONG_BUY"
-    elif "strong sell" in lower:
-        out["recommendation"] = "STRONG_SELL"
-    elif re.search(r"\bbuy\b", lower):
-        out["recommendation"] = "BUY"
-    elif re.search(r"\bsell\b", lower):
-        out["recommendation"] = "SELL"
+    # NOTE: do NOT infer the rating from keywords like "strong buy"/"strong sell".
+    # The TradingView page always contains those words in its legend and SEO FAQ,
+    # which made every ticker look like a STRONG_BUY. The aggregate rating is now
+    # obtained from the scanner API in fetch_tradingview(); this parser is only a
+    # best-effort fallback and stays NEUTRAL unless real numeric data is found.
 
     counts = re.search(
         r"sell\s*[:\-]?\s*([0-9]+).*?neutral\s*[:\-]?\s*([0-9]+).*?buy\s*[:\-]?\s*([0-9]+)",
@@ -520,6 +525,7 @@ def parse_finviz_screener(html: str, view: str = "152") -> List[Dict[str, Any]]:
             "roe": _g("roe"),
             "rsi": _g("rsi"),
             "beta": _g("beta"),
+            "target_price": _g("target price"),
         })
     return out
 
@@ -555,6 +561,108 @@ def parse_macrotrends_revenue(html: str) -> Dict[str, Any]:
 
 # ============================ RESOLVERS ================================= #
 
+# TradingView's scanner API returns the real aggregate technical rating.
+# `Recommend.All` is a score in [-1, 1]; the page HTML only exposes the legend,
+# so scraping it produced a false STRONG_BUY for every ticker.
+TRADINGVIEW_SCANNER_URL = "https://scanner.tradingview.com/{screener}/scan"
+TRADINGVIEW_SCANNER_COLUMNS = [
+    "Recommend.All",
+    "Recommend.Other",
+    "Recommend.MA",
+    "RSI",
+    "close",
+    "change",
+    "SMA20",
+    "SMA50",
+    "SMA200",
+]
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _recommendation_from_score(score: Any) -> str:
+    """Mapea el score agregado de TradingView ([-1, 1]) a su etiqueta."""
+    value = _to_float(score)
+    if value is None:
+        return "NEUTRAL"
+    if value >= 0.5:
+        return "STRONG_BUY"
+    if value >= 0.1:
+        return "BUY"
+    if value <= -0.5:
+        return "STRONG_SELL"
+    if value <= -0.1:
+        return "SELL"
+    return "NEUTRAL"
+
+
+def _extract_tradingview_symbol(html: str) -> Optional[str]:
+    """Extrae el símbolo con exchange (ej. NASDAQ:AAPL) del HTML de la página."""
+    if not html:
+        return None
+    match = re.search(r'"pro_symbol":"([A-Za-z0-9._:\-]+)"', html)
+    return match.group(1) if match else None
+
+
+def _scanner_candidates(ticker: str, symbol: Optional[str] = None) -> List[str]:
+    if symbol:
+        return [symbol]
+    clean = normalize_ticker_input(ticker)
+    return [f"{exchange}:{clean}" for exchange in ("NASDAQ", "NYSE", "AMEX")]
+
+
+def _fetch_tradingview_scanner(
+    ticker: str, symbol: Optional[str] = None, timeout: int = 15
+) -> Optional[Dict[str, Any]]:
+    """Consulta la API scanner de TradingView para obtener el rating real."""
+    if not HAS_REQUESTS:
+        return None
+    candidates = _scanner_candidates(ticker, symbol)
+    if not candidates:
+        return None
+    payload = {
+        "symbols": {"tickers": candidates, "query": {"types": []}},
+        "columns": TRADINGVIEW_SCANNER_COLUMNS,
+    }
+    try:
+        res = requests.post(
+            TRADINGVIEW_SCANNER_URL.format(screener="america"),
+            json=payload,
+            headers=DEFAULT_HEADERS,
+            timeout=timeout,
+        )
+        if res.status_code != 200:
+            return None
+        data = (res.json() or {}).get("data") or []
+    except Exception:
+        return None
+    if not data:
+        return None
+    row = data[0]
+    values = dict(zip(TRADINGVIEW_SCANNER_COLUMNS, row.get("d") or []))
+    return {
+        "source": "TradingView Scanner",
+        "symbol": row.get("s"),
+        "recommendation": _recommendation_from_score(values.get("Recommend.All")),
+        "buy_count": 0,
+        "sell_count": 0,
+        "neutral_count": 0,
+        "current_price": _to_float(values.get("close")),
+        "change_pct": _to_float(values.get("change")),
+        "rsi_14": _to_float(values.get("RSI")),
+        "sma_20": _to_float(values.get("SMA20")),
+        "sma_50": _to_float(values.get("SMA50")),
+        "sma_200": _to_float(values.get("SMA200")),
+    }
+
+
 def fetch_tradingview(ticker: str, force: bool = False) -> Dict[str, Any]:
     key = _cache_key("tv", ticker)
     if not force:
@@ -563,10 +671,16 @@ def fetch_tradingview(ticker: str, force: bool = False) -> Dict[str, Any]:
             return cached
     url = url_tradingview_analysis(ticker)
     html = _safe_get(url)
-    result = parse_tradingview_technicals(html or "")
+    symbol = _extract_tradingview_symbol(html or "")
+    result = _fetch_tradingview_scanner(ticker, symbol=symbol)
+    if result is not None:
+        result["ok"] = True
+    else:
+        # Best-effort fallback: never invents a rating from page keywords.
+        result = parse_tradingview_technicals(html or "")
+        result["ok"] = False
     result["url"] = url
     result["fetched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    result["ok"] = bool(html)
     _cache_set(key, result)
     return result
 
@@ -627,7 +741,7 @@ def scan_finviz_screener(filters: Optional[Dict[str, str]] = None, force: bool =
       - v=152 da company name, sector, industry
     Filtra fondos/ETFs/CLOs usando el nombre final (post-merge).
     """
-    key = _cache_key("fv_screener", ",".join(f"{k}={v}" for k, v in (filters or {}).items()))
+    key = _cache_key("fv_screener", ",".join(f"{k}={v}" for k, v in sorted((filters or {}).items())))
     if not force:
         cached = _cache_get(key)
         if cached is not None:

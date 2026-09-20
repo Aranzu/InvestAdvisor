@@ -36,9 +36,12 @@ logger = logging.getLogger(__name__)
 
 CANDIDATES_FILE = BASE_DIR / "config" / "candidates.json"
 
+import threading as _threading
+
 _cached_opportunities: Optional[List[Dict[str, Any]]] = None
 _cache_timestamp: float = 0.0
 _CACHE_TTL_SECONDS = 60 * 60
+_opportunities_lock = _threading.Lock()
 
 
 def load_candidates_watchlist() -> List[Dict[str, Any]]:
@@ -71,11 +74,9 @@ def safe_float(val: Any) -> Optional[float]:
             return None
         try:
             f = float(s)
-            if math.isfinite(f):
-                return f
+            return f if math.isfinite(f) else None
         except ValueError:
             return None
-        return None
     try:
         f = float(val)
         return f if math.isfinite(f) else None
@@ -161,8 +162,13 @@ def _yfinance_snapshot(ticker: str) -> Dict[str, Any]:
 
 def _score_opportunity(yf_data: Dict[str, Any], tv: Dict[str, Any], ms: Dict[str, Any]) -> Dict[str, Any]:
     """Calcula score combinado (0-100)."""
-    score = 50.0
-    breakdown = {}
+    # Si no hay datos fundamentales mínimos, penalizar desde el inicio
+    has_fundamental = any(yf_data.get(k) for k in ("pe_ttm", "revenue_growth", "profit_margin", "roe"))
+    score = 45.0 if not has_fundamental else 50.0
+    if not has_fundamental:
+        breakdown = {"data_quality": "Datos fundamentales insuficientes (-5 base)"}
+    else:
+        breakdown = {}
 
     pe = safe_float(yf_data.get("pe_ttm"))
     peg = safe_float(yf_data.get("peg"))
@@ -421,8 +427,9 @@ def scan_opportunities(force_refresh: bool = False, max_workers: int = 6) -> Lis
     """Escanea watchlist y ordena por Opportunity Score descendente."""
     global _cached_opportunities, _cache_timestamp
     now = time.time()
-    if not force_refresh and _cached_opportunities is not None and (now - _cache_timestamp) < _CACHE_TTL_SECONDS:
-        return _cached_opportunities
+    with _opportunities_lock:
+        if not force_refresh and _cached_opportunities is not None and (now - _cache_timestamp) < _CACHE_TTL_SECONDS:
+            return _cached_opportunities
 
     candidates = load_candidates_watchlist()
     if not candidates:
@@ -441,9 +448,10 @@ def scan_opportunities(force_refresh: bool = False, max_workers: int = 6) -> Lis
 
     results.sort(key=lambda x: x["opportunity_score"], reverse=True)
 
-    if results:
-        _cached_opportunities = results
-        _cache_timestamp = now
+    with _opportunities_lock:
+        if results:
+            _cached_opportunities = results
+            _cache_timestamp = now
     return results
 
 

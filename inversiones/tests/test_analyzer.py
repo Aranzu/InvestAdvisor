@@ -355,10 +355,15 @@ class TestWebEndpoints(unittest.TestCase):
     def test_29_discovery_presets(self):
         """Presets curados cargan desde el JSON."""
         presets = load_presets()
-        self.assertGreater(len(presets), 5)
-        self.assertIn("value_classic", [p.get("id") for p in presets])
-        self.assertIn("growth_value", [p.get("id") for p in presets])
-        self.assertIn("ai_pure", [p.get("id") for p in presets])
+        self.assertGreaterEqual(len(presets), 12)
+        ids = [p.get("id") for p in presets]
+        self.assertIn("sweet_spot", ids)
+        self.assertIn("tech_undervalued", ids)
+        self.assertIn("dip_buying_quality", ids)
+        self.assertIn("cash_flow_kings", ids)
+        self.assertIn("garp_peter_lynch", ids)
+        self.assertIn("wallstreet_upside", ids)
+        self.assertIn("momentum_fundamentals", ids)
 
     def test_30_discovery_filter_builder(self):
         """build_finviz_filters traduce filtros UI → códigos Finviz."""
@@ -366,6 +371,14 @@ class TestWebEndpoints(unittest.TestCase):
             "sector": "technology",
             "market_cap": ["large", "mega"],
             "pe_max": "u15",
+            "forward_pe_max": "u20",
+            "pfcf_max": "low",
+            "debt_to_equity_max": "u1",
+            "profit_margin_min": "pos",
+            "rsi": "os40",
+            "sma200": "pa",
+            "target_price": "a20",
+            "analyst_recom": "buybetter",
             "revenue_growth": "pos",
         }
         out = build_finviz_filters(f)
@@ -373,6 +386,14 @@ class TestWebEndpoints(unittest.TestCase):
         self.assertIn("cap_large", out)
         self.assertIn("cap_mega", out)
         self.assertIn("fa_pe_u15", out)
+        self.assertIn("fa_fpe_u20", out)
+        self.assertIn("fa_pfcf_low", out)
+        self.assertIn("fa_debteq_u1", out)
+        self.assertIn("fa_netmargin_pos", out)
+        self.assertIn("ta_rsi_os40", out)
+        self.assertIn("ta_sma200_pa", out)
+        self.assertIn("targetprice_a20", out)
+        self.assertIn("an_recom_buybetter", out)
         self.assertIn("fa_sales5years_pos", out)
         # "any" no debe aparecer
         self.assertNotIn("fa_pe_any", out)

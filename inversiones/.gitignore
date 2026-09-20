@@ -13,3 +13,4 @@ env/
 *.log
 *.log.err
 exports/
+data/deepseek_usage.jsonl

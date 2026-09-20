@@ -13,6 +13,35 @@ from data_fetchers.geopolitical import evaluate_sector_macro_exposure
 logger = logging.getLogger(__name__)
 
 
+def _coverage_ratio(values) -> float:
+    """Return the fraction of indicators that were actually supplied."""
+    return round(sum(value is not None for value in values) / len(values), 2) if values else 0.0
+
+
+def calculate_data_coverage(
+    tech_data: Dict[str, Any], fund_data: Dict[str, Any], news_data: Dict[str, Any], geo_data: Dict[str, Any]
+) -> Dict[str, float]:
+    """Measure usable evidence so absent provider data cannot look conclusive."""
+    signal_total = sum(int(tech_data.get(key) or 0) for key in ("buy_signals", "sell_signals", "neutral_signals"))
+    technical = _coverage_ratio([
+        tech_data.get("rsi"), tech_data.get("sma_200"), tech_data.get("macd"),
+        tech_data.get("recommendation") if tech_data.get("recommendation") not in (None, "", "N/D") else None,
+        signal_total if signal_total > 0 else None,
+    ])
+    if tech_data.get("data_quality") == "PARTIAL":
+        technical = min(technical, 0.6)
+    elif tech_data.get("data_quality") == "UNAVAILABLE":
+        technical = 0.0
+
+    fundamental = _coverage_ratio([
+        fund_data.get("trailing_pe"), fund_data.get("profit_margins"), fund_data.get("roe"),
+        fund_data.get("debt_to_equity"), fund_data.get("revenue_growth"), fund_data.get("analyst_upside_pct"),
+    ]) if fund_data.get("is_equity", True) else 1.0
+    news = 1.0 if news_data.get("articles") else 0.5 if news_data.get("summary") else 0.0
+    geopolitical = _coverage_ratio([geo_data.get("macro_score"), geo_data.get("risk_level")])
+    return {"technical": technical, "fundamental": fundamental, "news": news, "geopolitical": geopolitical}
+
+
 def calculate_technical_score(tech_data: Dict[str, Any], market_data: Dict[str, Any]) -> float:
     """Calcula un score de -100 a +100 basado en indicadores técnicos."""
     score = 0.0
@@ -167,6 +196,14 @@ def calculate_composite_scores(
     news_score = calculate_news_score(news_data)
     geo_score = calculate_geopolitical_score(geo_data, market_data)
 
+    coverage = calculate_data_coverage(tech_data, fund_data, news_data, geo_data)
+    # Preserve a neutral baseline but reduce the influence of dimensions with
+    # sparse evidence. A partial TradingView aggregate must not dominate a call.
+    tech_score = round(tech_score * (0.35 + 0.65 * coverage["technical"]), 1)
+    fund_score = round(fund_score * (0.35 + 0.65 * coverage["fundamental"]), 1)
+    news_score = round(news_score * (0.35 + 0.65 * coverage["news"]), 1)
+    geo_score = round(geo_score * (0.35 + 0.65 * coverage["geopolitical"]), 1)
+
     w_tech = WEIGHTS.get("technical", 0.30)
     w_fund = WEIGHTS.get("fundamental", 0.35)
     w_news = WEIGHTS.get("news", 0.20)
@@ -199,5 +236,9 @@ def calculate_composite_scores(
             "fundamental": w_fund,
             "news": w_news,
             "geopolitical": w_geo,
-        }
+        },
+        "data_coverage": coverage,
+        "data_coverage_pct": round(sum(coverage[key] * weight for key, weight in (
+            ("technical", w_tech), ("fundamental", w_fund), ("news", w_news), ("geopolitical", w_geo),
+        )) / total_weight * 100, 1),
     }

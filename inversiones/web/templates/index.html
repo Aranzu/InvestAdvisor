@@ -59,13 +59,18 @@
         .tab-btn-inactive { background: transparent; color: #8A8A8A; }
         .tab-btn-inactive:hover { color: #FFFFFF; }
         .card-hover:hover { background: #1F1F1F; }
+        @media (min-width: 1024px) {
+            .desktop-table th { position: sticky; top: 0; z-index: 10; }
+            .desktop-table tbody tr { height: 58px; }
+            .desktop-analysis { max-height: 520px; overflow-y: auto; }
+        }
     </style>
 </head>
 <body class="bg-base min-h-screen flex flex-col">
 
     <!-- Header / Top Bar -->
     <header class="border-b border-line bg-surface sticky top-0 z-40">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+        <div class="max-w-[1600px] mx-auto px-4 lg:px-8 h-14 flex items-center justify-between">
             <div class="flex items-center gap-3">
                 <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-green to-greenDeep flex items-center justify-center">
                     <i class="fa-solid fa-chart-line text-black text-base font-bold"></i>
@@ -81,11 +86,11 @@
                 <button onclick="switchTab('tab-portfolio')" id="btn-tab-portfolio" class="tab-btn-active px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
                     <i class="fa-solid fa-briefcase"></i><span>Portafolio</span>
                 </button>
-                <button onclick="switchTab('tab-metrics')" id="btn-tab-metrics" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
-                    <i class="fa-solid fa-chart-line"></i><span>Métricas</span>
-                </button>
                 <button onclick="switchTab('tab-dividends')" id="btn-tab-dividends" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
                     <i class="fa-solid fa-sack-dollar"></i><span>Dividendos</span>
+                </button>
+                <button onclick="switchTab('tab-news')" id="btn-tab-news" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-newspaper"></i><span>Noticias</span>
                 </button>
                 <button onclick="switchTab('tab-discovery')" id="btn-tab-discovery" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
                     <i class="fa-solid fa-satellite-dish"></i><span>Discovery</span>
@@ -109,7 +114,7 @@
         </div>
         <!-- Subheader con info clave -->
         <div class="border-t border-line">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <div class="max-w-[1600px] mx-auto px-4 lg:px-8 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
                 <div class="flex items-center gap-3 flex-wrap text-muted">
                     <span class="flex items-center gap-1.5">
                         <span class="w-1.5 h-1.5 rounded-full bg-green live-dot"></span>
@@ -132,13 +137,13 @@
     <!-- Mobile Tabs (small screens) -->
     <nav class="md:hidden border-b border-line bg-surface px-4 py-2 flex items-center gap-1 overflow-x-auto">
         <button onclick="switchTab('tab-portfolio')" class="tab-btn-active px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Portafolio</button>
-        <button onclick="switchTab('tab-metrics')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Métricas</button>
         <button onclick="switchTab('tab-dividends')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Dividendos</button>
+        <button onclick="switchTab('tab-news')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Noticias</button>
         <button onclick="switchTab('tab-discovery')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Discovery</button>
     </nav>
 
     <!-- Main Content -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex-1 w-full space-y-4">
+    <main class="max-w-[1600px] mx-auto px-4 lg:px-8 py-5 flex-1 w-full space-y-5">
 
         <!-- ============================================================ -->
         <!-- TAB 1: PORTAFOLIO (Hero + tabla de posiciones mejorada)    -->
@@ -152,8 +157,12 @@
                         <div>
                             <p class="text-[11px] uppercase tracking-wider text-muted font-bold">Patrimonio Total</p>
                             <p class="text-[10px] text-muted mt-0.5">Posiciones XTB + cash XTB + reserva externa</p>
+                            <p class="text-[10px] text-muted mt-1" id="hero-sync-status">Reporte XTB: comprobando...</p>
                         </div>
                         <div class="flex items-center gap-2 text-[11px]">
+                            <button onclick="syncXtbReport()" id="btn-sync-xtb" class="px-2 py-1 rounded border border-line text-[10px] text-green hover:bg-elevated" title="Recargar el último Excel exportado desde XTB">
+                                <i class="fa-solid fa-file-excel"></i> Sincronizar XTB
+                            </button>
                             <span class="text-muted">FX:</span>
                             <span id="hero-fx-rate" class="text-yellow font-bold font-mono">—</span>
                         </div>
@@ -201,11 +210,8 @@
                 </div>
             </div>
 
-            <!-- Fila: Tabla + Allocation pie -->
-            <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
-
-                <!-- Tabla de posiciones (3 columnas) -->
-                <div class="lg:col-span-3 rounded-2xl border border-line bg-surface overflow-hidden">
+<!-- Tabla de posiciones a ancho completo -->
+            <div class="rounded-2xl border border-line bg-surface overflow-hidden">
                     <div class="p-4 border-b border-line flex items-center justify-between">
                         <div>
                             <h3 class="text-sm font-bold text-ink flex items-center gap-2">
@@ -223,8 +229,8 @@
                         </div>
                     </div>
 
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-[11px] border-collapse">
+<div class="overflow-y-auto max-h-[650px]">
+                        <table class="desktop-table w-full text-left text-[11px] border-collapse">
                             <thead>
                                 <tr class="bg-elevated border-b border-line text-muted font-bold uppercase tracking-wider">
                                     <th class="py-2 px-3">Ticker</th>
@@ -234,128 +240,26 @@
                                     <th class="py-2 px-3 w-24">30d</th>
                                     <th class="py-2 px-3 text-right">P&L</th>
                                     <th class="py-2 px-3 text-center">Recomendación</th>
+                                    <th class="py-2 px-3 text-center" title="Porcentaje de señales y fuentes disponibles para respaldar la recomendación">Datos</th>
                                     <th class="py-2 px-3 text-right">SL</th>
                                     <th class="py-2 px-3 text-right">TP</th>
                                     <th class="py-2 px-3 text-center">IA</th>
                                 </tr>
                             </thead>
                             <tbody id="portfolio-tbody" class="divide-y divide-line">
-                                <tr><td colspan="10" class="py-12 text-center text-muted">
+                                <tr><td colspan="11" class="py-12 text-center text-muted">
                                     <i class="fa-solid fa-circle-notch fa-spin text-2xl mb-2"></i>
                                     <p class="text-xs">Cargando portafolio...</p>
                                 </td></tr>
                             </tbody>
                         </table>
                     </div>
-                    <div id="ai-analysis-panel" class="hidden m-3 p-3 rounded-lg border border-line bg-elevated text-[11px] whitespace-pre-wrap"></div>
+<div id="ai-analysis-panel" class="desktop-analysis hidden m-4 p-4 rounded-lg border border-line bg-elevated text-[12px] leading-relaxed whitespace-pre-wrap"></div>
                 </div>
-
-                <!-- Allocation by sector (1 columna) -->
-                <div class="rounded-2xl border border-line bg-surface p-4 space-y-4">
-                    <div>
-                        <h3 class="text-sm font-bold text-ink flex items-center gap-2">
-                            <i class="fa-solid fa-chart-pie text-yellow"></i> Distribución
-                        </h3>
-                        <p class="text-[10px] text-muted mt-0.5">Por sector (% del valor)</p>
-                    </div>
-
-                    <!-- Pie chart SVG (se llena con JS) -->
-                    <div id="allocation-pie" class="flex items-center justify-center" style="height: 200px;">
-                        <svg viewBox="0 0 100 100" class="w-40 h-40" id="pie-svg">
-                            <circle cx="50" cy="50" r="40" fill="transparent" stroke="#262626" stroke-width="20"></circle>
-                        </svg>
-                    </div>
-
-                    <div id="allocation-legend" class="space-y-1 text-[11px]"></div>
-
-                    <div class="pt-3 border-t border-line space-y-1">
-                        <p class="text-[10px] text-muted font-bold uppercase tracking-wider">Poder de Compra</p>
-                        <p class="text-base font-bold text-green font-mono" id="portfolio-buying-power">US $—</p>
-                        <p class="text-[10px] text-muted">XTB cash + reserva externa</p>
-                    </div>
-                </div>
-            </div>
         </section>
 
         <!-- ============================================================ -->
         <!-- TAB 2: MÉTRICAS (rendimiento histórico)                     -->
-        <!-- ============================================================ -->
-        <section id="tab-metrics" class="hidden space-y-4">
-
-            <!-- Selector de período + KPIs históricos -->
-            <div class="flex items-center justify-between flex-wrap gap-2">
-                <h2 class="text-base font-bold text-ink flex items-center gap-2">
-                    <i class="fa-solid fa-chart-line text-green"></i> Rendimiento Histórico
-                </h2>
-                <div class="flex items-center gap-1 bg-elevated rounded-lg p-1 border border-line">
-                    <button onclick="setMetricsPeriod(30)" id="btn-metrics-30" class="px-3 py-1 rounded text-[11px] font-bold tab-btn-active">30d</button>
-                    <button onclick="setMetricsPeriod(90)" id="btn-metrics-90" class="px-3 py-1 rounded text-[11px] font-bold tab-btn-inactive">90d</button>
-                    <button onclick="setMetricsPeriod(180)" id="btn-metrics-180" class="px-3 py-1 rounded text-[11px] font-bold tab-btn-inactive">180d</button>
-                    <button onclick="setMetricsPeriod(365)" id="btn-metrics-365" class="px-3 py-1 rounded text-[11px] font-bold tab-btn-inactive">1 año</button>
-                </div>
-            </div>
-
-            <!-- Big sparkline del portafolio -->
-            <div class="rounded-2xl border border-line bg-surface p-5">
-                <div class="flex items-center justify-between mb-4">
-                    <div>
-                        <p class="text-[10px] text-muted uppercase font-bold tracking-wider">Valor del Portafolio</p>
-                        <p class="text-3xl font-bold text-ink font-mono mt-1" id="metrics-current-value">US $—</p>
-                    </div>
-                    <div class="text-right">
-                        <p class="text-[10px] text-muted uppercase font-bold tracking-wider" id="metrics-period-label">Últimos 30 días</p>
-                        <p class="text-2xl font-bold font-mono mt-1" id="metrics-period-change">—</p>
-                    </div>
-                </div>
-                <div id="metrics-big-sparkline" class="w-full h-48"></div>
-            </div>
-
-            <!-- Tabla de rendimiento por posición -->
-            <div class="rounded-2xl border border-line bg-surface overflow-hidden">
-                <div class="p-4 border-b border-line">
-                    <h3 class="text-sm font-bold text-ink flex items-center gap-2">
-                        <i class="fa-solid fa-ranking-star text-yellow"></i> Performance por Posición
-                    </h3>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left text-[11px] border-collapse">
-                        <thead>
-                            <tr class="bg-elevated border-b border-line text-muted font-bold uppercase tracking-wider">
-                                <th class="py-2 px-3">Ticker</th>
-                                <th class="py-2 px-3">Sector</th>
-                                <th class="py-2 px-3 text-right">P&L $</th>
-                                <th class="py-2 px-3 text-right">P&L %</th>
-                                <th class="py-2 px-3 w-32">30d</th>
-                                <th class="py-2 px-3 text-center">Estado</th>
-                            </tr>
-                        </thead>
-                        <tbody id="metrics-tbody" class="divide-y divide-line">
-                            <tr><td colspan="6" class="py-12 text-center text-muted">
-                                <i class="fa-solid fa-circle-notch fa-spin text-2xl mb-2"></i>
-                                <p class="text-xs">Cargando histórico...</p>
-                            </td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Resumen rendimiento por tier -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div class="rounded-xl border border-green/40 bg-green/5 p-4">
-                    <p class="text-[10px] uppercase text-green font-bold tracking-wider">🟢 Mantener — P&L Total</p>
-                    <p class="text-2xl font-bold text-green font-mono mt-2" id="metrics-pnl-mantener">—</p>
-                </div>
-                <div class="rounded-xl border border-yellow/40 bg-yellow/5 p-4">
-                    <p class="text-[10px] uppercase text-yellow font-bold tracking-wider">🟡 Observación — P&L Total</p>
-                    <p class="text-2xl font-bold text-yellow font-mono mt-2" id="metrics-pnl-observacion">—</p>
-                </div>
-                <div class="rounded-xl border border-red/40 bg-red/5 p-4">
-                    <p class="text-[10px] uppercase text-red font-bold tracking-wider">🔴 Vender — P&L Total</p>
-                    <p class="text-2xl font-bold text-red font-mono mt-2" id="metrics-pnl-vender">—</p>
-                </div>
-            </div>
-        </section>
-
         <!-- ============================================================ -->
         <!-- TAB 3: DIVIDENDOS                                            -->
         <!-- ============================================================ -->
@@ -393,7 +297,29 @@
         </section>
 
         <!-- ============================================================ -->
-        <!-- TAB 4: DISCOVERY (potenciales compras)                     -->
+        <!-- TAB 4: NOTICIAS DEL PORTAFOLIO                               -->
+        <!-- ============================================================ -->
+        <section id="tab-news" class="hidden space-y-4">
+            <div class="rounded-2xl border border-line bg-surface overflow-hidden">
+                <div class="p-4 border-b border-line flex items-center justify-between gap-3">
+                    <div>
+                        <h3 class="text-sm font-bold text-ink flex items-center gap-2">
+                            <i class="fa-solid fa-newspaper text-cyan"></i> Noticias de mi portafolio
+                        </h3>
+                        <p class="text-[10px] text-muted mt-0.5" id="portfolio-news-meta">Titulares recientes de las posiciones actuales.</p>
+                    </div>
+                    <button onclick="loadPortfolioNews(true)" class="px-2 py-1 rounded border border-line text-[10px] text-cyan hover:bg-elevated">Actualizar</button>
+                </div>
+                <div id="portfolio-news-summary" class="px-4 py-2 border-b border-line text-[10px] text-muted"></div>
+                <div id="portfolio-news-list" class="divide-y divide-line">
+                    <div class="py-12 text-center text-muted text-xs">Abre esta pestaña para cargar noticias.</div>
+                </div>
+                <p class="p-3 text-[9px] text-muted" id="portfolio-news-disclaimer"></p>
+            </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- TAB 5: DISCOVERY (potenciales compras)                     -->
         <!-- ============================================================ -->
         <section id="tab-discovery" class="hidden space-y-4">
             <div class="p-4 rounded-xl border border-line bg-surface">
@@ -416,7 +342,7 @@
                         </button>
                     </div>
 
-                    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-[11px]">
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px]">
                         <label class="block">
                             <span class="text-muted">Sector</span>
                             <select id="f-sector" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
@@ -445,10 +371,22 @@
                             </select>
                         </label>
                         <label class="block">
+                            <span class="text-muted">Precio</span>
+                            <select id="f-price" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="5to10">$5 - $10</option>
+                                <option value="10to20">$10 - $20</option>
+                                <option value="10to50">$10 - $50</option>
+                                <option value="20to50">$20 - $50</option>
+                                <option value="50to100">$50 - $100</option>
+                                <option value="o100">&gt; $100</option>
+                            </select>
+                        </label>
+                        <label class="block">
                             <span class="text-muted">P/E máximo</span>
                             <select id="f-pe" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
                                 <option value="">Cualquiera</option>
-                                <option value="u10">&lt; 10</option>
+                                <option value="u10">&lt; 10 (Deep Value)</option>
                                 <option value="u15">&lt; 15</option>
                                 <option value="u20">&lt; 20</option>
                                 <option value="u25">&lt; 25</option>
@@ -457,27 +395,67 @@
                             </select>
                         </label>
                         <label class="block">
+                            <span class="text-muted">Forward P/E</span>
+                            <select id="f-fpe" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="u10">&lt; 10</option>
+                                <option value="u15">&lt; 15</option>
+                                <option value="u20">&lt; 20</option>
+                                <option value="u25">&lt; 25</option>
+                                <option value="u30">&lt; 30</option>
+                            </select>
+                        </label>
+                        <label class="block">
                             <span class="text-muted">PEG máximo</span>
                             <select id="f-peg" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
                                 <option value="">Cualquiera</option>
-                                <option value="u1">&lt; 1</option>
+                                <option value="u1">&lt; 1 (GARP óptimo)</option>
                                 <option value="u2">&lt; 2</option>
                                 <option value="o2">&gt; 2</option>
                             </select>
                         </label>
                         <label class="block">
-                            <span class="text-muted">Precio máximo</span>
-                            <select id="f-price" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                            <span class="text-muted">P/FCF (Caja Libre)</span>
+                            <select id="f-pfcf" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
                                 <option value="">Cualquiera</option>
-                                <option value="5to10">$5 - $10</option>
-                                <option value="10to20">$10 - $20</option>
-                                <option value="20to50">$20 - $50</option>
-                                <option value="50to100">$50 - $100</option>
-                                <option value="o100">&gt; $100</option>
+                                <option value="low">&lt; 15 (Bajo / Atractivo)</option>
+                                <option value="u10">&lt; 10</option>
+                                <option value="u15">&lt; 15</option>
+                                <option value="u20">&lt; 20</option>
+                                <option value="u30">&lt; 30</option>
                             </select>
                         </label>
                         <label class="block">
-                            <span class="text-muted">Yield mínimo</span>
+                            <span class="text-muted">Deuda / Equity máx</span>
+                            <select id="f-debteq" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="low">&lt; 0.1 (Sin deuda neta)</option>
+                                <option value="u0.5">&lt; 0.5 (Muy conservador)</option>
+                                <option value="u1">&lt; 1.0 (Moderado / Sano)</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Margen Neto mín</span>
+                            <select id="f-netmargin" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="pos">Positivo (&gt;0%)</option>
+                                <option value="o10">&gt; 10%</option>
+                                <option value="high">&gt; 20% (Alto)</option>
+                                <option value="o30">&gt; 30%</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">ROE mínimo</span>
+                            <select id="f-roe" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="pos">Positivo</option>
+                                <option value="o10">&gt; 10%</option>
+                                <option value="o15">&gt; 15%</option>
+                                <option value="o20">&gt; 20%</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Yield dividendo</span>
                             <select id="f-div" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
                                 <option value="">Cualquiera</option>
                                 <option value="o1">&gt; 1%</option>
@@ -489,16 +467,78 @@
                             <span class="text-muted">Revenue Growth</span>
                             <select id="f-rev-growth" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
                                 <option value="">Cualquiera</option>
-                                <option value="pos">Positivo (5Y sales)</option>
+                                <option value="pos">Positivo (5Y)</option>
+                                <option value="5y_o10">&gt; 10% (5Y)</option>
+                                <option value="qoq_pos">Positivo (QoQ)</option>
+                                <option value="qoq_high">&gt; 25% (QoQ)</option>
                             </select>
                         </label>
                         <label class="block">
-                            <span class="text-muted">ROE mínimo</span>
-                            <select id="f-roe" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                            <span class="text-muted">EPS Growth</span>
+                            <select id="f-eps-growth" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
                                 <option value="">Cualquiera</option>
-                                <option value="pos">Positivo</option>
-                                <option value="o10">&gt; 10%</option>
-                                <option value="o20">&gt; 20%</option>
+                                <option value="pos">Positivo (YoY)</option>
+                                <option value="yoy_o25">&gt; 25% (YoY)</option>
+                                <option value="qoq_pos">Positivo (QoQ)</option>
+                                <option value="qoq_high">&gt; 25% (QoQ)</option>
+                                <option value="next5y_pos">Proyección 5Y (&gt;0%)</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">RSI (14) · Timing</span>
+                            <select id="f-rsi" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="os30">Sobrevendido (&lt; 30)</option>
+                                <option value="os40">Sobrevendido (&lt; 40 - Dip)</option>
+                                <option value="nos50">No Sobrevendido (&gt; 50)</option>
+                                <option value="ob70">Sobrecomprado (&gt; 70)</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Tendencia SMA 200</span>
+                            <select id="f-sma200" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="pa">Sobre SMA200 (Alcista)</option>
+                                <option value="pb">Bajo SMA200 (Castigada)</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Upside Target Price</span>
+                            <select id="f-targetprice" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="above">Bajo Target (Upside)</option>
+                                <option value="a10">&gt; 10% Upside</option>
+                                <option value="a20">&gt; 20% Upside</option>
+                                <option value="a30">&gt; 30% Upside</option>
+                                <option value="a50">&gt; 50% Upside</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Consenso Analistas</span>
+                            <select id="f-recom" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="buybetter">Buy o mejor</option>
+                                <option value="strongbuy">Strong Buy (1)</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Rendimiento 4 Semanas</span>
+                            <select id="f-perf-4w" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="up">Alcista (&gt;0%)</option>
+                                <option value="up10">&gt; 10%</option>
+                                <option value="up20">&gt; 20%</option>
+                                <option value="down">Bajista (&lt;0%)</option>
+                                <option value="down10">&lt; -10%</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-muted">Volumen Promedio</span>
+                            <select id="f-volume" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="">Cualquiera</option>
+                                <option value="o100">&gt; 100K (Líquido)</option>
+                                <option value="o500">&gt; 500K</option>
+                                <option value="o1000">&gt; 1M (Alta liquidez)</option>
                             </select>
                         </label>
                         <label class="block">
@@ -535,7 +575,7 @@
                 <div class="space-y-4">
                     <div class="p-4 rounded-xl border border-line bg-surface">
                         <h4 class="text-sm font-bold text-ink flex items-center gap-2 mb-3">
-                            <i class="fa-solid fa-bolt text-yellow"></i> Presets Curados
+                            <i class="fa-solid fa-bolt text-yellow"></i> Presets
                         </h4>
                         <div id="presets-list" class="space-y-1.5 max-h-96 overflow-y-auto">
                             <div class="text-[11px] text-muted text-center py-2">Cargando...</div>
@@ -588,7 +628,7 @@
                         </tbody>
                     </table>
                 </div>
-                <div id="discovery-ai-panel" class="hidden m-3 p-3 rounded-lg border border-line bg-elevated text-[11px] whitespace-pre-wrap"></div>
+                <div id="discovery-ai-panel" class="desktop-analysis hidden m-4 p-4 rounded-lg border border-line bg-elevated text-[12px] leading-relaxed whitespace-pre-wrap"></div>
             </div>
         </section>
 
@@ -599,11 +639,11 @@
 
     <script>
         let portfolioData = null;
-        let portfolioMetrics = null;
-        let portfolioHistory = null;
-        let metricsPeriod = 30;
         let dividendData = null;
         let currentTab = 'tab-portfolio';
+        let latestXtbReportMtime = null;
+        let consolidatedWealth = null;
+        let portfolioNewsLoaded = false;
 
         document.addEventListener("DOMContentLoaded", () => {
             refreshFx();
@@ -611,16 +651,18 @@
             loadDividends();
             loadAndRenderPresets();
             loadAndRenderSavedSearches();
+            checkXtbReportStatus();
+            window.setInterval(checkXtbReportStatus, 60000);
         });
 
         // ─── TABS ───────────────────────────────────────────────────────
         function switchTab(tabId) {
             currentTab = tabId;
-            ['tab-portfolio', 'tab-metrics', 'tab-dividends', 'tab-discovery'].forEach(id => {
+            ['tab-portfolio', 'tab-dividends', 'tab-news', 'tab-discovery'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.classList.add('hidden');
             });
-            ['btn-tab-portfolio', 'btn-tab-metrics', 'btn-tab-dividends', 'btn-tab-discovery'].forEach(btnId => {
+            ['btn-tab-portfolio', 'btn-tab-dividends', 'btn-tab-news', 'btn-tab-discovery'].forEach(btnId => {
                 const btn = document.getElementById(btnId);
                 if (btn) {
                     btn.classList.remove('tab-btn-active');
@@ -636,9 +678,7 @@
             }
 
             // Cargar histórico al entrar a Métricas
-            if (tabId === 'tab-metrics' && !portfolioHistory) {
-                loadMetrics();
-            }
+            if (tabId === 'tab-news' && !portfolioNewsLoaded) loadPortfolioNews();
         }
 
         // ─── FX ────────────────────────────────────────────────────────
@@ -676,8 +716,59 @@
                 renderPortfolioTable(data);
                 renderAllocation(data);
                 updateHeaderCounts(data);
+                renderXtbReportStatus(data.xtb_report);
             } catch (err) {
                 console.error("Error cargando portafolio:", err);
+            }
+        }
+
+        function renderXtbReportStatus(status) {
+            const el = document.getElementById("hero-sync-status");
+            if (!el || !status) return;
+            if (!status.available) {
+                el.className = "text-[10px] text-red mt-1";
+                el.innerText = status.message || "No hay reporte XTB disponible.";
+                return;
+            }
+            latestXtbReportMtime = status.mtime;
+            const age = status.age_minutes || 0;
+            const ageLabel = age < 60 ? `${age} min` : `${Math.floor(age / 60)} h`;
+            const stale = status.status !== "CURRENT";
+            el.className = `text-[10px] mt-1 ${stale ? "text-yellow" : "text-green"}`;
+            el.innerText = `Reporte XTB: ${status.file_name} · hace ${ageLabel}${stale ? " · exporta uno nuevo" : ""}`;
+        }
+
+        async function checkXtbReportStatus() {
+            try {
+                const response = await fetch(`/api/portfolio/sync-status?_t=${Date.now()}`);
+                const status = await response.json();
+                const changed = status.available && latestXtbReportMtime !== null && status.mtime !== latestXtbReportMtime;
+                renderXtbReportStatus(status);
+                if (changed) await loadPortfolio(true);
+            } catch (err) {
+                console.error("Error comprobando reporte XTB:", err);
+            }
+        }
+
+        async function syncXtbReport() {
+            const button = document.getElementById("btn-sync-xtb");
+            if (button) button.disabled = true;
+            try {
+                const response = await fetch("/api/portfolio/sync", { method: "POST" });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "No se pudo sincronizar el reporte");
+                portfolioData = data.portfolio;
+                renderHero(portfolioData);
+                renderPortfolioTable(portfolioData);
+                renderAllocation(portfolioData);
+                updateHeaderCounts(portfolioData);
+                renderXtbReportStatus(data.xtb_report);
+                loadDividends(true);
+            } catch (err) {
+                const status = document.getElementById("hero-sync-status");
+                if (status) status.innerText = `Error de sincronización: ${err.message}`;
+            } finally {
+                if (button) button.disabled = false;
             }
         }
 
@@ -694,7 +785,9 @@
 
         function renderHero(data) {
             const usd = data.summary_usd || {};
-            const total = usd.current_value || 0;
+            const total = consolidatedWealth
+                ? (consolidatedWealth.consolidated?.total_wealth_clp || 0) / (window._lastFx || 940)
+                : (usd.current_value || 0);
             const invested = usd.total_invested || 0;
             const pnl = usd.total_pnl || 0;
             const pnlPct = usd.total_pnl_pct || 0;
@@ -704,10 +797,12 @@
             document.getElementById("hero-total-clp").innerText = `CLP $${Math.round(total * fx).toLocaleString('es-CL')}`;
             document.getElementById("hero-invested").innerText = `US $${invested.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-            const positionsVal = (data.positions || []).reduce((acc, p) => acc + (p.market?.current_value || 0), 0);
+            const positionsVal = consolidatedWealth
+                ? (consolidatedWealth.xtb?.positions_value_clp || 0) / fx
+                : (data.positions || []).reduce((acc, p) => acc + (p.market?.current_value || 0), 0);
             document.getElementById("hero-positions-value").innerText = `US $${positionsVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-            // Cambio diario y mensual (placeholder, se actualiza con loadMetrics)
+            // Cambio diario y mensual: no se muestran sin el módulo histórico.
             const dailyChangeEl = document.getElementById("hero-daily-change");
             if (dailyChangeEl) dailyChangeEl.innerText = "—";
             const monthlyChangeEl = document.getElementById("hero-monthly-change");
@@ -730,7 +825,7 @@
             });
 
             if (sorted.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="10" class="py-8 text-center text-muted text-[11px]">Sin posiciones en este filtro.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="11" class="py-8 text-center text-muted text-[11px]">Sin posiciones en este filtro.</td></tr>`;
                 return;
             }
 
@@ -744,6 +839,8 @@
                 const pnlPct = m.unrealized_pnl_pct || 0;
                 const pnlColor = pnlPct >= 0 ? "text-green" : "text-red";
                 const sparklineId = `spark-${ticker}`;
+                const coverage = Number(r.data_coverage_pct ?? p.scores?.data_coverage_pct ?? 0);
+                const coverageColor = coverage >= 85 ? "text-green" : coverage >= 70 ? "text-yellow" : "text-red";
 
                 return `
                 <tr class="hover:bg-elevated transition">
@@ -759,6 +856,7 @@
                         ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%
                     </td>
                     <td class="py-2 px-3 text-center">${badge}<div class="mt-1 max-w-[190px] text-[9px] leading-tight text-muted text-left">${(r.position_context?.headline || r.concise_rationale || "").slice(0, 145)}</div></td>
+                    <td class="py-2 px-3 text-center font-mono text-[10px] ${coverageColor}" title="Cobertura de datos: ${coverage.toFixed(0)}%">${coverage.toFixed(0)}%</td>
                     <td class="py-2 px-3 text-right font-mono text-red text-[10px]">$${(r.suggested_stop_loss || 0).toFixed(2)}</td>
                     <td class="py-2 px-3 text-right font-mono text-green text-[10px]">$${(r.suggested_target_price || 0).toFixed(2)}</td>
                     <td class="py-2 px-3 text-center"><button onclick="loadAiAnalysis('${ticker}')" class="px-2 py-1 rounded border border-line text-[9px] text-cyan hover:bg-elevated">Análisis IA</button></td>
@@ -817,42 +915,6 @@
 
             if (total <= 0) return;
 
-            const items = Object.entries(bySector)
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, 8);
-            const colors = ["#16C784", "#EAB308", "#EF4444", "#3B82F6", "#A855F7", "#06B6D4", "#F97316", "#84CC16"];
-
-            // Pie SVG
-            let cumulative = 0;
-            const radius = 40;
-            const circumference = 2 * Math.PI * radius;
-            let pieHTML = `<circle cx="50" cy="50" r="${radius}" fill="transparent" stroke="#262626" stroke-width="20"></circle>`;
-
-            items.forEach(([sector, val], idx) => {
-                const pct = val / total;
-                const dashLength = pct * circumference;
-                const dashOffset = -cumulative * circumference;
-                cumulative += pct;
-                pieHTML += `<circle cx="50" cy="50" r="${radius}" fill="transparent" stroke="${colors[idx]}" stroke-width="20" stroke-dasharray="${dashLength} ${circumference}" stroke-dashoffset="${dashOffset}" transform="rotate(-90 50 50)" class="pie-segment"><title>${sector}: ${(pct*100).toFixed(1)}%</title></circle>`;
-            });
-
-            const pieSvg = document.getElementById("pie-svg");
-            if (pieSvg) pieSvg.innerHTML = pieHTML;
-
-            // Legend
-            const legend = document.getElementById("allocation-legend");
-            if (legend) {
-                legend.innerHTML = items.map(([sector, val], idx) => `
-                    <div class="flex items-center justify-between gap-2">
-                        <div class="flex items-center gap-1.5 min-w-0">
-                            <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:${colors[idx]}"></span>
-                            <span class="truncate">${sector}</span>
-                        </div>
-                        <span class="font-mono text-muted flex-shrink-0">${(val/total*100).toFixed(1)}%</span>
-                    </div>
-                `).join("");
-            }
-
             // Cash + poder de compra
             fetch("/api/cash").then(r => r.json()).then(cash => {
                 if (!cash) return;
@@ -864,6 +926,7 @@
 
             fetch("/api/wealth").then(r => r.json()).then(w => {
                 if (!w || !w.consolidated) return;
+                consolidatedWealth = w;
                 const fx = window._lastFx || 940;
                 const totalWealthCLP = w.consolidated.total_wealth_clp || 0;
                 const totalWealthUSD = totalWealthCLP / fx;
@@ -879,10 +942,6 @@
                 if (cashHero) cashHero.innerText = `US $${cashUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
                 const externalHero = document.getElementById("hero-external");
                 if (externalHero) externalHero.innerText = `CLP $${Math.round(w.external_reserve.amount_clp || 0).toLocaleString('es-CL')}`;
-                const buyingPowerUSD = (w.consolidated.total_capital_available_for_new_buys_clp || 0) / fx;
-                const bpEl = document.getElementById("portfolio-buying-power");
-                if (bpEl) bpEl.innerText = `US $${buyingPowerUSD.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
-                window._lastBuyingPowerUSD = buyingPowerUSD;
             });
         }
 
@@ -900,143 +959,6 @@
         }
 
         // ─── MÉTRICAS ─────────────────────────────────────────────────
-        async function loadMetrics() {
-            try {
-                const res = await fetch(`/api/portfolio/history?days=${metricsPeriod}&_t=${Date.now()}`);
-                portfolioHistory = await res.json();
-                renderMetrics(portfolioHistory);
-                renderMetricsByTier(portfolioData);
-            } catch (err) {
-                console.error("Error cargando métricas:", err);
-            }
-        }
-
-        async function setMetricsPeriod(days) {
-            metricsPeriod = days;
-            document.querySelectorAll("[id^='btn-metrics-']").forEach(b => {
-                b.classList.remove('tab-btn-active');
-                b.classList.add('tab-btn-inactive');
-            });
-            const active = document.getElementById(`btn-metrics-${days}`);
-            if (active) {
-                active.classList.remove('tab-btn-inactive');
-                active.classList.add('tab-btn-active');
-            }
-            await loadMetrics();
-        }
-
-        function renderMetrics(history) {
-            const series = history.series || [];
-            const dailyChange = history.daily_change || {};
-            const monthlyChange = history.monthly_change || {};
-
-            // Hero sparkline del portafolio
-            const heroEl = document.getElementById("metrics-big-sparkline");
-            if (heroEl) heroEl.innerHTML = renderSparklineSVG(series, 800, 200, true);
-
-            const cur = (series[series.length - 1] || {}).value || 0;
-            const start = (series[0] || {}).value || 0;
-            const change = cur - start;
-            const changePct = start ? (change / start * 100) : 0;
-
-            const color = change >= 0 ? "text-green" : "text-red";
-            const sign = change >= 0 ? "+" : "";
-
-            document.getElementById("metrics-current-value").innerText = `US $${cur.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-            document.getElementById("metrics-period-change").innerText = `${sign}$${change.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (${sign}${changePct.toFixed(2)}%)`;
-            document.getElementById("metrics-period-change").className = `text-2xl font-bold font-mono mt-1 ${color}`;
-            document.getElementById("metrics-period-label").innerText = `Últimos ${metricsPeriod} días`;
-
-            // Hero portfolio (cambio diario y mensual)
-            const dailyEl = document.getElementById("hero-daily-change");
-            if (dailyEl && dailyChange.change_pct !== undefined) {
-                const c = dailyChange.change_pct;
-                const cUsd = dailyChange.change_usd || 0;
-                dailyEl.innerText = `${c >= 0 ? "+" : ""}${c.toFixed(2)}% (${c >= 0 ? "+" : ""}$${cUsd.toFixed(0)})`;
-                dailyEl.className = `font-bold font-mono ${c >= 0 ? "text-green" : "text-red"}`;
-            }
-            const monthlyEl = document.getElementById("hero-monthly-change");
-            if (monthlyEl && monthlyChange.change_pct !== undefined) {
-                const c = monthlyChange.change_pct;
-                const cUsd = monthlyChange.change_usd || 0;
-                monthlyEl.innerText = `${c >= 0 ? "+" : ""}${c.toFixed(2)}% (${c >= 0 ? "+" : ""}$${cUsd.toFixed(0)})`;
-                monthlyEl.className = `font-bold font-mono ${c >= 0 ? "text-green" : "text-red"}`;
-            }
-
-            // Tabla de performance por posición
-            renderMetricsTable();
-        }
-
-        function renderMetricsTable() {
-            const tbody = document.getElementById("metrics-tbody");
-            if (!tbody || !portfolioData) return;
-
-            const positions = portfolioData.positions || [];
-            const priority = { "VENDER": 0, "OBSERVACION": 1, "MANTENER": 2 };
-            const sorted = [...positions].sort((a, b) => {
-                const pnlA = a.market?.unrealized_pnl_pct || 0;
-                const pnlB = b.market?.unrealized_pnl_pct || 0;
-                return pnlB - pnlA;
-            });
-
-            tbody.innerHTML = sorted.map(p => {
-                const m = p.market || {};
-                const r = p.recommendation || {};
-                const pnl = m.unrealized_pnl || 0;
-                const pnlPct = m.unrealized_pnl_pct || 0;
-                const color = pnl >= 0 ? "text-green" : "text-red";
-                const sign = pnl >= 0 ? "+" : "";
-                const ticker = m.ticker || "?";
-                const action = r.action || "MANTENER";
-                const tierClass = `tier-badge-${action.toLowerCase()}`;
-                const tierBadge = `<span class="${tierClass} px-2 py-0.5 rounded text-[10px] font-bold">${action === "OBSERVACION" ? "⚠️ " : ""}${action}</span>`;
-
-                return `
-                <tr class="hover:bg-elevated transition">
-                    <td class="py-2 px-3 font-bold text-ink">${ticker}</td>
-                    <td class="py-2 px-3 text-muted">${(m.sector || "").slice(0, 22)}</td>
-                    <td class="py-2 px-3 text-right font-mono ${color} font-bold">${sign}$${pnl.toFixed(2)}</td>
-                    <td class="py-2 px-3 text-right font-mono ${color} font-bold">${sign}${pnlPct.toFixed(2)}%</td>
-                    <td class="py-2 px-3"><div id="metrics-spark-${ticker}" class="h-6"></div></td>
-                    <td class="py-2 px-3 text-center">${tierBadge}</td>
-                </tr>`;
-            }).join("");
-
-            // Sparklines individuales
-            const tickers = positions.map(p => p.market?.ticker).filter(Boolean);
-            if (tickers.length > 0) {
-                fetch(`/api/portfolio/positions-history?days=${metricsPeriod}`)
-                    .then(r => r.json())
-                    .then(histories => {
-                        tickers.forEach(ticker => {
-                            const id = `metrics-spark-${ticker}`;
-                            const el = document.getElementById(id);
-                            if (el && histories[ticker]) {
-                                el.innerHTML = renderSparklineSVG(histories[ticker], 120, 24);
-                            }
-                        });
-                    });
-            }
-        }
-
-        function renderMetricsByTier(portfolio) {
-            if (!portfolio) return;
-            const positions = portfolio.positions || [];
-            const byTier = { MANTENER: 0, OBSERVACION: 0, VENDER: 0 };
-            positions.forEach(p => {
-                const a = p.recommendation?.action || "MANTENER";
-                if (byTier[a] !== undefined) byTier[a] += (p.market?.unrealized_pnl || 0);
-            });
-            const fmtPnl = (v) => `${v >= 0 ? "+" : ""}$${v.toFixed(0)}`;
-            const cls = (v) => v >= 0 ? "text-green" : "text-red";
-            const elM = document.getElementById("metrics-pnl-mantener");
-            const elO = document.getElementById("metrics-pnl-observacion");
-            const elV = document.getElementById("metrics-pnl-vender");
-            if (elM) { elM.innerText = fmtPnl(byTier.MANTENER); elM.className = `text-2xl font-bold font-mono mt-2 ${cls(byTier.MANTENER)}`; }
-            if (elO) { elO.innerText = fmtPnl(byTier.OBSERVACION); elO.className = `text-2xl font-bold font-mono mt-2 ${cls(byTier.OBSERVACION)}`; }
-            if (elV) { elV.innerText = fmtPnl(byTier.VENDER); elV.className = `text-2xl font-bold font-mono mt-2 ${cls(byTier.VENDER)}`; }
-        }
-
         // ─── DIVIDENDOS ───────────────────────────────────────────────
         async function loadDividends(force = false) {
             try {
@@ -1088,6 +1010,60 @@
         }
 
         // ─── DISCOVERY ────────────────────────────────────────────────
+        async function loadPortfolioNews(force = false) {
+            const list = document.getElementById("portfolio-news-list");
+            if (!list) return;
+            if (force) portfolioNewsLoaded = false;
+            list.innerHTML = '<div class="py-12 text-center text-muted text-xs">Cargando noticias...</div>';
+            try {
+                const response = await fetch(`/api/portfolio/news?_t=${Date.now()}`);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || "No se pudieron cargar noticias");
+                portfolioNewsLoaded = true;
+                renderPortfolioNews(data);
+            } catch (err) {
+                list.innerHTML = `<div class="py-12 text-center text-red text-xs">Error al cargar noticias: ${err.message}</div>`;
+            }
+        }
+
+        function escapeHtml(value) {
+            const node = document.createElement("span");
+            node.textContent = value || "";
+            return node.innerHTML;
+        }
+
+        function renderPortfolioNews(data) {
+            const list = document.getElementById("portfolio-news-list");
+            const counts = data.sentiment_counts || {};
+            document.getElementById("portfolio-news-summary").innerHTML =
+                `<span class="text-green">${counts.POSITIVO || 0} positivas</span> · ` +
+                `<span>${counts.NEUTRAL || 0} neutrales</span> · ` +
+                `<span class="text-red">${counts.NEGATIVO || 0} negativas</span> · ` +
+                `${(data.covered_tickers || []).length}/${(data.portfolio_tickers || []).length} tickers con cobertura`;
+            document.getElementById("portfolio-news-meta").innerText =
+                `${(data.articles || []).length} titulares · ${(data.data_sources || []).join(" + ")}`;
+            document.getElementById("portfolio-news-disclaimer").innerText = data.disclaimer || "";
+            const colors = { POSITIVO: "text-green", NEGATIVO: "text-red", NEUTRAL: "text-muted" };
+            const articles = data.articles || [];
+            if (!articles.length) {
+                list.innerHTML = '<div class="py-12 text-center text-muted text-xs">No se encontraron titulares recientes.</div>';
+                return;
+            }
+            list.innerHTML = articles.map(article => {
+                const rawUrl = article.link || "";
+                const url = /^https?:\/\//i.test(rawUrl) ? rawUrl : "";
+                const title = escapeHtml(article.title);
+                const headline = url
+                    ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="text-ink hover:text-cyan">${title}</a>`
+                    : `<span class="text-ink">${title}</span>`;
+                return `<article class="p-4 hover:bg-elevated transition"><div class="flex items-start gap-3">
+                    <span class="px-2 py-0.5 rounded border border-line text-[10px] font-bold text-cyan">${escapeHtml(article.ticker)}</span>
+                    <div class="min-w-0 flex-1"><div class="text-[12px] font-semibold leading-snug">${headline}</div>
+                    <div class="mt-1 text-[10px] text-muted">${escapeHtml(article.publisher)} · ${escapeHtml(article.published)} · <span class="${colors[article.sentiment] || "text-muted"}">${escapeHtml(article.sentiment)}</span></div></div>
+                </div></article>`;
+            }).join("");
+        }
+
         function getDiscoveryFilters() {
             const multi = (id) => Array.from(document.getElementById(id)?.selectedOptions || []).map(o => o.value).filter(v => v);
             const single = (id) => document.getElementById(id)?.value || null;
@@ -1095,17 +1071,29 @@
                 sector: single("f-sector") || null,
                 market_cap: multi("f-market-cap") || null,
                 pe_max: single("f-pe") || null,
+                forward_pe_max: single("f-fpe") || null,
                 peg_max: single("f-peg") || null,
+                pfcf_max: single("f-pfcf") || null,
                 price_max: single("f-price") || null,
                 dividend_yield_min: single("f-div") || null,
                 revenue_growth: single("f-rev-growth") || null,
+                earnings_growth: single("f-eps-growth") || null,
                 roe_min: single("f-roe") || null,
+                debt_to_equity_max: single("f-debteq") || null,
+                profit_margin_min: single("f-netmargin") || null,
+                rsi: single("f-rsi") || null,
+                sma200: single("f-sma200") || null,
+                target_price: single("f-targetprice") || null,
+                analyst_recom: single("f-recom") || null,
+                performance_4w: single("f-perf-4w") || null,
+                avg_volume_min: single("f-volume") || null,
             };
         }
 
         function resetDiscoveryFilters() {
-            ["f-sector", "f-market-cap", "f-pe", "f-peg", "f-price",
-             "f-div", "f-rev-growth", "f-roe"].forEach(id => {
+            ["f-sector", "f-market-cap", "f-pe", "f-fpe", "f-peg", "f-pfcf", "f-price",
+             "f-div", "f-rev-growth", "f-eps-growth", "f-roe", "f-debteq", "f-netmargin",
+             "f-rsi", "f-sma200", "f-targetprice", "f-recom", "f-perf-4w", "f-volume"].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) {
                     if (el.multiple) Array.from(el.options).forEach(o => o.selected = false);
@@ -1201,11 +1189,43 @@
             }).join("");
         }
 
+        function _mdToHtml(text) {
+            if (!text) return "";
+            return text
+                // Encabezados ### y ####
+                .replace(/^#### (.+)$/gm, '<h4 class="text-[11px] font-bold text-cyan mt-3 mb-1 uppercase tracking-wider">$1</h4>')
+                .replace(/^### (.+)$/gm, '<h3 class="text-[12px] font-bold text-ink mt-4 mb-1 border-b border-line pb-1">$1</h3>')
+                // Negrita
+                .replace(/\*\*(.+?)\*\*/g, '<strong class="text-ink">$1</strong>')
+                // Separadores
+                .replace(/^---$/gm, '<hr class="border-line my-2">')
+                // Listas
+                .replace(/^- (.+)$/gm, '<li class="ml-3 text-[11px] leading-snug">· $1</li>')
+                .replace(/(<li[^>]*>.*<\/li>\n?)+/g, m => `<ul class="my-1">${m}</ul>`)
+                // Saltos de línea
+                .replace(/\n\n/g, '<br><br>')
+                .replace(/\n/g, '<br>');
+        }
+
+        function _stanceColor(stance) {
+            if (!stance) return "text-muted";
+            const s = stance.toUpperCase();
+            if (s.includes("PRIORITAR")) return "text-green font-bold";
+            if (s.includes("PULLBACK")) return "text-green";
+            if (s.includes("ESPERAR")) return "text-yellow";
+            if (s.includes("WATCHLIST")) return "text-muted";
+            return "text-red";
+        }
+
         async function loadDiscoveryAiAnalysis(candidate) {
             const panel = document.getElementById("discovery-ai-panel");
             if (!panel) return;
             panel.classList.remove("hidden");
-            panel.innerText = `Analizando ${candidate.ticker} con las métricas filtradas...`;
+            panel.innerHTML = `
+                <div class="flex items-center gap-2 mb-3">
+                    <i class="fa-solid fa-brain text-cyan fa-spin"></i>
+                    <span class="text-[11px] text-muted">Analizando <strong class="text-ink">${candidate.ticker}</strong> con todas las métricas…</span>
+                </div>`;
             try {
                 const res = await fetch("/api/opportunities/ai-analysis", {
                     method: "POST", headers: { "Content-Type": "application/json" },
@@ -1213,9 +1233,21 @@
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || "No se pudo generar el análisis");
-                panel.innerText = `[${data.provider}${data.cached ? " · caché" : ""}] ${data.disclaimer}\n\n${data.analysis}`;
+                const stanceClass = _stanceColor(data.stance);
+                const providerBadge = `<span class="text-[9px] px-1.5 py-0.5 rounded bg-elevated border border-line text-muted font-mono">${data.provider}${data.cached ? " · caché" : ""}</span>`;
+                panel.innerHTML = `
+                    <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-line">
+                        <i class="fa-solid fa-robot text-cyan"></i>
+                        <span class="font-bold text-ink text-[12px]">${candidate.ticker}</span>
+                        <span class="text-[12px] ${stanceClass}">${data.stance || "ANÁLISIS"}</span>
+                        ${providerBadge}
+                        <span class="ml-auto text-[9px] text-muted italic">${data.disclaimer}</span>
+                    </div>
+                    <div class="text-[11px] leading-relaxed text-ink discovery-analysis-body">
+                        ${_mdToHtml(data.analysis)}
+                    </div>`;
             } catch (err) {
-                panel.innerText = `Error de análisis IA: ${err.message}`;
+                panel.innerHTML = `<div class="text-red text-[11px]"><i class="fa-solid fa-circle-exclamation mr-1"></i>Error: ${err.message}</div>`;
             }
         }
 
@@ -1266,11 +1298,22 @@
             setVal("f-sector", f.sector);
             setMulti("f-market-cap", f.market_cap);
             setVal("f-pe", f.pe_max);
+            setVal("f-fpe", f.forward_pe_max);
             setVal("f-peg", f.peg_max);
+            setVal("f-pfcf", f.pfcf_max);
             setVal("f-price", f.price_max);
             setVal("f-div", f.dividend_yield_min);
             setVal("f-rev-growth", f.revenue_growth);
             setVal("f-roe", f.roe_min);
+            setVal("f-eps-growth", f.earnings_growth);
+            setVal("f-debteq", f.debt_to_equity_max);
+            setVal("f-netmargin", f.profit_margin_min || f.net_margin_min);
+            setVal("f-rsi", f.rsi);
+            setVal("f-sma200", f.sma200);
+            setVal("f-targetprice", f.target_price);
+            setVal("f-recom", f.analyst_recom);
+            setVal("f-perf-4w", f.performance_4w);
+            setVal("f-volume", f.avg_volume_min);
             runDiscoverySearch();
         }
 
