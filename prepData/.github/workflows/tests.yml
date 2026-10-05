@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+    paths: ["prepData/**"]
+  pull_request:
+    paths: ["prepData/**"]
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: prepData
+
+jobs:
+  test:
+    # El proyecto se probar en 3.10 porque es el piso de pyproject.toml, y en la
+    # version mas nueva que usa el usuario. Los tests live no corren en CI: pegan
+    # contra finviz y Yahoo, asi que un rate limit haria fallar el build por algo
+    # que no es un defecto del codigo.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: prepData/requirements.txt
+
+      - name: Instalar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Tipos (mypy)
+        run: mypy scraper tests
+
+      - name: Tests
+        run: python -m unittest discover -s tests -t .

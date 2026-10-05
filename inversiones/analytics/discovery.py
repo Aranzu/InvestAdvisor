@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,6 +40,76 @@ logger = logging.getLogger(__name__)
 PRESETS_FILE = BASE_DIR / "config" / "screener_presets.json"
 SAVED_SEARCHES_FILE = BASE_DIR / "config" / "saved_searches.json"
 
+_search_progress_lock = threading.Lock()
+_search_run_seq: int = 0
+_search_progress: Dict[str, Any] = {
+    "active": False,
+    "phase": "idle",  # idle | screening | evaluating | context | ai | done
+    "run_id": 0,
+    "total": 0,
+    "done": 0,
+    "current_ticker": None,
+    "message": "",
+}
+
+
+def discovery_progress_snapshot() -> Dict[str, Any]:
+    """Copia segura del progreso de la búsqueda Discovery en curso."""
+    with _search_progress_lock:
+        snap = dict(_search_progress)
+        snap.pop("run_id", None)
+        return snap
+
+
+def _new_progress_run() -> int:
+    """Reserva un run_id único sin tocar el estado de progreso actual."""
+    global _search_run_seq
+    with _search_progress_lock:
+        _search_run_seq += 1
+        return _search_run_seq
+
+
+def _progress_start(phase: str, total: int, message: str, run_id: Optional[int] = None) -> int:
+    """Inicia una fase de progreso dentro de una corrida de búsqueda.
+
+    La primera fase de cada búsqueda asigna su propio run_id; las fases
+    siguientes reutilizan el mismo run_id para mantener la corrida.
+    Cualquier fase de otra corrida en solapamiento queda invalidada y sus
+    updates se descartan.
+    """
+    with _search_progress_lock:
+        if run_id is None:
+            global _search_run_seq
+            _search_run_seq += 1
+            run_id = _search_run_seq
+        _search_progress.update(
+            active=True, phase=phase, run_id=run_id, total=total, done=0,
+            current_ticker=None, message=message,
+        )
+        return run_id
+
+
+def _progress_advance(ticker: str | None = None, run_id: Optional[int] = None) -> None:
+    with _search_progress_lock:
+        if run_id is not None and run_id != _search_progress.get("run_id"):
+            return
+        total = _search_progress.get("total") or 0
+        if total and _search_progress["done"] >= total:
+            return
+        _search_progress["done"] += 1
+        if ticker:
+            _search_progress["current_ticker"] = ticker
+
+
+def _progress_end(run_id: Optional[int] = None, message: str = "") -> None:
+    with _search_progress_lock:
+        if run_id is not None and run_id != _search_progress.get("run_id"):
+            return
+        _search_progress.update(
+            active=False, phase="done", run_id=0, total=0, done=0,
+            current_ticker=None, message=message,
+        )
+
 
 # Nota: Finviz soporta filtros de Descriptive, Fundamental y Technical usando códigos como:
 #   - cap_mega, cap_large, sec_*, ind_*, sh_price_*, fa_div_*
@@ -52,6 +123,24 @@ MARKET_CAP_MAP = {
     "small": "cap_small",
     "micro": "cap_micro",
     "nano": "cap_nanocap",
+    "2to200": "cap_2to200",
+}
+
+# Países con soporte del screener Finviz (el terminal opera accionario USA,
+# cuentas XTB NYSE/NASDAQ; "usa" es el default de Discovery).
+COUNTRY_MAP = {
+    "any": None,
+    "usa": "geo_usa",
+    "canada": "geo_canada",
+    "britain": "geo_britain",
+    "china": "geo_china",
+    "israel": "geo_israel",
+    "japan": "geo_japan",
+    "germany": "geo_germany",
+    "france": "geo_france",
+    "netherlands": "geo_netherlands",
+    "australia": "geo_australia",
+    "india": "geo_india",
 }
 
 SECTOR_MAP = {
@@ -201,6 +290,7 @@ PRICE_RANGE_MAP = {
     "10to50": "sh_price_10to50",
     "20to50": "sh_price_20to50",
     "50to100": "sh_price_50to100",
+    "o10": "sh_price_o10",
     "o100": "sh_price_o100",
 }
 
@@ -233,6 +323,9 @@ EARNINGS_GROWTH_MAP = {
     "yoy_pos": "fa_epsyoy_pos",
     "yoy_o10": "fa_epsyoy_o10",
     "yoy_o25": "fa_epsyoy_o25",
+    "yoy1_o10": "fa_epsyoy1_o10",
+    "epsyoy1_o10": "fa_epsyoy1_o10",
+    "next_y_o10": "fa_epsyoy1_o10",
     "qoq_pos": "fa_epsqoq_pos",
     "qoq_high": "fa_epsqoq_high",
     "next5y_pos": "fa_epsnext5years_pos",
@@ -318,6 +411,22 @@ AVG_VOLUME_MAP = {
     "o1000": "sh_avgvol_o1000",
 }
 
+SHORT_FLOAT_MAP = {
+    "any": None,
+    "u5": "sh_short_u5",
+    "u10": "sh_short_u10",
+    "u15": "sh_short_u15",
+    "u20": "sh_short_u20",
+}
+
+HIGHLOW_52W_MAP = {
+    "any": None,
+    "b5h": "ta_highlow52w_b5h",
+    "b10h": "ta_highlow52w_b10h",
+    "b15h": "ta_highlow52w_b15h",
+    "b20h": "ta_highlow52w_b20h",
+}
+
 
 def _map_list(values: Optional[List[str]], mapping: Dict[str, str]) -> List[str]:
     if not values:
@@ -354,8 +463,21 @@ def build_finviz_filters(filters: Dict[str, Any]) -> Dict[str, str]:
     """
     out: Dict[str, str] = {}
 
-    for cap in _map_list(filters.get("market_cap"), MARKET_CAP_MAP):
-        out[cap] = ""
+    country = _map_value(filters.get("country"), COUNTRY_MAP)
+    if not country and filters.get("country") and filters.get("country") not in ("any", "global"):
+        # País sin map: lo dejamos pasar pero se avisa al screener (geo_usa por defecto).
+        country = COUNTRY_MAP.get(str(filters.get("country")).lower())
+    if country:
+        out[country] = ""
+
+    caps = filters.get("market_cap") or []
+    if isinstance(caps, str):
+        caps = [caps]
+    if "2to200" in caps or set(caps) == {"mid", "large"}:
+        out["cap_2to200"] = ""
+    else:
+        for cap in _map_list(caps, MARKET_CAP_MAP):
+            out[cap] = ""
 
     sector = filters.get("sector")
     if sector and sector in SECTOR_MAP:
@@ -380,7 +502,7 @@ def build_finviz_filters(filters: Dict[str, Any]) -> Dict[str, str]:
     if pfcf:
         out[pfcf] = ""
 
-    price = _map_value(filters.get("price_max"), PRICE_RANGE_MAP)
+    price = _map_value(filters.get("price_max") or filters.get("price_min"), PRICE_RANGE_MAP)
     if price:
         out[price] = ""
 
@@ -400,6 +522,10 @@ def build_finviz_filters(filters: Dict[str, Any]) -> Dict[str, str]:
     if pm:
         out[pm] = ""
 
+    opermargin = filters.get("operating_margin_min")
+    if opermargin in ("pos", "fa_opermargin_pos"):
+        out["fa_opermargin_pos"] = ""
+
     roe = _map_value(filters.get("roe_min"), ROE_MAP)
     if roe:
         out[roe] = ""
@@ -407,6 +533,14 @@ def build_finviz_filters(filters: Dict[str, Any]) -> Dict[str, str]:
     de = _map_value(filters.get("debt_to_equity_max"), DEBT_TO_EQUITY_MAP)
     if de:
         out[de] = ""
+
+    sf = _map_value(filters.get("short_float_max"), SHORT_FLOAT_MAP)
+    if sf:
+        out[sf] = ""
+
+    hl = _map_value(filters.get("highlow_52w"), HIGHLOW_52W_MAP)
+    if hl:
+        out[hl] = ""
 
     rsi = _map_value(filters.get("rsi"), RSI_MAP)
     if rsi:
@@ -432,7 +566,147 @@ def build_finviz_filters(filters: Dict[str, Any]) -> Dict[str, str]:
     if vol:
         out[vol] = ""
 
+    raw_codes = filters.get("raw_codes")
+    if isinstance(raw_codes, list):
+        for c in raw_codes:
+            if c:
+                out[str(c).strip()] = ""
+    elif isinstance(raw_codes, str) and raw_codes:
+        for c in raw_codes.split(","):
+            c = c.strip()
+            if c:
+                out[c] = ""
+
+    if filters.get("order"):
+        out["_order"] = filters["order"]
+
     return out
+
+
+def parse_finviz_url(url: str) -> Dict[str, Any]:
+    """Extrae filtros, orden y vista desde una URL del screener Finviz (Free o Elite)."""
+    import urllib.parse
+    clean_url = (url or "").strip()
+    parsed = urllib.parse.urlparse(clean_url)
+    qs = urllib.parse.parse_qs(parsed.query or (clean_url if "f=" in clean_url else ""))
+
+    f_param = qs.get("f", [""])[0]
+    raw_codes = [c.strip() for c in f_param.split(",") if c.strip()]
+    order = qs.get("o", [""])[0].strip()
+    view = qs.get("v", [""])[0].strip()
+
+    filters: Dict[str, Any] = {"raw_codes": list(raw_codes)}
+    if order:
+        filters["order"] = order
+
+    for code in raw_codes:
+        if code == "cap_2to200":
+            filters["market_cap"] = ["mid", "large"]
+        elif code == "cap_mega":
+            filters.setdefault("market_cap", []).append("mega")
+        elif code == "cap_large":
+            filters.setdefault("market_cap", []).append("large")
+        elif code == "cap_mid":
+            filters.setdefault("market_cap", []).append("mid")
+        elif code == "cap_small":
+            filters.setdefault("market_cap", []).append("small")
+        elif code == "cap_micro":
+            filters.setdefault("market_cap", []).append("micro")
+
+        for k, v in COUNTRY_MAP.items():
+            if v == code:
+                filters["country"] = k
+                break
+        for k, v in SECTOR_MAP.items():
+            if v == code:
+                filters["sector"] = k
+                break
+        for k, v in PE_RANGE_MAP.items():
+            if v == code:
+                filters["pe_max"] = k
+                break
+        for k, v in FORWARD_PE_MAP.items():
+            if v == code:
+                filters["forward_pe_max"] = k
+                break
+        for k, v in PEG_MAP.items():
+            if v == code:
+                filters["peg_max"] = k
+                break
+        for k, v in PFCF_MAP.items():
+            if v == code:
+                filters["pfcf_max"] = k
+                break
+        for k, v in PRICE_RANGE_MAP.items():
+            if v == code:
+                filters["price_max"] = k
+                break
+        for k, v in DIVIDEND_YIELD_MAP.items():
+            if v == code:
+                filters["dividend_yield_min"] = k
+                break
+        for k, v in REVENUE_GROWTH_MAP.items():
+            if v == code:
+                filters["revenue_growth"] = k
+                break
+        for k, v in EARNINGS_GROWTH_MAP.items():
+            if v == code:
+                filters["earnings_growth"] = k
+                break
+        for k, v in PROFIT_MARGIN_MAP.items():
+            if v == code:
+                filters["profit_margin_min"] = k
+                break
+        if code == "fa_opermargin_pos":
+            filters["operating_margin_min"] = "pos"
+        for k, v in ROE_MAP.items():
+            if v == code:
+                filters["roe_min"] = k
+                break
+        for k, v in DEBT_TO_EQUITY_MAP.items():
+            if v == code:
+                filters["debt_to_equity_max"] = k
+                break
+        for k, v in SHORT_FLOAT_MAP.items():
+            if v == code:
+                filters["short_float_max"] = k
+                break
+        for k, v in HIGHLOW_52W_MAP.items():
+            if v == code:
+                filters["highlow_52w"] = k
+                break
+        for k, v in RSI_MAP.items():
+            if v == code:
+                filters["rsi"] = k
+                break
+        for k, v in PERFORMANCE_4W_MAP.items():
+            if v == code:
+                filters["performance_4w"] = k
+                break
+        for k, v in TARGET_PRICE_MAP.items():
+            if v == code:
+                filters["target_price"] = k
+                break
+        for k, v in ANALYST_RECOM_MAP.items():
+            if v == code:
+                filters["analyst_recom"] = k
+                break
+        for k, v in SMA200_MAP.items():
+            if v == code:
+                filters["sma200"] = k
+                break
+        for k, v in AVG_VOLUME_MAP.items():
+            if v == code:
+                filters["avg_volume_min"] = k
+                break
+
+    return {
+        "url": clean_url,
+        "raw_codes": raw_codes,
+        "filters": filters,
+        "order": order,
+        "view": view,
+    }
 
 
 # ────────────────────────── Presets ────────────────────────── #
@@ -517,6 +791,7 @@ def search_opportunities(
     min_score: int = 50,
     force_refresh: bool = False,
     max_workers: int = 6,
+    include_ai: bool = False,
 ) -> Dict[str, Any]:
     """
     Ejecuta búsqueda dinámica:
@@ -525,6 +800,7 @@ def search_opportunities(
       3. Para cada candidato, evalúa con analyze_candidate()
       4. Filtra por score mínimo
       5. Retorna top N
+      6. (opcional) Adjunta análisis IA explicativo por candidato
 
     Returns:
         {
@@ -538,13 +814,20 @@ def search_opportunities(
     """
     started = time.time()
 
+    # Discovery opera accionario USA (cuentas XTB NYSE/NASDAQ): si el usuario no
+    # define país, se fuerza geo_usa para no arrastrar ADRs/chinas de bajo valor.
+    filters = dict(filters or {})
+    if not filters.get("country"):
+        filters["country"] = "usa"
+
     finviz_dict = build_finviz_filters(filters)
     finviz_str = ",".join(finviz_dict.keys())
 
     # 1) Screener Finviz (devuelve hasta cientos de candidatos)
-    raw_rows = scan_finviz_screener(finviz_dict, force=force_refresh)
+    raw_rows = scan_finviz_screener(finviz_dict, force=force_refresh, order=filters.get("order", ""))
 
     if not raw_rows:
+        _progress_end(_new_progress_run(), message="No se encontraron candidatos")
         return {
             "filters_used": filters,
             "finviz_query": finviz_str,
@@ -563,8 +846,11 @@ def search_opportunities(
 
     results: List[Dict[str, Any]] = []
     sector_mismatches = 0
+    _MAX_EVALUATE = 80  # límite para no saturar yfinance/TradingView
+    run_id: Optional[int] = None
+    if include_ai:
+        run_id = _progress_start("screening", _MAX_EVALUATE, "Evaluando candidatos…")
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        _MAX_EVALUATE = 80  # límite para no saturar yfinance/TradingView
         future_to_row = {
             executor.submit(
                 _analyze_finviz_row, row, top_n=top_n, min_score=min_score
@@ -572,6 +858,7 @@ def search_opportunities(
             for row in raw_rows[:_MAX_EVALUATE]
         }
         for future in as_completed(future_to_row):
+            _row = future_to_row[future]
             try:
                 res = future.result()
                 if not res:
@@ -602,6 +889,9 @@ def search_opportunities(
                 results.append(res)
             except Exception as e:
                 logger.debug(f"Error analizando fila Finviz: {e}")
+            finally:
+                if run_id is not None:
+                    _progress_advance(_row.get("ticker", ""), run_id)
 
     if sector_mismatches > 0:
         logger.info(f"Discovery: descartados {sector_mismatches} candidatos por mismatch de sector")
@@ -633,12 +923,29 @@ def search_opportunities(
 
     # News and macro are advisory only and run after ranking to avoid multiplying
     # external requests across the full Finviz universe.
-    geo_context = get_geopolitical_context(force=force_refresh)
-    for result in results:
+    if include_ai:
+        _progress_start("context", len(results), "Cargando contexto de noticias y macro…", run_id=run_id)
         try:
-            add_discovery_context(result, geo_context)
-        except Exception as e:
-            logger.debug(f"Discovery context unavailable for {result.get('ticker')}: {e}")
+            geo_context = get_geopolitical_context(force=force_refresh)
+            for result in results:
+                try:
+                    add_discovery_context(result, geo_context)
+                except Exception as e:
+                    logger.debug(f"Discovery context unavailable for {result.get('ticker')}: {e}")
+                finally:
+                    if run_id is not None:
+                        _progress_advance(result.get("ticker", ""), run_id)
+
+            if results:
+                _progress_start("ai", len(results), "Analizando con IA…", run_id=run_id)
+                results = _attach_discovery_ai(
+                    results,
+                    force_refresh=force_refresh,
+                    on_done=lambda r: _progress_advance(r.get("ticker", ""), run_id),
+                )
+        finally:
+            if run_id is not None:
+                _progress_end(run_id)
 
     return {
         "filters_used": filters,
@@ -649,6 +956,62 @@ def search_opportunities(
         "results": results,
         "scan_time_seconds": round(time.time() - started, 2),
     }
+
+
+def attach_portfolio_sector_overlap(results: List[Dict[str, Any]], portfolio_sectors: List[str]) -> List[Dict[str, Any]]:
+    """Marca solapamiento sectorial del candidato contra el portafolio actual.
+
+    Informativo (no altera el score): si el nombre pertenece a un sector que ya
+    pesa en la cartera de XTB, se señala para no concentrar la exposición en un
+    solo tema (correlación). Solo aplica cuando el candidato reporta sector.
+    """
+    norm = {(sector or "").strip().lower() for sector in portfolio_sectors if sector}
+    for r in results:
+        sector = (r.get("sector") or "").strip().lower()
+        r["sector_overlap_flag"] = bool(sector and sector in norm)
+        r["sector_overlap_portfolio"] = sorted({s for s in portfolio_sectors if s and s.strip().lower() == sector})
+    return results
+
+
+def _attach_discovery_ai(
+    results: List[Dict[str, Any]],
+    force_refresh: bool = False,
+    on_done=None,
+) -> List[Dict[str, Any]]:
+    """Adjunta un análisis IA explicativo (Groq gratuito) a cada candidato rankeado.
+
+    Es informativo: no altera el score ni el ranking. Se ejecuta después del ranking
+    para no multiplicar llamadas LLM sobre el universo completo de Finviz.
+    """
+    from analysis.llm_explainer import generate_discovery_ai_analysis
+
+    def _analyze(r: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            r["ai_analysis"] = generate_discovery_ai_analysis(r, force_refresh=force_refresh)
+        except Exception as e:
+            logger.debug(f"Discovery AI no disponible para {r.get('ticker')}: {e}")
+            r["ai_analysis"] = None
+        return r
+
+    workers = min(6, len(results)) if results else 0
+    if workers <= 0:
+        if on_done:
+            on_done({})
+        return results
+    ordered: Dict[int, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {
+            executor.submit(_analyze, r): i for i, r in enumerate(results)
+        }
+        for future in as_completed(future_to_idx):
+            i = future_to_idx[future]
+            try:
+                ordered[i] = future.result()
+            except Exception:
+                ordered[i] = results[i]
+            if on_done:
+                on_done(ordered[i])
+    return [ordered[i] for i in range(len(results))]
 
 
 def _analyze_finviz_row(row: Dict[str, Any], top_n: int = 20, min_score: int = 50) -> Optional[Dict[str, Any]]:

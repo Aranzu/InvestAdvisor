@@ -118,6 +118,43 @@ def add_discovery_context(candidate: Dict[str, Any], geo_context: Optional[Dict[
     return candidate
 
 
+def _get_return_1m_pct(tk) -> Optional[float]:
+    """Retorno de precio a 1 mes (%) para el chequeo anti-sesgo de recencia.
+
+    Si el nombre ya subió fuerte en las últimas semanas, puede seguir siendo una
+    buena empresa pero ya no un punto de entrada de alta convicción.
+    """
+    try:
+        hist = tk.history(period="1mo")
+        if hist is None or hist.empty or "Close" not in hist.columns:
+            return None
+        close = hist["Close"].dropna()
+        if len(close) < 2:
+            return None
+        first, last = float(close.iloc[0]), float(close.iloc[-1])
+        if first <= 0:
+            return None
+        return round((last - first) / first * 100, 1)
+    except Exception:
+        return None
+
+
+def _classify_conviction(score: int, rsi: Optional[float],
+                         return_1m_pct: Optional[float],
+                         upside_pct: Optional[float]) -> tuple[str, bool]:
+    """Nivel de convicción (ALTA/MEDIA/ESPECULATIVA) + flag anti-sesgo de recencia.
+
+    Sección 2 del módulo de compra del Prompt Maestro: no forzar "Alta" si el
+    re-rating ya ocurrió (>20% en 1 mes) o el técnico está extendido (RSI > 75).
+    """
+    extended = (return_1m_pct is not None and return_1m_pct > 20) or (rsi is not None and rsi > 75)
+    if score >= 80 and not extended and (upside_pct is None or upside_pct >= 10):
+        return "ALTA", extended
+    if score >= 60:
+        return "MEDIA", extended
+    return "ESPECULATIVA", extended
+
+
 def _yfinance_snapshot(ticker: str) -> Dict[str, Any]:
     """Snapshot completo desde yfinance (PRIMARIO)."""
     try:
@@ -131,6 +168,7 @@ def _yfinance_snapshot(ticker: str) -> Dict[str, Any]:
         return {
             "name": info.get("shortName") or info.get("longName") or "",
             "current_price": current_price,
+            "return_1m_pct": _get_return_1m_pct(tk),
             "market_cap": info.get("marketCap"),
             "pe_ttm": info.get("trailingPE"),
             "pe_forward": info.get("forwardPE"),
@@ -363,6 +401,11 @@ def analyze_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     rev_growth = safe_float(yf_data.get("revenue_growth"))
     pe = safe_float(yf_data.get("pe_ttm"))
 
+    return_1m_pct = safe_float(yf_data.get("return_1m_pct"))
+    conviction, anti_recency_flag = _classify_conviction(
+        scoring["opportunity_score"], rsi, return_1m_pct, scoring["upside_pct"]
+    )
+
     pe_str = f"P/E {round(pe, 1)}x" if pe else "valuación N/D"
     growth_str = f"+{round(rev_growth * 100, 1)}% ingresos" if rev_growth else "crecimiento estable"
     upside_str = f"upside {scoring['upside_pct']}%" if scoring["upside_pct"] is not None else "momentum técnico"
@@ -399,6 +442,9 @@ def analyze_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "analyst_target": round(target_mean, 2) if target_mean else None,
         "upside_pct": scoring["upside_pct"],
         "opportunity_score": scoring["opportunity_score"],
+        "conviction": conviction,
+        "anti_recency_flag": anti_recency_flag,
+        "return_1m_pct": return_1m_pct,
         "entry_type": pricing["entry_type"],
         "suggested_entry": pricing["entry"],
         "suggested_stop_loss": pricing["stop_loss"],

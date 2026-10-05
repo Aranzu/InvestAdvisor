@@ -29,17 +29,19 @@ console = Console(highlight=False)
 
 
 def render_report_markdown(report: dict, include_candidates: bool = False) -> str:
-    """Construye el reporte en el formato exacto requerido (VENDER > OBSERVACION > MANTENER)."""
+    """Construye el reporte en el formato exacto requerido (VENDER > AJUSTAR SL/TP > OBSERVACION > MANTENER)."""
     positions = report["positions"]
 
     def sort_key(p):
         action = p["recommendation"]["action"].upper()
         if "VENDER" in action:
             priority = 0
-        elif "OBSERVACION" in action or "OBSERVACIÓN" in action:
+        elif "AJUSTAR_SL_TP" in action:
             priority = 1
-        else:
+        elif "OBSERVACION" in action or "OBSERVACIÓN" in action:
             priority = 2
+        else:
+            priority = 3
         return (priority, p["market"]["ticker"])
 
     sorted_positions = sorted(positions, key=sort_key)
@@ -47,8 +49,15 @@ def render_report_markdown(report: dict, include_candidates: bool = False) -> st
     lines = []
     lines.append("### Sección 1 — Recomendaciones por posición (XTB)")
     lines.append("")
-    lines.append("| Instrumento | Plataforma | Recomendación | Fundamento (1-2 líneas) | Stop-loss | Take-profit | Confianza (1-10) |")
-    lines.append("|---|---|---|---|---|---|---|")
+
+    for alert in report.get("portfolio_risk_alerts", []):
+        sev = alert.get("severity", "MEDIA")
+        icon = "🚨" if sev == "ALTA" else "⚠️"
+        lines.append(f"> {icon} **[{alert.get('type', 'RIESGO')}]** {alert.get('message', '')}")
+
+    lines.append("")
+    lines.append("| Instrumento | Plataforma | Recomendación | Fundamento (1-2 líneas) | Ejecución XTB (SL/TP) | Confianza (1-10) |")
+    lines.append("|---|---|---|---|---|---|")
 
     for p in sorted_positions:
         m = p["market"]
@@ -57,29 +66,32 @@ def render_report_markdown(report: dict, include_candidates: bool = False) -> st
 
         instrumento = f"**{m['ticker']}** ({m['name'][:30]})"
         plataforma = p.get("source", "XTB")
-        recomendacion = f"**{r['action']}**"
-        fundamento = r.get("concise_rationale", r.get("summary_verdict", ""))
-        if r.get("position_context", {}).get("headline"):
-            fundamento = r["position_context"]["headline"]
+        accion_label = "MANTENER + AJUSTAR SL/TP" if r["action"] == "AJUSTAR_SL_TP" else r["action"]
+        # La confianza baja (BAJA / <5/10) por cobertura insuficiente se muestra
+        # como degradación explícita a OBSERVACION (zona amarilla).
+        if r.get("confidence_level") == "BAJA":
+            accion_label = "OBSERVACION"
+        if r.get("overridden_by_ai"):
+            accion_label += " (IA)"
+        recomendacion = f"**{accion_label}**"
+        ai = r.get("ai_analysis") or {}
+        fundamento = ai.get("resumen") or r.get("position_context", {}).get("headline") or r.get("concise_rationale", r.get("summary_verdict", ""))
 
-        sl_val = r.get("suggested_stop_loss", 0.0)
-        sl_pct = r.get("stop_loss_pct", -10.0)
-        sl_str = f"{curr_sym}{sl_val:,.2f} ({sl_pct}%)"
-
-        tp_val = r.get("suggested_target_price", 0.0)
-        tp_pct = r.get("take_profit_pct", 20.0)
-        tp_str = f"{curr_sym}{tp_val:,.2f} (+{tp_pct}%)"
+        # En XTB las órdenes pendientes no pueden comprometer más que el volumen
+        # de la posición, por lo que se muestra una única instrucción priorizada.
+        plan = r.get("execution_plan", {})
+        exec_str = plan.get("primary_order") or "Gestionar salida manualmente"
 
         conf = r.get("confidence_10", 8)
 
-        lines.append(f"| {instrumento} | {plataforma} | {recomendacion} | {fundamento} | {sl_str} | {tp_str} | {conf}/10 |")
+        lines.append(f"| {instrumento} | {plataforma} | {recomendacion} | {fundamento} | {exec_str} | {conf}/10 |")
 
     lines.append("")
     geo = report.get("geopolitical", {})
     rates = geo.get("rates", {})
-    ver = geo.get("verification_date", "05 de septiembre de 2026")
-    fed = rates.get("fed_funds_rate", "3.50%-3.75%")
-    lines.append(f"*Fuentes consultadas: {ver}. Fed Funds: {fed} (FOMC: {rates.get('fed_next_meeting', '15-16 sep 2026')}). Datos via Yahoo Finance, TradingView, MarketScreener, Finviz, Macrotrends.*")
+    ver = geo.get("verification_date") or "No disponible (sin fecha de verificación)"
+    fed = rates.get("fed_funds_rate") or "No disponible (sin tasa vigente)"
+    lines.append(f"*Fuentes consultadas: {ver}. Fed Funds: {fed} (FOMC: {rates.get('fed_next_meeting') or 'No disponible'}). Datos via Yahoo Finance, TradingView, MarketScreener, Finviz, Macrotrends.*")
     lines.append("")
 
     if include_candidates:
@@ -106,7 +118,7 @@ def render_report_rich_console(report: dict, include_candidates: bool = False):
     geo = report["geopolitical"]
     rates = geo.get("rates", {})
     macro_info = (
-        f"[bold cyan]Tasas Vigentes:[/bold cyan] Fed Funds: [bold white]{rates.get('fed_funds_rate', '3.50%-3.75%')}[/bold white] (FOMC: {rates.get('fed_next_meeting', '15-16 sep 2026')})\n"
+        f"[bold cyan]Tasas Vigentes:[/bold cyan] Fed Funds: [bold white]{rates.get('fed_funds_rate') or 'No disponible'}[/bold white] (FOMC: {rates.get('fed_next_meeting') or 'No disponible'})\n"
         f"[bold yellow]Perfil Inversionista:[/bold yellow] Arriesgado (Alta volatilidad, horizonte marzo 2027)\n"
         f"[bold cyan]Fuentes:[/bold cyan] Yahoo Finance · TradingView · MarketScreener · Finviz · Macrotrends"
     )
@@ -118,16 +130,18 @@ def render_report_rich_console(report: dict, include_candidates: bool = False):
         action = p["recommendation"]["action"].upper()
         if "VENDER" in action:
             priority = 0
-        elif "OBSERVACION" in action or "OBSERVACIÓN" in action:
+        elif "AJUSTAR_SL_TP" in action:
             priority = 1
-        else:
+        elif "OBSERVACION" in action or "OBSERVACIÓN" in action:
             priority = 2
+        else:
+            priority = 3
         return (priority, p["market"]["ticker"])
 
     sorted_positions = sorted(positions, key=sort_key)
 
     table = Table(
-        title="📋 Sección 1 — Recomendaciones por Posición XTB (VENDER > OBSERVACION > MANTENER)",
+        title="📋 Sección 1 — Recomendaciones por Posición XTB (VENDER > AJUSTAR SL/TP > OBSERVACION > MANTENER)",
         header_style="bold cyan",
         show_lines=True
     )
@@ -135,8 +149,7 @@ def render_report_rich_console(report: dict, include_candidates: bool = False):
     table.add_column("Plataforma", style="dim", justify="center")
     table.add_column("Recomendación", justify="center", style="bold")
     table.add_column("Fundamento (1-2 líneas)", justify="left", max_width=45)
-    table.add_column("Stop-loss", justify="right")
-    table.add_column("Take-profit", justify="right")
+    table.add_column("Ejecución XTB (SL/TP)", justify="left")
     table.add_column("Conf.", justify="center")
 
     for p in sorted_positions:
@@ -145,31 +158,47 @@ def render_report_rich_console(report: dict, include_candidates: bool = False):
         curr_sym = "US $"
 
         action = r.get("action", "MANTENER")
+        label = "MANTENER + AJUSTAR SL/TP" if action == "AJUSTAR_SL_TP" else action
+        # Confianza baja (BAJA / <5/10) por cobertura insuficiente: degradación a OBSERVACION.
+        if r.get("confidence_level") == "BAJA":
+            action = "OBSERVACION"
+            label = "OBSERVACION"
         if action == "VENDER":
             act_color = "bold red"
         elif action == "OBSERVACION":
             act_color = "bold yellow"
+        elif action == "AJUSTAR_SL_TP":
+            act_color = "bold cyan"
         else:
             act_color = "bold green"
         prefix = "⚠️ " if action == "OBSERVACION" else ""
-        act_badge = f"[{act_color}] {prefix}{action} [/{act_color}]"
+        if r.get("overridden_by_ai"):
+            label += " (IA)"
+        act_badge = f"[{act_color}] {prefix}{label} [/{act_color}]"
 
-        sl_str = f"{curr_sym}{r.get('suggested_stop_loss', 0.0):,.2f}\n[dim]({r.get('stop_loss_pct', -10.0)}%)[/dim]"
-        tp_str = f"{curr_sym}{r.get('suggested_target_price', 0.0):,.2f}\n[dim](+{r.get('take_profit_pct', 20.0)}%)[/dim]"
+        # En XTB las órdenes pendientes no pueden comprometer más que el volumen
+        # de la posición, por lo que se muestra una única instrucción priorizada.
+        exec_str = r.get("execution_plan", {}).get("primary_order") or "Gestionar salida manualmente"
+        ai = r.get("ai_analysis") or {}
+        fundamento = ai.get("resumen") or r.get("position_context", {}).get("headline") or r.get("concise_rationale", r.get("summary_verdict", ""))
 
         table.add_row(
             f"[bold]{m['ticker']}[/bold]\n[dim]{m['name'][:18]}[/dim]",
             p.get("source", "XTB"),
             act_badge,
-            r.get("concise_rationale", r.get("summary_verdict", "")),
-            sl_str,
-            tp_str,
+            fundamento,
+            exec_str,
             f"[bold]{r.get('confidence_10', 8)}/10[/bold]",
         )
 
     console.print(table)
-    ver = geo.get("verification_date", "05 de septiembre de 2026")
-    console.print(f"[dim]*Fuentes consultadas: {ver}. Datos vía Investing.com, TradingView, MarketScreener.*[/dim]\n")
+    for alert in report.get("portfolio_risk_alerts", []):
+        sev = alert.get("severity", "MEDIA")
+        style = "bold red" if sev == "ALTA" else "bold yellow"
+        icon = "🚨" if sev == "ALTA" else "⚠️"
+        console.print(Panel(f"[{style}]{icon} [{alert.get('type', 'RIESGO')}] {alert.get('message', '')}[/{style}]", border_style="red" if sev == "ALTA" else "yellow"))
+    ver = geo.get("verification_date") or "No disponible (sin fecha de verificación)"
+    console.print(f"[dim]*Fuentes consultadas: {ver}. Datos vía Yahoo Finance, TradingView, MarketScreener.*[/dim]\n")
 
     if include_candidates:
         cand_table = Table(
@@ -261,14 +290,19 @@ def print_position_detail(report: dict, ticker: str):
 
     rates = geo.get("rates", {})
     action = r.get("action", "MANTENER")
-    act_color = "red" if action == "VENDER" else "green"
+    if action == "VENDER":
+        act_color = "red"
+    elif action == "AJUSTAR_SL_TP":
+        act_color = "cyan"
+    else:
+        act_color = "green"
+    exec_order = r.get("execution_plan", {}).get("primary_order") or "Gestionar salida manualmente"
     macro_str = (
         f"[bold cyan]Recomendación:[/bold cyan] [bold][{act_color}] {action} [/{act_color}][/bold]\n"
         f"[bold]Resumen:[/bold] {r.get('summary_verdict', r.get('concise_rationale', ''))}\n"
-        f"[bold]Stop-loss sugerido:[/bold] {curr_sym}{r.get('suggested_stop_loss', 0.0):,.2f} ({r.get('stop_loss_pct', -10.0)}%) | "
-        f"[bold]Take-profit:[/bold] {curr_sym}{r.get('suggested_target_price', 0.0):,.2f} (+{r.get('take_profit_pct', 20.0)}%) | "
+        f"[bold]Ejecución XTB (qué declarar):[/bold] {exec_order} | "
         f"[bold]Confianza:[/bold] {r.get('confidence_10', 8)}/10\n"
-        f"[bold cyan]Contexto macro:[/bold cyan] Fed Funds {rates.get('fed_funds_rate', '3.50%-3.75%')}"
+        f"[bold cyan]Contexto macro:[/bold cyan] Fed Funds {rates.get('fed_funds_rate') or 'No disponible'}"
     )
     console.print(Panel(macro_str, title="💡 Recomendación y Contexto", border_style="green"))
 

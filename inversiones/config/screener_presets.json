@@ -1,153 +1,69 @@
 {
   "_meta": {
-    "description": "Filtros curados del screener Finviz. v3 — 12 presets de alta convicción protegidos contra trampas de valor (control de deuda, margen neto y momentum).",
+    "description": "Filtro curado del screener Finviz. Configuración exclusiva según Finviz Elite.",
     "url_base": "https://finviz.com/screener.ashx?v=152&f="
   },
   "presets": [
     {
-      "id": "sweet_spot",
-      "label": "🎯 Sweet Spot (P/E<20 + EPS Growth + ROE>10%)",
-      "description": "El balance perfecto: valuación razonable, crecimiento de beneficios y rentabilidad probada. Protegido con deuda controlada y margen neto positivo.",
+      "id": "finviz_elite",
+      "label": "🎯 Finviz Elite (Mid/Large, Calidad + Crecimiento, Upside >20%, PEG)",
+      "description": "Filtro Finviz: USA, Cap $2B-$200B (Mid/Large), Recom Buy+, Target Upside >20%, Deuda/Equity <1, EPS YoY1 >10%, Fwd P/E <25, Margen Operativo >0%, ROE >15%, Ventas 5Y >0%, Vol >1M, Precio >$10, Short Float <10%, 52W High <5%, RSI <50, SMA200 alcista, ordenado por PEG.",
+      "url": "https://elite.finviz.com/screener?v=171&f=an_recom_buybetter,cap_2to200,fa_debteq_u1,fa_epsyoy1_o10,fa_fpe_u25,fa_opermargin_pos,fa_roe_o15,fa_sales5years_pos,geo_usa,sh_avgvol_o1000,sh_price_o10,sh_short_u10,ta_highlow52w_b5h,ta_rsi_nob50,ta_sma200_pa,targetprice_a20&ft=3&o=peg",
       "filters": {
+        "country": "usa",
         "market_cap": ["mid", "large"],
-        "pe_max": "u20",
-        "earnings_growth": "pos",
-        "roe_min": "o10",
-        "debt_to_equity_max": "u1",
-        "profit_margin_min": "pos"
-      }
-    },
-    {
-      "id": "tech_undervalued",
-      "label": "💻 Tech Subvaluado (P/E<25 + Crecimiento)",
-      "description": "Tecnología de tamaño medio/grande con múltiplos razonables, crecimiento de ventas, balance sólido y sobre media de 200 días.",
-      "filters": {
-        "sector": "technology",
-        "market_cap": ["mid", "large"],
-        "pe_max": "u25",
-        "revenue_growth": "pos",
-        "debt_to_equity_max": "u1",
-        "sma200": "pa"
-      }
-    },
-    {
-      "id": "ai_infra_mid",
-      "label": "🤖 IA / Semis Mid-Cap (accesible + growth)",
-      "description": "Semis, cloud e IT services de tamaño medio: upside de IA sin pagar el premium de las mega-caps, con liquidez garantizada.",
-      "filters": {
-        "industries": ["semiconductors", "software_application", "information_technology_services"],
-        "market_cap": ["small", "mid"],
-        "revenue_growth": "pos",
-        "earnings_growth": "pos",
-        "debt_to_equity_max": "u1",
-        "avg_volume_min": "o100"
-      }
-    },
-    {
-      "id": "small_cap_quality",
-      "label": "🚀 Small Caps Calidad (ROE pos + Sin Deuda Tóxica)",
-      "description": "Small/micro cap rentables con crecimiento real de ventas y beneficios, filtrando biotechs deficitarias o insolventes.",
-      "filters": {
-        "market_cap": ["small", "micro"],
-        "revenue_growth": "pos",
-        "earnings_growth": "pos",
-        "roe_min": "pos",
-        "debt_to_equity_max": "u1",
-        "profit_margin_min": "pos"
-      }
-    },
-    {
-      "id": "value_dividend",
-      "label": "💰 Value + Dividendo Seguro (Yield>3%, P/E<20)",
-      "description": "Acciones con dividendo sólido respaldado por rentabilidad (ROE>10%) y bajo apalancamiento, evitando trampas de dividendo insostenible.",
-      "filters": {
-        "market_cap": ["mid", "large", "mega"],
-        "dividend_yield_min": "o3",
-        "pe_max": "u20",
-        "debt_to_equity_max": "u1",
-        "roe_min": "o10"
-      }
-    },
-    {
-      "id": "deep_value_growth",
-      "label": "⚡ Deep Value Real (P/E<10 + Sin Trampas de Deuda)",
-      "description": "Múltiplos muy castigados con crecimiento de EPS y deuda menor a 0.5: candidatos genuinos a reversión a la media con catalizador.",
-      "filters": {
-        "market_cap": ["small", "mid", "large"],
-        "pe_max": "u10",
-        "earnings_growth": "pos",
-        "debt_to_equity_max": "u0.5",
-        "profit_margin_min": "pos"
-      }
-    },
-    {
-      "id": "affordable_growth",
-      "label": "💸 Baratas con Momentum ($10–$50 + EPS Growth)",
-      "description": "Precio nominal accesible ($10-$50), tendencia alcista sobre SMA200, rendimiento positivo a 4 semanas y crecimiento de ganancias.",
-      "filters": {
-        "price_max": "10to50",
-        "market_cap": ["small", "mid"],
-        "performance_4w": "up",
-        "earnings_growth": "pos",
-        "sma200": "pa"
-      }
-    },
-    {
-      "id": "dip_buying_quality",
-      "label": "🌊 Dip-Buying en Calidad (RSI<40 + ROE>15%)",
-      "description": "Empresas excelentes de alta rentabilidad y bajo endeudamiento con castigo de corto plazo (RSI sobrevendido < 40). Oportunidad de swing/entrada.",
-      "filters": {
-        "market_cap": ["mid", "large", "mega"],
-        "rsi": "os40",
-        "roe_min": "o15",
-        "debt_to_equity_max": "u1",
-        "profit_margin_min": "pos"
-      }
-    },
-    {
-      "id": "cash_flow_kings",
-      "label": "💎 Reyes de Caja Libre (P/FCF<15 + Margen Neto)",
-      "description": "Valuación por flujo de caja libre real (el estándar Buffett). Negocios que generan ríos de efectivo a precios atractivos.",
-      "filters": {
-        "market_cap": ["mid", "large"],
-        "pfcf_max": "low",
-        "profit_margin_min": "pos",
-        "debt_to_equity_max": "u1"
-      }
-    },
-    {
-      "id": "garp_peter_lynch",
-      "label": "🚀 GARP Peter Lynch (PEG<1 + Forward P/E<25)",
-      "description": "Growth at a Reasonable Price: fuerte crecimiento de beneficios sin sobrepagar en múltiplos futuros. El método clásico de Lynch.",
-      "filters": {
-        "peg_max": "u1",
-        "forward_pe_max": "u25",
-        "earnings_growth": "pos",
-        "revenue_growth": "pos"
-      }
-    },
-    {
-      "id": "wallstreet_upside",
-      "label": "🎯 Consenso Wall Street (Buy + Target Upside>20%)",
-      "description": "Consenso de analistas 'Buy o mejor' con precio objetivo al menos 20% por encima de la cotización actual en empresas rentables.",
-      "filters": {
-        "market_cap": ["mid", "large", "mega"],
-        "target_price": "a20",
         "analyst_recom": "buybetter",
-        "profit_margin_min": "pos"
-      }
-    },
-    {
-      "id": "momentum_fundamentals",
-      "label": "📈 Momentum con Fundamentos (Sobre SMA200 + EPS QoQ)",
-      "description": "Líderes de mercado en tendencia alcista secular (sobre SMA200), con aceleración de beneficios recientes (QoQ) y 4 semanas al alza.",
-      "filters": {
-        "market_cap": ["mid", "large"],
+        "target_price": "a20",
+        "debt_to_equity_max": "u1",
+        "earnings_growth": "yoy1_o10",
+        "forward_pe_max": "u25",
+        "operating_margin_min": "pos",
+        "roe_min": "o15",
+        "revenue_growth": "pos",
+        "avg_volume_min": "o1000",
+        "price_min": "o10",
+        "short_float_max": "u10",
+        "highlow_52w": "b5h",
+        "rsi": "nob50",
         "sma200": "pa",
-        "earnings_growth": "qoq_pos",
-        "performance_4w": "up",
-        "profit_margin_min": "pos"
-      }
+        "raw_codes": [
+          "an_recom_buybetter",
+          "cap_2to200",
+          "fa_debteq_u1",
+          "fa_epsyoy1_o10",
+          "fa_fpe_u25",
+          "fa_opermargin_pos",
+          "fa_roe_o15",
+          "fa_sales5years_pos",
+          "geo_usa",
+          "sh_avgvol_o1000",
+          "sh_price_o10",
+          "sh_short_u10",
+          "ta_highlow52w_b5h",
+          "ta_rsi_nob50",
+          "ta_sma200_pa",
+          "targetprice_a20"
+        ]
+      },
+      "raw_codes": [
+        "an_recom_buybetter",
+        "cap_2to200",
+        "fa_debteq_u1",
+        "fa_epsyoy1_o10",
+        "fa_fpe_u25",
+        "fa_opermargin_pos",
+        "fa_roe_o15",
+        "fa_sales5years_pos",
+        "geo_usa",
+        "sh_avgvol_o1000",
+        "sh_price_o10",
+        "sh_short_u10",
+        "ta_highlow52w_b5h",
+        "ta_rsi_nob50",
+        "ta_sma200_pa",
+        "targetprice_a20"
+      ],
+      "order": "peg"
     }
   ]
 }

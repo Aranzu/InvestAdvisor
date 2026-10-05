@@ -45,10 +45,11 @@ def main():
         return
 
     if args.ticker:
-        from portfolio_analyzer import analyze_single_position, get_geopolitical_context
+        from portfolio_analyzer import analyze_single_position
+        from data_fetchers.geopolitical import get_fresh_macro_context
         from cli import print_position_detail, console
         console.print(f"[bold cyan]Analizando activo individual: {args.ticker}...[/bold cyan]")
-        geo = get_geopolitical_context()
+        geo = get_fresh_macro_context()
         pos_data = {"ticker": args.ticker, "shares": 1.0, "entry_price": 0.0, "source": "XTB", "notes": "Consulta directa"}
         result = analyze_single_position(pos_data, geo, include_ai=args.ai)
         dummy_report = {"positions": [result]}

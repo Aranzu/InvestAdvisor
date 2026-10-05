@@ -28,30 +28,38 @@ WEIGHTS = {
     "geopolitical": float(os.getenv("WEIGHT_GEOPOLITICAL", "0.15")),
 }
 
-# Claves de LLM y proveedor
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local").lower()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
-KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
-KIMI_MODEL = os.getenv("KIMI_MODEL", "kimi-k2.6")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
-DEEPSEEK_FLASH_MODEL = os.getenv("DEEPSEEK_FLASH_MODEL", "deepseek-flash")
-DEEPSEEK_PORTFOLIO_EFFORT = os.getenv("DEEPSEEK_PORTFOLIO_EFFORT", "high")
-DEEPSEEK_DISCOVERY_EFFORT = os.getenv("DEEPSEEK_DISCOVERY_EFFORT", "low")
-DEEPSEEK_PORTFOLIO_MAX_TOKENS = int(os.getenv("DEEPSEEK_PORTFOLIO_MAX_TOKENS", "2200"))
-DEEPSEEK_DISCOVERY_MAX_TOKENS = int(os.getenv("DEEPSEEK_DISCOVERY_MAX_TOKENS", "4500"))
-DEEPSEEK_MAX_CONCURRENCY = int(os.getenv("DEEPSEEK_MAX_CONCURRENCY", "2"))
-DEEPSEEK_USAGE_FILE = DATA_DIR / "deepseek_usage.jsonl"
-OPENCODE_GO_API_KEY = os.getenv("OPENCODE_GO_API_KEY", "")
-OPENCODE_GO_MODEL = os.getenv("OPENCODE_GO_MODEL", "deepseek-v4-pro")
-OPENCODE_GO_BASE_URL = os.getenv("OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1")
+# Claves de LLM y proveedor (SOLO gratuitos: Groq primario, OpenRouter como fallback)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+GROQ_FLASH_MODEL = os.getenv("GROQ_FLASH_MODEL", "openai/gpt-oss-20b")
+GROQ_PORTFOLIO_MAX_TOKENS = int(os.getenv("GROQ_PORTFOLIO_MAX_TOKENS", "2500"))
+GROQ_DISCOVERY_MAX_TOKENS = int(os.getenv("GROQ_DISCOVERY_MAX_TOKENS", "4500"))
+GROQ_MAX_CONCURRENCY = int(os.getenv("GROQ_MAX_CONCURRENCY", "2"))
+GROQ_USAGE_FILE = DATA_DIR / "groq_usage.jsonl"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
+OPENROUTER_PORTFOLIO_MAX_TOKENS = int(os.getenv("OPENROUTER_PORTFOLIO_MAX_TOKENS", "2500"))
+OPENROUTER_DISCOVERY_MAX_TOKENS = int(os.getenv("OPENROUTER_DISCOVERY_MAX_TOKENS", "2400"))
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 # Conversión CLP → USD para el gráfico consolidado (ajustable vía .env)
 USDCLP = float(os.getenv("USDCLP", "950"))
+
+# ── Perfil de riesgo (tope de pérdida máxima por posición) ────────────────────
+# Define cuánta pérdida adicional admite un stop estructural frente al precio
+# actual: el SL nunca queda a más de `max_loss_pct`% por debajo del precio, sin
+# importar cuán lejos quede el soporte técnico − k×ATR. Cada perfil también
+# ajusta el múltiplo del Chandelier (protección de ganancias): mayor múltiplo =
+# más colchón contra el ruido (deja correr más la ganancia, mejor en beta alta);
+# y el gap mínimo frente al precio (no dejar un stop pegado al ruido).
+# Selección vía RISK_PROFILE en .env (default: "moderado").
+RISK_PROFILE = os.getenv("RISK_PROFILE", "moderado").lower()
+RISK_PROFILES = {
+    "agresivo": {"max_loss_pct": 15.0, "chandelier_atr_multiple": 3.0, "chandelier_min_gap_atr": 1.0},
+    "moderado": {"max_loss_pct": 10.0, "chandelier_atr_multiple": 2.0, "chandelier_min_gap_atr": 1.0},
+    "conservador": {"max_loss_pct": 7.0, "chandelier_atr_multiple": 2.0, "chandelier_min_gap_atr": 1.5},
+}
 
 # Fuentes de noticias y feeds RSS
 RSS_FEEDS = {

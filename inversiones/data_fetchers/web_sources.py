@@ -130,7 +130,7 @@ def url_finviz_quote(ticker: str) -> str:
     return f"https://finviz.com/quote.ashx?t={normalize_ticker_input(ticker)}"
 
 
-def url_finviz_screener(filters: Optional[Dict[str, str]] = None, view: str = "121") -> str:
+def url_finviz_screener(filters: Optional[Dict[str, str]] = None, view: str = "121", order: str = "") -> str:
     """Screener bulk de Finviz.
 
     Views disponibles:
@@ -139,15 +139,19 @@ def url_finviz_screener(filters: Optional[Dict[str, str]] = None, view: str = "1
       - 131: Technical
       - 141: ETFs
       - 152: Overview (con nombres de empresa, pero sin ratios detallados)
+      - 171: Custom / Combined (Finviz Elite)
     """
     base = "https://finviz.com/screener.ashx?"
     if not filters:
         return f"{base}v={view}&f=cap_largeover,sec_technology,sh_price_5to20"
     # Soporta dos convenciones:
     #   - {k: v} raw ({"sec": "technology"})  → "sec_technology"
-    #   - {code: ""} prefijado (de build_finviz_filters)  → "sec_technology""
-    codes = [f"{k}_{v}" if v else k for k, v in filters.items()]
-    return f"{base}v={view}&f={','.join(codes)}"
+    #   - {code: ""} prefijado (de build_finviz_filters)  → "sec_technology"
+    codes = [f"{k}_{v}" if v else k for k, v in filters.items() if not str(k).startswith("_")]
+    url = f"{base}v={view}&f={','.join(codes)}"
+    if order:
+        url += f"&ft=3&o={order}"
+    return url
 
 
 def url_macrotrends_stock(ticker: str) -> str:
@@ -733,7 +737,7 @@ def fetch_macrotrends(ticker: str, force: bool = False) -> Dict[str, Any]:
     return result
 
 
-def scan_finviz_screener(filters: Optional[Dict[str, str]] = None, force: bool = False) -> List[Dict[str, Any]]:
+def scan_finviz_screener(filters: Optional[Dict[str, str]] = None, force: bool = False, order: str = "") -> List[Dict[str, Any]]:
     """Screener bulk de Finviz. Devuelve filas crudas con ratios para descubrimiento.
 
     Combina vista financial (v=121) + vista overview (v=152):
@@ -741,17 +745,19 @@ def scan_finviz_screener(filters: Optional[Dict[str, str]] = None, force: bool =
       - v=152 da company name, sector, industry
     Filtra fondos/ETFs/CLOs usando el nombre final (post-merge).
     """
-    key = _cache_key("fv_screener", ",".join(f"{k}={v}" for k, v in sorted((filters or {}).items())))
+    f_dict = dict(filters or {})
+    ord_val = order or f_dict.pop("_order", "") or ""
+    key = _cache_key("fv_screener", ",".join(f"{k}={v}" for k, v in sorted(f_dict.items())) + f"|o={ord_val}")
     if not force:
         cached = _cache_get(key)
         if cached is not None:
             return cached
 
     # Fetch ambas vistas (financial + overview)
-    html_fin = _safe_get(url_finviz_screener(filters, view="121"), timeout=20)
+    html_fin = _safe_get(url_finviz_screener(f_dict, view="121", order=ord_val), timeout=20)
     rows_fin = parse_finviz_screener(html_fin or "", view="121")
 
-    html_ov = _safe_get(url_finviz_screener(filters, view="152"), timeout=20)
+    html_ov = _safe_get(url_finviz_screener(f_dict, view="152", order=ord_val), timeout=20)
     rows_ov = parse_finviz_screener(html_ov or "", view="152")
 
     # Merge: ratios de v=121 + metadata (nombre/sector) de v=152

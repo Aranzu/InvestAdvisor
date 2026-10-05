@@ -25,8 +25,9 @@ from portfolio_analyzer import (
     save_portfolio_to_file,
     analyze_portfolio,
     analyze_single_position,
+    ai_progress_snapshot,
 )
-from analysis.llm_explainer import generate_ai_analysis, generate_discovery_ai_analysis, get_deepseek_usage_summary
+from analysis.llm_explainer import generate_discovery_ai_analysis, get_llm_usage_summary
 from analytics.monthly_analytics import get_monthly_performance_report
 from analytics.opportunities import (
     scan_opportunities,
@@ -42,6 +43,9 @@ from analytics.discovery import (
     load_saved_searches,
     add_saved_search,
     delete_saved_search,
+    discovery_progress_snapshot,
+    attach_portfolio_sector_overlap,
+    parse_finviz_url,
 )
 from analytics.dividends import get_dividend_schedule_for_positions
 from analytics.portfolio_history import (
@@ -61,6 +65,7 @@ from data_fetchers.technical import clear_technical_cache
 from analytics.wealth import get_consolidated_wealth, get_buying_power, compute_purchase_plan
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 CORS(app)
 
 
@@ -116,6 +121,20 @@ def _valid_ticker(value):
     return isinstance(value, str) and bool(_TICKER_RE.fullmatch(value))
 
 
+def _current_portfolio_sectors() -> list:
+    """Sectores de las posiciones actuales (del reporte cacheado si existe).
+
+    Sin red adicional: reutiliza market_data.sector ya calculado en /api/portfolio.
+    """
+    global _cached_portfolio_report
+    if _cached_portfolio_report is not None:
+        return sorted({
+            (p.get("market", {}).get("sector") or "").strip()
+            for p in _cached_portfolio_report.get("positions", [])
+        } - {""})
+    return []
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -152,19 +171,19 @@ def get_cash_balance():
     cash = get_cash_balance_from_excel()
     if not cash:
         return jsonify({"error": "No se pudo leer el cash balance del Excel"}), 404
-    return jsonify(cash)
+    return jsonify_clean(cash)
 
 
 @app.route("/api/wealth", methods=["GET"])
-def get_wealth():
-    """Patrimonio total consolidado: XTB equity + reserva externa."""
-    return jsonify(get_consolidated_wealth())
+def get_wealth_endpoint():
+    """Patrimonio total consolidado (XTB + reserva externa)."""
+    return jsonify_clean(get_consolidated_wealth())
 
 
 @app.route("/api/buying-power", methods=["GET"])
 def get_buying_power_endpoint():
-    """Poder de compra total para nuevas inversiones (XTB cash + reserva externa)."""
-    return jsonify(get_buying_power())
+    """Poder de compra total para nuevas inversiones (CLP + USD)."""
+    return jsonify_clean(get_buying_power())
 
 
 @app.route("/api/purchase-plan", methods=["GET"])
@@ -195,7 +214,11 @@ def get_monthly_analytics():
 @app.route("/api/portfolio", methods=["GET"])
 @app.route("/api/portfolio/current", methods=["GET"])
 def get_current_portfolio():
-    """Posiciones actuales con precios, variación diaria y P&L."""
+    """Posiciones actuales con precios, variación diaria y P&L (sin IA automática).
+
+    El análisis IA del portafolio completo se dispara solo con POST
+    /api/portfolio/ai-analyze (botón explícito del dashboard).
+    """
     global _cached_portfolio_report
     force = request.args.get("refresh", "false").lower() == "true"
     if force:
@@ -206,7 +229,7 @@ def get_current_portfolio():
             positions = load_positions()
             _cached_portfolio_report = analyze_portfolio(positions)
         report = _cached_portfolio_report
-    return jsonify({**report, "xtb_report": get_xtb_report_status()})
+    return jsonify_clean({**report, "xtb_report": get_xtb_report_status()})
 
 
 @app.route("/api/portfolio/sync-status", methods=["GET"])
@@ -215,10 +238,16 @@ def get_portfolio_sync_status():
     return jsonify(get_xtb_report_status())
 
 
+@app.route("/api/portfolio/ai-progress", methods=["GET"])
+def get_ai_progress():
+    """Progreso del análisis IA en curso (n/m posiciones ya veredictadas)."""
+    return jsonify(ai_progress_snapshot())
+
+
 @app.route("/api/ai/usage", methods=["GET"])
 def get_ai_usage():
-    """Local DeepSeek token/cost telemetry. Contains no prompts, outputs, or credentials."""
-    return jsonify_clean(get_deepseek_usage_summary())
+    """Local Groq/OpenRouter token telemetry. Contains no prompts, outputs, or credentials."""
+    return jsonify_clean(get_llm_usage_summary())
 
 
 @app.route("/api/portfolio/news", methods=["GET"])
@@ -238,27 +267,21 @@ def sync_portfolio_from_xtb_report():
     clear_technical_cache()
     _cached_portfolio_report = analyze_portfolio(load_positions())
     _cached_monthly_report = None
-    return jsonify({"success": True, "xtb_report": status, "portfolio": _cached_portfolio_report})
+    return jsonify_clean({"success": True, "xtb_report": status, "portfolio": _cached_portfolio_report})
 
 
-@app.route("/api/portfolio/<ticker>/ai-analysis", methods=["GET"])
-def get_portfolio_ai_analysis(ticker):
-    """On-demand LLM second opinion. It never changes the quantitative recommendation."""
+@app.route("/api/portfolio/ai-analyze", methods=["POST"])
+def analyze_portfolio_with_ai():
+    """Análisis IA completo del portafolio, disparado explícitamente por el usuario.
+
+    Es la única entrada automatizada al veredicto IA del portafolio completo:
+    la carga inicial del dashboard NO ejecuta IA. El progreso en vivo se lee
+    desde GET /api/portfolio/ai-progress.
+    """
     global _cached_portfolio_report
-    ticker = ticker.strip().upper()
-    if not _valid_ticker(ticker):
-        return jsonify({"error": "ticker con formato invalido"}), 400
-    if _cached_portfolio_report is None:
-        _cached_portfolio_report = analyze_portfolio(load_positions())
-    position = next((p for p in _cached_portfolio_report["positions"] if p.get("ticker") == ticker), None)
-    if not position:
-        return jsonify({"error": "posicion no encontrada"}), 404
-    result = generate_ai_analysis(
-        position["market"], position["scores"], position["technical"], position["fundamental"],
-        position["news"], _cached_portfolio_report.get("geopolitical", {}), position["recommendation"],
-        force_refresh=request.args.get("refresh", "false").lower() == "true",
-    )
-    return jsonify_clean(result)
+    report = analyze_portfolio(load_positions(), include_ai=True)
+    _cached_portfolio_report = report
+    return jsonify_clean({"success": True, "xtb_report": get_xtb_report_status(), "portfolio": report})
 
 
 @app.route("/api/portfolio/position", methods=["POST"])
@@ -332,7 +355,7 @@ def get_portfolio_tiers():
     """Agrupa las posiciones por tier (VENDER/OBSERVACION/MANTENER)."""
     positions = load_positions()
     if not positions:
-        return jsonify({"VENDER": [], "OBSERVACION": [], "MANTENER": [], "summary": {"VENDER": 0, "OBSERVACION": 0, "MANTENER": 0}})
+        return jsonify({"VENDER": [], "OBSERVACION": [], "AJUSTAR_SL_TP": [], "MANTENER": [], "summary": {"VENDER": 0, "OBSERVACION": 0, "AJUSTAR_SL_TP": 0, "MANTENER": 0}})
 
     force = request.args.get("refresh", "false").lower() == "true"
     global _cached_portfolio_report
@@ -342,14 +365,15 @@ def get_portfolio_tiers():
         report = analyze_portfolio(positions)
         _cached_portfolio_report = report
 
-    tiers = {"VENDER": [], "OBSERVACION": [], "MANTENER": []}
-    summary = {"VENDER": 0, "OBSERVACION": 0, "MANTENER": 0}
+    tiers = {"VENDER": [], "OBSERVACION": [], "AJUSTAR_SL_TP": [], "MANTENER": []}
+    summary = {"VENDER": 0, "OBSERVACION": 0, "AJUSTAR_SL_TP": 0, "MANTENER": 0}
 
     for p in report["positions"]:
         rec = p["recommendation"]
         action = rec.get("action", "MANTENER")
         m = p["market"]
         summary[action] = summary.get(action, 0) + 1
+        ai = rec.get("ai_analysis") or {}
         tiers[action].append({
             "ticker": m["ticker"],
             "name": m.get("name", ""),
@@ -358,9 +382,24 @@ def get_portfolio_tiers():
             "pnl_pct": m.get("unrealized_pnl_pct", 0),
             "confidence": rec.get("confidence_10", 0),
             "stop_loss": rec.get("suggested_stop_loss", 0),
+            "protective_stop_loss": rec.get("protective_stop_loss", 0),
+            "stop_loss_source": rec.get("stop_loss_source", ""),
+            "stop_loss_support_used": rec.get("stop_loss_support_used", 0),
+            "sl_anchor": rec.get("sl_anchor", {}),
+            "sl_distance_atr": rec.get("sl_distance_atr", 0),
+            "max_loss_capped": rec.get("max_loss_capped", False),
+            "max_loss_pct": rec.get("max_loss_pct"),
+            "risk_profile": rec.get("risk_profile"),
             "take_profit": rec.get("suggested_target_price", 0),
-            "rationale": rec.get("concise_rationale", rec.get("summary_verdict", "")),
+            "execution_plan": rec.get("execution_plan", {}),
+            "rationale": ai.get("resumen") or rec.get("concise_rationale", rec.get("summary_verdict", "")),
             "observation_flags": rec.get("observation_flags", []),
+            "upcoming_catalyst": rec.get("upcoming_catalyst", False),
+            "catalyst_warning": rec.get("catalyst_warning", ""),
+            "catalyst_short_warning": rec.get("catalyst_short_warning", ""),
+            "overridden_by_ai": rec.get("overridden_by_ai", False),
+            "quantitative_action": rec.get("quantitative_action"),
+            "ai_provider": ai.get("provider"),
         })
 
     for k in tiers:
@@ -445,6 +484,20 @@ def get_preset(preset_id):
     return jsonify(p)
 
 
+@app.route("/api/opportunities/parse-finviz-url", methods=["POST"])
+def parse_finviz_url_endpoint():
+    """Extrae filtros de una URL de Finviz provista por el usuario."""
+    body = request.get_json(silent=True) or {}
+    url = body.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "Parámetro 'url' requerido"}), 400
+    try:
+        data = parse_finviz_url(url)
+        return jsonify({"success": True, **data})
+    except Exception as e:
+        return jsonify({"error": f"Error parseando URL: {e}"}), 400
+
+
 @app.route("/api/opportunities/search", methods=["POST"])
 def search_dynamic_opportunities():
     """Búsqueda dinámica de oportunidades.
@@ -452,7 +505,7 @@ def search_dynamic_opportunities():
     Body JSON:
         {
           "filters": { "sector": "technology", "pe_max": "u20", ... },
-          "preset_id": "tech_undervalued",   // opcional, usa filtros del preset
+          "preset_id": "quality_value",   // opcional, usa filtros del preset
           "top_n": 20,
           "min_score": 50,
           "force_refresh": false
@@ -473,14 +526,23 @@ def search_dynamic_opportunities():
     top_n = _bounded_int(body.get("top_n"), default=20, minimum=1, maximum=100)
     min_score = _bounded_int(body.get("min_score"), default=50, minimum=0, maximum=100)
     force = bool(body.get("force_refresh", False))
+    include_ai = bool(body.get("include_ai", False))
 
     result = discovery_search(
         filters=filters,
         top_n=top_n,
         min_score=min_score,
         force_refresh=force,
+        include_ai=include_ai,
     )
+    result["results"] = attach_portfolio_sector_overlap(result.get("results") or [], _current_portfolio_sectors())
     return jsonify(result)
+
+
+@app.route("/api/opportunities/search-progress", methods=["GET"])
+def get_discovery_search_progress():
+    """Progreso de la búsqueda Discovery en curso (fase + n/m candidatos)."""
+    return jsonify(discovery_progress_snapshot())
 
 
 @app.route("/api/opportunities/saved-searches", methods=["GET"])

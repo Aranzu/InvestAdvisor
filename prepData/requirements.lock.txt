@@ -1,0 +1,34 @@
+# Versiones exactas del arbol de dependencias transitive, generadas con pip freeze
+# sobre Python 3.14.6 en Windows. Es lo que se instalo y probo, no un rango:
+# sirve para reproducir el reporte bit por bit, no para recibir actualizaciones.
+#
+#   pip install -r requirements.lock.txt
+#
+# Para desarrollo, agregar las herramientas de pyproject.toml ([project.optional-dependencies].dev).
+# Si se actualiza alguna dependencia a mano, regenerar este archivo y volver a correr los tests.
+
+beautifulsoup4==4.15.0
+certifi==2026.5.20
+charset-normalizer==3.4.7
+curl_cffi==0.15.0
+idna==3.18
+lxml==6.1.1
+multitasking==0.0.13
+mypy==2.3.1
+numpy==2.4.6
+openpyxl==3.1.5
+pandas==3.0.3
+pandas-stubs==3.0.5.260914
+peewee==4.1.1
+platformdirs==4.10.0
+protobuf==7.35.1
+python-dateutil==2.9.0.post0
+pytz==2026.2
+requests==2.34.2
+ruff==0.16.9
+soupsieve==2.8.4
+typing_extensions==4.15.0
+tzdata==2026.2
+urllib3==2.7.0
+websockets==16.0
+yfinance==1.5.1

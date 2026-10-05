@@ -55,6 +55,7 @@
         .tier-badge-mantener { background: rgba(22,199,132,0.12); color: #16C784; border: 1px solid rgba(22,199,132,0.4); }
         .tier-badge-observacion { background: rgba(234,179,8,0.12); color: #EAB308; border: 1px solid rgba(234,179,8,0.4); }
         .tier-badge-vender { background: rgba(239,68,68,0.12); color: #EF4444; border: 1px solid rgba(239,68,68,0.4); }
+        .tier-badge-ajustar_sl_tp { background: rgba(34,211,238,0.12); color: #22D3EE; border: 1px solid rgba(34,211,238,0.4); }
         .tab-btn-active { background: #FFFFFF; color: #000000; }
         .tab-btn-inactive { background: transparent; color: #8A8A8A; }
         .tab-btn-inactive:hover { color: #FFFFFF; }
@@ -89,9 +90,6 @@
                 <button onclick="switchTab('tab-dividends')" id="btn-tab-dividends" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
                     <i class="fa-solid fa-sack-dollar"></i><span>Dividendos</span>
                 </button>
-                <button onclick="switchTab('tab-news')" id="btn-tab-news" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
-                    <i class="fa-solid fa-newspaper"></i><span>Noticias</span>
-                </button>
                 <button onclick="switchTab('tab-discovery')" id="btn-tab-discovery" class="tab-btn-inactive px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5">
                     <i class="fa-solid fa-satellite-dish"></i><span>Discovery</span>
                 </button>
@@ -123,6 +121,8 @@
                     <span>•</span>
                     <span><span id="header-tier-mantener" class="text-green font-bold">0</span> mantener</span>
                     <span>•</span>
+                    <span><span id="header-tier-ajustar" class="text-cyan font-bold">0</span> ajustar SL/TP</span>
+                    <span>•</span>
                     <span><span id="header-tier-observacion" class="text-yellow font-bold">0</span> observación</span>
                     <span>•</span>
                     <span><span id="header-tier-vender" class="text-red font-bold">0</span> vender</span>
@@ -138,7 +138,6 @@
     <nav class="md:hidden border-b border-line bg-surface px-4 py-2 flex items-center gap-1 overflow-x-auto">
         <button onclick="switchTab('tab-portfolio')" class="tab-btn-active px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Portafolio</button>
         <button onclick="switchTab('tab-dividends')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Dividendos</button>
-        <button onclick="switchTab('tab-news')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Noticias</button>
         <button onclick="switchTab('tab-discovery')" class="tab-btn-inactive px-3 py-1 rounded text-xs font-bold whitespace-nowrap">Discovery</button>
     </nav>
 
@@ -160,6 +159,9 @@
                             <p class="text-[10px] text-muted mt-1" id="hero-sync-status">Reporte XTB: comprobando...</p>
                         </div>
                         <div class="flex items-center gap-2 text-[11px]">
+                            <button onclick="analyzePortfolioWithAi()" id="btn-ai-portfolio" class="px-2 py-1 rounded border border-line text-[10px] text-cyan hover:bg-elevated" title="Ejecutar el veredicto IA sobre todas las posiciones del portafolio">
+                                <i class="fa-solid fa-brain"></i> Analizar con IA
+                            </button>
                             <button onclick="syncXtbReport()" id="btn-sync-xtb" class="px-2 py-1 rounded border border-line text-[10px] text-green hover:bg-elevated" title="Recargar el último Excel exportado desde XTB">
                                 <i class="fa-solid fa-file-excel"></i> Sincronizar XTB
                             </button>
@@ -217,17 +219,24 @@
                             <h3 class="text-sm font-bold text-ink flex items-center gap-2">
                                 <i class="fa-solid fa-briefcase text-green"></i> Mis Posiciones
                             </h3>
-                            <p class="text-[10px] text-muted mt-0.5">Recomendación MANTENER / OBSERVACIÓN / VENDER + SL/TP sugerido</p>
+                            <p class="text-[10px] text-muted mt-0.5">Recomendación MANTENER / AJUSTAR SL/TP / OBSERVACIÓN / VENDER + SL/TP sugerido</p>
                         </div>
                         <div class="flex items-center gap-2">
                             <select id="portfolio-filter" onchange="filterPortfolioTable(this.value)" class="px-2 py-1 bg-elevated border border-line rounded text-[11px] text-ink">
                                 <option value="ALL">Todas</option>
-                                <option value="MANTENER">🟢 Mantener</option>
-                                <option value="OBSERVACION">🟡 Observación</option>
                                 <option value="VENDER">🔴 Vender</option>
+                                <option value="AJUSTAR_SL_TP">🔵 Mantener + Ajustar SL/TP</option>
+                                <option value="OBSERVACION">🟡 Observación</option>
+                                <option value="MANTENER">🟢 Mantener</option>
                             </select>
+                            <button onclick="exportPortfolioCsv()" class="text-[10px] px-2.5 py-1 rounded bg-elevated hover:bg-line text-ink border border-line transition flex items-center gap-1.5" title="Descargar posiciones en CSV">
+                                <i class="fa-solid fa-file-csv text-green"></i>
+                                <span>Exportar CSV</span>
+                            </button>
                         </div>
                     </div>
+
+                    <div id="portfolio-risk-alerts"></div>
 
 <div class="overflow-y-auto max-h-[650px]">
                         <table class="desktop-table w-full text-left text-[11px] border-collapse">
@@ -241,8 +250,8 @@
                                     <th class="py-2 px-3 text-right">P&L</th>
                                     <th class="py-2 px-3 text-center">Recomendación</th>
                                     <th class="py-2 px-3 text-center" title="Porcentaje de señales y fuentes disponibles para respaldar la recomendación">Datos</th>
-                                    <th class="py-2 px-3 text-right">SL</th>
-                                    <th class="py-2 px-3 text-right">TP</th>
+                                    <th class="py-2 px-3 text-right" title="Stop-loss: porcentaje del volumen a declarar como Sell Stop">SL (vol)</th>
+                                    <th class="py-2 px-3 text-right" title="Take-profit: porcentaje del volumen a declarar como Sell Limit">TP (vol)</th>
                                     <th class="py-2 px-3 text-center">IA</th>
                                 </tr>
                             </thead>
@@ -254,7 +263,6 @@
                             </tbody>
                         </table>
                     </div>
-<div id="ai-analysis-panel" class="desktop-analysis hidden m-4 p-4 rounded-lg border border-line bg-elevated text-[12px] leading-relaxed whitespace-pre-wrap"></div>
                 </div>
         </section>
 
@@ -297,29 +305,7 @@
         </section>
 
         <!-- ============================================================ -->
-        <!-- TAB 4: NOTICIAS DEL PORTAFOLIO                               -->
-        <!-- ============================================================ -->
-        <section id="tab-news" class="hidden space-y-4">
-            <div class="rounded-2xl border border-line bg-surface overflow-hidden">
-                <div class="p-4 border-b border-line flex items-center justify-between gap-3">
-                    <div>
-                        <h3 class="text-sm font-bold text-ink flex items-center gap-2">
-                            <i class="fa-solid fa-newspaper text-cyan"></i> Noticias de mi portafolio
-                        </h3>
-                        <p class="text-[10px] text-muted mt-0.5" id="portfolio-news-meta">Titulares recientes de las posiciones actuales.</p>
-                    </div>
-                    <button onclick="loadPortfolioNews(true)" class="px-2 py-1 rounded border border-line text-[10px] text-cyan hover:bg-elevated">Actualizar</button>
-                </div>
-                <div id="portfolio-news-summary" class="px-4 py-2 border-b border-line text-[10px] text-muted"></div>
-                <div id="portfolio-news-list" class="divide-y divide-line">
-                    <div class="py-12 text-center text-muted text-xs">Abre esta pestaña para cargar noticias.</div>
-                </div>
-                <p class="p-3 text-[9px] text-muted" id="portfolio-news-disclaimer"></p>
-            </div>
-        </section>
-
-        <!-- ============================================================ -->
-        <!-- TAB 5: DISCOVERY (potenciales compras)                     -->
+        <!-- TAB 4: DISCOVERY (potenciales compras)                     -->
         <!-- ============================================================ -->
         <section id="tab-discovery" class="hidden space-y-4">
             <div class="p-4 rounded-xl border border-line bg-surface">
@@ -342,7 +328,30 @@
                         </button>
                     </div>
 
+                    <!-- Finviz URL Importer -->
+                    <div class="mb-3 p-2.5 rounded-lg bg-surface border border-line flex flex-col md:flex-row items-stretch md:items-center gap-2">
+                        <div class="flex-1 flex items-center gap-2 bg-elevated px-2.5 py-1.5 rounded border border-line">
+                            <i class="fa-solid fa-link text-muted text-xs"></i>
+                            <input id="finviz-url-input" type="text" placeholder="Pegar URL de Finviz (Free o Elite, ej: https://elite.finviz.com/screener?v=171&f=...)" class="w-full bg-transparent text-[11px] text-ink placeholder:text-muted focus:outline-none" />
+                        </div>
+                        <button onclick="applyFinvizUrlFromInput()" class="px-3 py-1.5 rounded bg-green/10 hover:bg-green/20 text-green border border-green/30 text-[11px] font-bold transition flex items-center justify-center gap-1.5 whitespace-nowrap">
+                            <i class="fa-solid fa-cloud-arrow-down"></i>
+                            <span>Importar URL</span>
+                        </button>
+                    </div>
+
                     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px]">
+                        <label class="block">
+                            <span class="text-muted">País</span>
+                            <select id="f-country" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
+                                <option value="usa" selected>🇺🇸 USA (recomendado)</option>
+                                <option value="any">Cualquiera</option>
+                                <option value="canada">Canadá</option>
+                                <option value="britain">Reino Unido</option>
+                                <option value="israel">Israel</option>
+                                <option value="australia">Australia</option>
+                            </select>
+                        </label>
                         <label class="block">
                             <span class="text-muted">Sector</span>
                             <select id="f-sector" class="mt-1 w-full px-2 py-1.5 bg-elevated border border-line rounded text-ink">
@@ -379,6 +388,7 @@
                                 <option value="10to50">$10 - $50</option>
                                 <option value="20to50">$20 - $50</option>
                                 <option value="50to100">$50 - $100</option>
+                                <option value="o10">&gt; $10</option>
                                 <option value="o100">&gt; $100</option>
                             </select>
                         </label>
@@ -491,6 +501,7 @@
                                 <option value="os30">Sobrevendido (&lt; 30)</option>
                                 <option value="os40">Sobrevendido (&lt; 40 - Dip)</option>
                                 <option value="nos50">No Sobrevendido (&gt; 50)</option>
+                                <option value="nob50">No Sobrecomprado (&lt; 50)</option>
                                 <option value="ob70">Sobrecomprado (&gt; 70)</option>
                             </select>
                         </label>
@@ -601,34 +612,40 @@
                         </h4>
                         <p class="text-[10px] text-muted" id="discovery-meta">Define filtros arriba y presiona "Buscar"</p>
                     </div>
-                    <span id="discovery-count-badge" class="text-[10px] px-2.5 py-1 rounded bg-elevated text-green border border-line font-mono">0 resultados</span>
+                    <div class="flex items-center gap-2">
+                        <span id="discovery-count-badge" class="text-[10px] px-2.5 py-1 rounded bg-elevated text-green border border-line font-mono">0 resultados</span>
+                        <button onclick="exportDiscoveryCsv()" id="btn-export-csv" class="text-[10px] px-2.5 py-1 rounded bg-elevated hover:bg-line text-ink border border-line transition flex items-center gap-1.5" title="Descargar resultados en CSV">
+                            <i class="fa-solid fa-file-csv text-green"></i>
+                            <span>Exportar CSV</span>
+                        </button>
+                    </div>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-[11px] border-collapse">
                         <thead>
                             <tr class="bg-elevated border-b border-line text-muted font-bold uppercase tracking-wider">
-                                <th class="py-2 px-3">Ticker</th>
-                                <th class="py-2 px-3">Sector</th>
-                                <th class="py-2 px-3 text-right">Precio</th>
-                                <th class="py-2 px-3 text-right">Upside</th>
-                                <th class="py-2 px-3 text-center">Score</th>
-                                <th class="py-2 px-3 text-right">Entrada</th>
-                                <th class="py-2 px-3 text-right">SL</th>
-                                <th class="py-2 px-3 text-right">TP</th>
-                                <th class="py-2 px-3 text-center">Conf.</th>
+                                <th class="py-2 px-3 cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('ticker')" title="Ordenar por Ticker">Ticker <i id="sort-icon-ticker" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('sector')" title="Ordenar por Sector">Sector <i id="sort-icon-sector" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 text-right cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('current_price')" title="Ordenar por Precio">Precio <i id="sort-icon-current_price" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 text-right cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('upside_pct')" title="Ordenar por Upside">Upside <i id="sort-icon-upside_pct" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 text-center cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('opportunity_score')" title="Ordenar por Opportunity Score">Score <i id="sort-icon-opportunity_score" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 text-right cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('suggested_entry')" title="Ordenar por Entrada">Entrada <i id="sort-icon-suggested_entry" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 text-right cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('suggested_stop_loss')" title="Ordenar por Stop Loss">SL <i id="sort-icon-suggested_stop_loss" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 text-right cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('suggested_take_profit')" title="Ordenar por Take Profit">TP <i id="sort-icon-suggested_take_profit" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 text-center cursor-pointer hover:text-ink select-none" onclick="sortDiscoveryBy('confidence_10')" title="Ordenar por Confianza">Conf. <i id="sort-icon-confidence_10" class="fa-solid fa-sort text-[9px] opacity-40"></i></th>
+                                <th class="py-2 px-3 text-center">Overlap</th>
                                 <th class="py-2 px-3 text-center">IA</th>
                                 <th class="py-2 px-3 max-w-xs">Motivo / contexto</th>
                             </tr>
                         </thead>
                         <tbody id="discovery-tbody" class="divide-y divide-line">
-                            <tr><td colspan="11" class="py-12 text-center text-muted">
+                            <tr><td colspan="12" class="py-12 text-center text-muted">
                                 <i class="fa-solid fa-satellite-dish text-3xl mb-3 text-line"></i>
                                 <p class="text-xs">Listo para descubrir. Ajusta los filtros arriba y pulsa <strong>Buscar</strong>.</p>
                             </td></tr>
                         </tbody>
                     </table>
                 </div>
-                <div id="discovery-ai-panel" class="desktop-analysis hidden m-4 p-4 rounded-lg border border-line bg-elevated text-[12px] leading-relaxed whitespace-pre-wrap"></div>
             </div>
         </section>
 
@@ -643,7 +660,6 @@
         let currentTab = 'tab-portfolio';
         let latestXtbReportMtime = null;
         let consolidatedWealth = null;
-        let portfolioNewsLoaded = false;
 
         document.addEventListener("DOMContentLoaded", () => {
             refreshFx();
@@ -658,11 +674,11 @@
         // ─── TABS ───────────────────────────────────────────────────────
         function switchTab(tabId) {
             currentTab = tabId;
-            ['tab-portfolio', 'tab-dividends', 'tab-news', 'tab-discovery'].forEach(id => {
+            ['tab-portfolio', 'tab-dividends', 'tab-discovery'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.classList.add('hidden');
             });
-            ['btn-tab-portfolio', 'btn-tab-dividends', 'btn-tab-news', 'btn-tab-discovery'].forEach(btnId => {
+            ['btn-tab-portfolio', 'btn-tab-dividends', 'btn-tab-discovery'].forEach(btnId => {
                 const btn = document.getElementById(btnId);
                 if (btn) {
                     btn.classList.remove('tab-btn-active');
@@ -676,9 +692,6 @@
                 activeBtn.classList.remove('tab-btn-inactive');
                 activeBtn.classList.add('tab-btn-active');
             }
-
-            // Cargar histórico al entrar a Métricas
-            if (tabId === 'tab-news' && !portfolioNewsLoaded) loadPortfolioNews();
         }
 
         // ─── FX ────────────────────────────────────────────────────────
@@ -714,11 +727,59 @@
                 portfolioData = data;
                 renderHero(data);
                 renderPortfolioTable(data);
+                renderPortfolioRiskAlerts(data);
                 renderAllocation(data);
                 updateHeaderCounts(data);
                 renderXtbReportStatus(data.xtb_report);
             } catch (err) {
                 console.error("Error cargando portafolio:", err);
+            }
+        }
+
+        async function analyzePortfolioWithAi() {
+            const button = document.getElementById("btn-ai-portfolio");
+            const statusEl = document.getElementById("hero-sync-status");
+            if (button) button.disabled = true;
+
+            const showProgress = (p) => {
+                if (!statusEl || !p || !p.active) return;
+                statusEl.className = "text-[10px] text-cyan mt-1";
+                statusEl.innerText = `Analizando con IA… ${p.done}/${p.total}${p.current_ticker ? ` (${p.current_ticker})` : ""}`;
+            };
+            const poll = () => {
+                fetch(`/api/portfolio/ai-progress?_t=${Date.now()}`)
+                    .then(r => r.json())
+                    .then(showProgress)
+                    .catch(() => {});
+            };
+            const timer = setInterval(poll, 1200);
+            poll();
+
+            try {
+                const res = await fetch("/api/portfolio/ai-analyze", { method: "POST" });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "No se pudo analizar el portafolio");
+                clearInterval(timer);
+                portfolioData = data.portfolio;
+                renderHero(portfolioData);
+                renderPortfolioTable(portfolioData);
+                renderPortfolioRiskAlerts(portfolioData);
+                renderAllocation(portfolioData);
+                updateHeaderCounts(portfolioData);
+                renderXtbReportStatus(data.xtb_report);
+                if (statusEl) {
+                    statusEl.className = "text-[10px] text-green mt-1";
+                    statusEl.innerText = "Análisis IA completado para todo el portafolio.";
+                }
+            } catch (err) {
+                clearInterval(timer);
+                if (statusEl) {
+                    statusEl.className = "text-[10px] text-red mt-1";
+                    statusEl.innerText = `Error de análisis IA: ${err.message}`;
+                }
+                console.error("Error IA portafolio:", err);
+            } finally {
+                if (button) button.disabled = false;
             }
         }
 
@@ -760,6 +821,7 @@
                 portfolioData = data.portfolio;
                 renderHero(portfolioData);
                 renderPortfolioTable(portfolioData);
+                renderPortfolioRiskAlerts(portfolioData);
                 renderAllocation(portfolioData);
                 updateHeaderCounts(portfolioData);
                 renderXtbReportStatus(data.xtb_report);
@@ -809,6 +871,30 @@
             if (monthlyChangeEl) monthlyChangeEl.innerText = "—";
         }
 
+        function escapeHtml(s) {
+            return String(s == null ? "" : s)
+                .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+        }
+
+        function renderPortfolioRiskAlerts(data) {
+            const alerts = data.portfolio_risk_alerts || [];
+            const host = document.getElementById("portfolio-risk-alerts");
+            if (!host) return;
+            if (alerts.length === 0) {
+                host.innerHTML = "";
+                return;
+            }
+            host.innerHTML = alerts.map(a =>
+                `<div class="text-[10px] ${a.severity === "ALTA" ? "text-red" : "text-yellow"} px-3 py-1 border-b border-line">${a.severity === "ALTA" ? "🚨" : "⚠️"} [${escapeHtml(a.type || "RIESGO")}] ${escapeHtml(a.message || "")}</div>`
+            ).join("");
+        }
+
+        function toggleMemo(id) {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle("hidden");
+        }
+
         function renderPortfolioTable(data) {
             const tbody = document.getElementById("portfolio-tbody");
             if (!tbody) return;
@@ -817,10 +903,10 @@
             const filter = document.getElementById("portfolio-filter")?.value || "ALL";
             const filtered = filter === "ALL" ? positions : positions.filter(p => p.recommendation?.action === filter);
 
-            const priority = { "VENDER": 0, "OBSERVACION": 1, "MANTENER": 2 };
+            const priority = { "VENDER": 0, "AJUSTAR_SL_TP": 1, "OBSERVACION": 2, "MANTENER": 3 };
             const sorted = [...filtered].sort((a, b) => {
-                const ap = priority[a.recommendation?.action] ?? 2;
-                const bp = priority[b.recommendation?.action] ?? 2;
+                const ap = priority[a.recommendation?.action] ?? 3;
+                const bp = priority[b.recommendation?.action] ?? 3;
                 return ap - bp;
             });
 
@@ -834,13 +920,69 @@
                 const r = p.recommendation || {};
                 const ticker = m.ticker || "?";
                 const action = r.action || "MANTENER";
+                const isLowConfidence = r.confidence_level === "BAJA";
                 const actionClass = `tier-badge-${action.toLowerCase()}`;
-                const badge = `<span class="${actionClass} px-2 py-0.5 rounded text-[10px] font-bold">${action === "OBSERVACION" ? "⚠️ " : ""}${action}</span>`;
+                const actionLabel = action === "AJUSTAR_SL_TP" ? "AJUSTAR SL/TP" : action;
+                const badge = `<span class="${actionClass} px-2 py-0.5 rounded text-[10px] font-bold">${action === "OBSERVACION" ? "⚠️ " : ""}${actionLabel}</span>`;
                 const pnlPct = m.unrealized_pnl_pct || 0;
                 const pnlColor = pnlPct >= 0 ? "text-green" : "text-red";
                 const sparklineId = `spark-${ticker}`;
                 const coverage = Number(r.data_coverage_pct ?? p.scores?.data_coverage_pct ?? 0);
                 const coverageColor = coverage >= 85 ? "text-green" : coverage >= 70 ? "text-yellow" : "text-red";
+                const plan = r.execution_plan || {};
+                const slShare = plan.sell_stop_pct ?? 100;
+                const tpShare = plan.sell_limit_pct ?? 0;
+                let slTooltip = plan.stop_loss_reference || plan.primary_order || '';
+                const slAnchor = plan.sl_anchor || r.sl_anchor || null;
+                if (slAnchor && slAnchor.source) {
+                    const anchorLevel = Number(slAnchor.level) > 0 ? `$${Number(slAnchor.level).toFixed(2)}` : '';
+                    slTooltip = `Ancla del SL: ${slAnchor.source}${anchorLevel ? ` (${anchorLevel})` : ''}. ${slTooltip}`;
+                }
+                const slDistAtr = Number(r.sl_distance_atr || 0);
+                if (slDistAtr > 0) slTooltip += ` | Distancia: ${slDistAtr.toFixed(1)}xATR`;
+                if (r.max_loss_capped) slTooltip += ` | ⚠ JALADO por tope de pérdida máxima (${r.max_loss_pct || 10}% / perfil ${r.risk_profile || 'moderado'})`;
+                const slCell = slShare > 0
+                    ? `<span class="cursor-help" title="${slTooltip}">$${(r.suggested_stop_loss || 0).toFixed(2)}<span class="text-muted"> ·${slShare}%</span>${r.max_loss_capped ? '<span class="text-yellow" title="Acotado por tope de pérdida máxima del perfil"> *</span>' : ''}</span>`
+                    : `<span class="text-muted">—</span>`;
+                const tpCell = tpShare > 0
+                    ? `<span title="${plan.primary_order || ''}">$${(r.suggested_target_price || 0).toFixed(2)}<span class="text-muted"> ·${tpShare}%</span></span>`
+                    : `<span class="text-muted cursor-help" title="${plan.take_profit_reference || 'TP manual con valor fundado'}">$${(r.suggested_target_price || 0).toFixed(2)}<span class="text-muted"> ·manual${(plan.take_profit_levels && plan.take_profit_levels.length) ? ' ·escalera' : ''}</span></span>`;
+
+                const ai = r.ai_analysis || null;
+                const memoId = `memo-${ticker}`;
+                const overridden = r.overridden_by_ai === true && r.quantitative_action && r.quantitative_action !== action;
+
+                let recContent = badge;
+                if (r.upcoming_catalyst) {
+                    const catTxt = r.catalyst_warning || r.catalyst_short_warning || "Evento catalizador próximo";
+                    recContent += `<div class="text-[8px] text-orange mt-0.5" title="${escapeHtml(catTxt)}">📅 ${isLowConfidence ? "" : ""}Catalizador: ${escapeHtml(catTxt)}</div>`;
+                }
+                if (isLowConfidence) {
+                    recContent += `<div class="text-[8px] text-yellow mt-0.5" title="Confianza ${r.confidence_10}/10">⚠️ Confianza baja por cobertura insuficiente · revisión ${r.next_review_date || "—"}</div>`;
+                }
+                if (overridden) {
+                    recContent += `<div class="text-[8px] text-cyan mt-0.5">IA: de <span class="line-through">${r.quantitative_action}</span> a ${action}</div>`;
+                }
+                if (ai && ai.resumen) {
+                    recContent += `<div class="mt-1 max-w-[460px] text-[9px] leading-tight text-muted text-left">${escapeHtml(String(ai.resumen))}</div>`;
+                } else {
+                    recContent += `<div class="mt-1 max-w-[460px] text-[9px] leading-tight text-muted text-left">${escapeHtml(String(r.position_context?.headline || r.concise_rationale || ""))}</div>`;
+                }
+
+                const cats = (ai && Array.isArray(ai.catalizadores) && ai.catalizadores.length)
+                    ? `<div class="mt-2 text-[9px] text-muted"><span class="font-bold">Catalizadores:</span> ${ai.catalizadores.map(c => escapeHtml(c)).join(" · ")}</div>` : "";
+                const evts = (ai && Array.isArray(ai.eventos) && ai.eventos.length)
+                    ? `<div class="mt-1 text-[9px] text-muted"><span class="font-bold">Eventos:</span> ${ai.eventos.map(e => escapeHtml(e)).join(" · ")}</div>` : "";
+                const meta = ai ? `<div class="mt-2 text-[8px] text-muted">${escapeHtml(ai.provider || "local")}${ai.cached ? " · caché" : ""} — ${escapeHtml(ai.disclaimer || "")}</div>` : "";
+
+                const memoRow = (ai && ai.memo)
+                    ? `<tr id="${memoId}" class="hidden bg-elevated"><td colspan="11" class="py-3 px-4">
+                        <div class="text-[10px] text-ink whitespace-pre-wrap leading-relaxed max-w-[980px]">${escapeHtml(String(ai.memo))}</div>${cats}${evts}${meta}
+                    </td></tr>` : "";
+
+                const memoBtn = (ai && ai.memo)
+                    ? `<button onclick="toggleMemo('${memoId}')" class="px-2 py-1 rounded border border-line text-[9px] text-cyan hover:bg-elevated">Memo</button>`
+                    : `<span class="text-[9px] text-muted">—</span>`;
 
                 return `
                 <tr class="hover:bg-elevated transition">
@@ -848,38 +990,23 @@
                         <div class="font-bold text-ink text-[12px]">${ticker}</div>
                         <div class="text-[9px] text-muted truncate max-w-[120px]">${(m.name || "").slice(0, 25)}</div>
                     </td>
-                    <td class="py-2 px-3 text-right font-mono text-ink">${(m.shares || 0).toFixed(2)}</td>
+                    <td class="py-2 px-3 text-right font-mono text-ink">${m.shares || 0}</td>
                     <td class="py-2 px-3 text-right font-mono text-muted">$${(m.entry_price || 0).toFixed(2)}</td>
                     <td class="py-2 px-3 text-right font-mono text-ink font-bold">$${(m.current_price || 0).toFixed(2)}</td>
                     <td class="py-2 px-3"><div id="${sparklineId}" class="h-6"></div></td>
                     <td class="py-2 px-3 text-right font-mono ${pnlColor} font-bold">
                         ${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%
                     </td>
-                    <td class="py-2 px-3 text-center">${badge}<div class="mt-1 max-w-[190px] text-[9px] leading-tight text-muted text-left">${(r.position_context?.headline || r.concise_rationale || "").slice(0, 145)}</div></td>
+                    <td class="py-2 px-3 text-center">${recContent}</td>
                     <td class="py-2 px-3 text-center font-mono text-[10px] ${coverageColor}" title="Cobertura de datos: ${coverage.toFixed(0)}%">${coverage.toFixed(0)}%</td>
-                    <td class="py-2 px-3 text-right font-mono text-red text-[10px]">$${(r.suggested_stop_loss || 0).toFixed(2)}</td>
-                    <td class="py-2 px-3 text-right font-mono text-green text-[10px]">$${(r.suggested_target_price || 0).toFixed(2)}</td>
-                    <td class="py-2 px-3 text-center"><button onclick="loadAiAnalysis('${ticker}')" class="px-2 py-1 rounded border border-line text-[9px] text-cyan hover:bg-elevated">Análisis IA</button></td>
-                </tr>`;
+                    <td class="py-2 px-3 text-right font-mono text-red text-[10px]">${slCell}</td>
+                    <td class="py-2 px-3 text-right font-mono text-green text-[10px]">${tpCell}</td>
+                    <td class="py-2 px-3 text-center">${memoBtn}</td>
+                </tr>${memoRow}`;
             }).join("");
 
             // Cargar sparklines individuales
             loadPositionSparklines(positions.map(p => p.market?.ticker).filter(Boolean));
-        }
-
-        async function loadAiAnalysis(ticker) {
-            const panel = document.getElementById("ai-analysis-panel");
-            if (!panel) return;
-            panel.classList.remove("hidden");
-            panel.innerText = `Generando análisis complementario para ${ticker}...`;
-            try {
-                const res = await fetch(`/api/portfolio/${encodeURIComponent(ticker)}/ai-analysis`);
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || "No se pudo generar el análisis");
-                panel.innerText = `[${data.provider}${data.cached ? " · caché" : ""}] ${data.disclaimer}\n\n${data.analysis}`;
-            } catch (err) {
-                panel.innerText = `Error de análisis IA: ${err.message}`;
-            }
         }
 
         async function loadPositionSparklines(tickers) {
@@ -948,12 +1075,13 @@
         function updateHeaderCounts(data) {
             const positions = data.positions || [];
             document.getElementById("header-positions-count").innerText = positions.length;
-            const counts = { MANTENER: 0, OBSERVACION: 0, VENDER: 0 };
+            const counts = { MANTENER: 0, OBSERVACION: 0, VENDER: 0, AJUSTAR_SL_TP: 0 };
             positions.forEach(p => {
                 const a = p.recommendation?.action || "MANTENER";
                 if (counts[a] !== undefined) counts[a]++;
             });
             document.getElementById("header-tier-mantener").innerText = counts.MANTENER;
+            document.getElementById("header-tier-ajustar").innerText = counts.AJUSTAR_SL_TP;
             document.getElementById("header-tier-observacion").innerText = counts.OBSERVACION;
             document.getElementById("header-tier-vender").innerText = counts.VENDER;
         }
@@ -1009,21 +1137,55 @@
             }).join("");
         }
 
+
         // ─── DISCOVERY ────────────────────────────────────────────────
-        async function loadPortfolioNews(force = false) {
-            const list = document.getElementById("portfolio-news-list");
-            if (!list) return;
-            if (force) portfolioNewsLoaded = false;
-            list.innerHTML = '<div class="py-12 text-center text-muted text-xs">Cargando noticias...</div>';
-            try {
-                const response = await fetch(`/api/portfolio/news?_t=${Date.now()}`);
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || "No se pudieron cargar noticias");
-                portfolioNewsLoaded = true;
-                renderPortfolioNews(data);
-            } catch (err) {
-                list.innerHTML = `<div class="py-12 text-center text-red text-xs">Error al cargar noticias: ${err.message}</div>`;
+        function exportPortfolioCsv() {
+            if (!portfolioData || !portfolioData.positions || portfolioData.positions.length === 0) {
+                alert("No hay posiciones en el portafolio para exportar.");
+                return;
             }
+            const filter = document.getElementById("portfolio-filter")?.value || "ALL";
+            const positions = portfolioData.positions || [];
+            const filtered = filter === "ALL" ? positions : positions.filter(p => p.recommendation?.action === filter);
+
+            if (filtered.length === 0) {
+                alert("No hay posiciones que coincidan con el filtro actual.");
+                return;
+            }
+
+            const headers = ["Ticker", "Empresa", "Acciones", "Precio Entrada", "Precio Actual", "P&L %", "Recomendación", "Datos %", "Stop Loss", "SL Vol %", "Take Profit", "TP Vol %", "Confianza", "Contexto"];
+            const rows = filtered.map(p => {
+                const m = p.market || {};
+                const r = p.recommendation || {};
+                const plan = r.execution_plan || {};
+                return [
+                    m.ticker || "",
+                    `"${(m.name || "").replace(/"/g, '""')}"`,
+                    m.shares ?? "",
+                    m.entry_price !== undefined ? m.entry_price : "",
+                    m.current_price !== undefined ? m.current_price : "",
+                    m.unrealized_pnl_pct !== undefined ? m.unrealized_pnl_pct : "",
+                    r.action || "",
+                    Number(r.data_coverage_pct ?? p.scores?.data_coverage_pct ?? 0).toFixed(0),
+                    r.suggested_stop_loss !== undefined ? r.suggested_stop_loss : "",
+                    plan.sell_stop_pct ?? "",
+                    r.suggested_target_price !== undefined ? r.suggested_target_price : "",
+                    plan.sell_limit_pct ?? "",
+                    r.confidence_10 ?? "",
+                    `"${(r.concise_rationale || r.position_context?.headline || "").replace(/"/g, '""')}"`,
+                ];
+            });
+
+            const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(row => row.join(","))].join("\n");
+            const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `portafolio_${new Date().toISOString().slice(0, 10)}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         function escapeHtml(value) {
@@ -1032,42 +1194,11 @@
             return node.innerHTML;
         }
 
-        function renderPortfolioNews(data) {
-            const list = document.getElementById("portfolio-news-list");
-            const counts = data.sentiment_counts || {};
-            document.getElementById("portfolio-news-summary").innerHTML =
-                `<span class="text-green">${counts.POSITIVO || 0} positivas</span> · ` +
-                `<span>${counts.NEUTRAL || 0} neutrales</span> · ` +
-                `<span class="text-red">${counts.NEGATIVO || 0} negativas</span> · ` +
-                `${(data.covered_tickers || []).length}/${(data.portfolio_tickers || []).length} tickers con cobertura`;
-            document.getElementById("portfolio-news-meta").innerText =
-                `${(data.articles || []).length} titulares · ${(data.data_sources || []).join(" + ")}`;
-            document.getElementById("portfolio-news-disclaimer").innerText = data.disclaimer || "";
-            const colors = { POSITIVO: "text-green", NEGATIVO: "text-red", NEUTRAL: "text-muted" };
-            const articles = data.articles || [];
-            if (!articles.length) {
-                list.innerHTML = '<div class="py-12 text-center text-muted text-xs">No se encontraron titulares recientes.</div>';
-                return;
-            }
-            list.innerHTML = articles.map(article => {
-                const rawUrl = article.link || "";
-                const url = /^https?:\/\//i.test(rawUrl) ? rawUrl : "";
-                const title = escapeHtml(article.title);
-                const headline = url
-                    ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="text-ink hover:text-cyan">${title}</a>`
-                    : `<span class="text-ink">${title}</span>`;
-                return `<article class="p-4 hover:bg-elevated transition"><div class="flex items-start gap-3">
-                    <span class="px-2 py-0.5 rounded border border-line text-[10px] font-bold text-cyan">${escapeHtml(article.ticker)}</span>
-                    <div class="min-w-0 flex-1"><div class="text-[12px] font-semibold leading-snug">${headline}</div>
-                    <div class="mt-1 text-[10px] text-muted">${escapeHtml(article.publisher)} · ${escapeHtml(article.published)} · <span class="${colors[article.sentiment] || "text-muted"}">${escapeHtml(article.sentiment)}</span></div></div>
-                </div></article>`;
-            }).join("");
-        }
-
         function getDiscoveryFilters() {
             const multi = (id) => Array.from(document.getElementById(id)?.selectedOptions || []).map(o => o.value).filter(v => v);
             const single = (id) => document.getElementById(id)?.value || null;
             return {
+                country: single("f-country") || "usa",
                 sector: single("f-sector") || null,
                 market_cap: multi("f-market-cap") || null,
                 pe_max: single("f-pe") || null,
@@ -1091,13 +1222,14 @@
         }
 
         function resetDiscoveryFilters() {
-            ["f-sector", "f-market-cap", "f-pe", "f-fpe", "f-peg", "f-pfcf", "f-price",
+            window._activePreset = null;
+            ["f-sector", "f-country", "f-market-cap", "f-pe", "f-fpe", "f-peg", "f-pfcf", "f-price",
              "f-div", "f-rev-growth", "f-eps-growth", "f-roe", "f-debteq", "f-netmargin",
              "f-rsi", "f-sma200", "f-targetprice", "f-recom", "f-perf-4w", "f-volume"].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) {
                     if (el.multiple) Array.from(el.options).forEach(o => o.selected = false);
-                    else el.value = "";
+                    else el.value = (id === "f-country") ? "usa" : "";
                 }
             });
             document.getElementById("f-top-n").value = "20";
@@ -1112,45 +1244,173 @@
             if (icon) icon.classList.add("fa-spin");
             if (text) text.innerText = "Buscando en Finviz + evaluando...";
 
+            const phaseLabel = {
+                screening: "Evaluando candidatos…",
+                context: "Consultando noticias / macro…",
+                ai: "Analizando con IA…",
+            };
+            const showProgress = (p) => {
+                if (!text || !p || !p.active) return;
+                const label = phaseLabel[p.phase] || `Fase ${p.phase}…`;
+                text.innerText = `${label} ${p.done}/${p.total}${p.current_ticker ? ` (${p.current_ticker})` : ""}`;
+            };
+            const poll = () => {
+                fetch(`/api/opportunities/search-progress?_t=${Date.now()}`)
+                    .then(r => r.json())
+                    .then(showProgress)
+                    .catch(() => {});
+            };
+            const timer = setInterval(poll, 1200);
+            poll();
+
             const filters = getDiscoveryFilters();
             const cleanedFilters = Object.fromEntries(
                 Object.entries(filters).filter(([_, v]) =>
                     v !== null && v !== "" && !(Array.isArray(v) && v.length === 0))
             );
 
+            const bodyPayload = {
+                filters: cleanedFilters,
+                top_n: parseInt(document.getElementById("f-top-n").value || "20"),
+                min_score: parseInt(document.getElementById("f-min-score").value || "70"),
+                include_ai: true,
+            };
+            if (window._activePreset) {
+                if (window._activePreset.id) bodyPayload.preset_id = window._activePreset.id;
+                if (window._activePreset.order) bodyPayload.filters.order = window._activePreset.order;
+                if (window._activePreset.raw_codes) bodyPayload.filters.raw_codes = window._activePreset.raw_codes;
+            }
+
             try {
                 const res = await fetch("/api/opportunities/search", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        filters: cleanedFilters,
-                        top_n: parseInt(document.getElementById("f-top-n").value || "20"),
-                        min_score: parseInt(document.getElementById("f-min-score").value || "70"),
-                    }),
+                    body: JSON.stringify(bodyPayload),
                 });
                 const data = await res.json();
                 renderDiscoveryResults(data);
             } catch (err) {
                 console.error("Error discovery:", err);
             } finally {
+                clearInterval(timer);
                 if (btn) btn.disabled = false;
                 if (icon) icon.classList.remove("fa-spin");
                 if (text) text.innerText = "Buscar con estos filtros";
             }
         }
 
-        function renderDiscoveryResults(data) {
+        async function applyFinvizUrlFromInput() {
+            const input = document.getElementById("finviz-url-input");
+            const url = (input ? input.value : "").trim();
+            if (!url) {
+                alert("Por favor ingresa una URL de Finviz válida.");
+                return;
+            }
+            try {
+                const res = await fetch("/api/opportunities/parse-finviz-url", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "No se pudo interpretar la URL");
+                applyPreset({
+                    id: "custom_finviz_url",
+                    label: "URL Finviz Importada",
+                    description: url,
+                    filters: data.filters,
+                    raw_codes: data.raw_codes,
+                    order: data.order,
+                });
+            } catch (err) {
+                alert("Error al importar URL: " + err.message);
+            }
+        }
+
+        window._discoverySortCol = 'opportunity_score';
+        window._discoverySortAsc = false;
+
+        function sortDiscoveryBy(col) {
+            if (!window._discoveryResults || window._discoveryResults.length === 0) return;
+            if (window._discoverySortCol === col) {
+                window._discoverySortAsc = !window._discoverySortAsc;
+            } else {
+                window._discoverySortCol = col;
+                window._discoverySortAsc = (col === 'ticker' || col === 'sector');
+            }
+
+            ['ticker', 'sector', 'current_price', 'upside_pct', 'opportunity_score', 'suggested_entry', 'suggested_stop_loss', 'suggested_take_profit', 'confidence_10'].forEach(c => {
+                const icon = document.getElementById(`sort-icon-${c}`);
+                if (!icon) return;
+                if (c === window._discoverySortCol) {
+                    icon.className = `fa-solid ${window._discoverySortAsc ? 'fa-sort-up text-green' : 'fa-sort-down text-green'} text-[9px] opacity-100`;
+                } else {
+                    icon.className = 'fa-solid fa-sort text-[9px] opacity-40';
+                }
+            });
+
+            window._discoveryResults.sort((a, b) => {
+                let va = a[col];
+                let vb = b[col];
+                if (va === null || va === undefined) va = (typeof vb === 'string' ? '' : -999999);
+                if (vb === null || vb === undefined) vb = (typeof va === 'string' ? '' : -999999);
+                if (typeof va === 'string') {
+                    return window._discoverySortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+                }
+                return window._discoverySortAsc ? (va - vb) : (vb - va);
+            });
+
+            if (window._lastDiscoveryData) {
+                renderDiscoveryResults({ ...window._lastDiscoveryData, results: window._discoveryResults }, true);
+            }
+        }
+
+        function exportDiscoveryCsv() {
+            const results = window._discoveryResults || [];
+            if (results.length === 0) {
+                alert("No hay resultados de Discovery para exportar.");
+                return;
+            }
+            const headers = ["Ticker", "Empresa", "Sector", "Precio", "Upside %", "Opportunity Score", "Entrada Sugerida", "Stop Loss", "Take Profit", "Confianza", "Razón"];
+            const rows = results.map(r => [
+                r.ticker || "",
+                `"${(r.name || "").replace(/"/g, '""')}"`,
+                `"${(r.sector || "").replace(/"/g, '""')}"`,
+                r.current_price !== undefined ? r.current_price : "",
+                r.upside_pct !== undefined ? r.upside_pct : "",
+                r.opportunity_score !== undefined ? r.opportunity_score : "",
+                r.suggested_entry !== undefined ? r.suggested_entry : "",
+                r.suggested_stop_loss !== undefined ? r.suggested_stop_loss : "",
+                r.suggested_take_profit !== undefined ? r.suggested_take_profit : "",
+                r.confidence_10 !== undefined ? r.confidence_10 : "",
+                `"${(r.entry_rationale || "").replace(/"/g, '""')}"`,
+            ]);
+            const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(row => row.join(","))].join("\n");
+            const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `oportunidades_discovery_${new Date().toISOString().slice(0, 10)}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function renderDiscoveryResults(data, skipSaveLast = false) {
             const tbody = document.getElementById("discovery-tbody");
             const badge = document.getElementById("discovery-count-badge");
             const meta = document.getElementById("discovery-meta");
             const results = data.results || [];
+            window._discoveryResults = results;
+            if (!skipSaveLast) window._lastDiscoveryData = data;
 
             if (badge) badge.innerText = `${results.length} resultados`;
             if (meta) meta.innerHTML = `Finviz query: <code class="text-yellow">${data.finviz_query || "—"}</code> · ${data.candidates_discovered || 0} descubiertos · ${data.scan_time_seconds || 0}s`;
 
             if (!tbody) return;
             if (results.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="11" class="py-12 text-center text-muted">
+                tbody.innerHTML = `<tr><td colspan="12" class="py-12 text-center text-muted">
                     <i class="fa-solid fa-circle-exclamation text-2xl mb-2 text-yellow"></i>
                     <p>Sin resultados. Ajusta los filtros.</p>
                 </td></tr>`;
@@ -1166,6 +1426,39 @@
                 const badge = evaluated
                     ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-green/10 text-green border border-green/30">yfinance ✓</span>`
                     : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-yellow/10 text-yellow border border-yellow/30">Solo Finviz</span>`;
+                const ai = op.ai_analysis;
+                const memoId = `discai-${op.ticker}`;
+                const aiCell = (ai && ai.analysis)
+                    ? `<button onclick="toggleMemo('${memoId}')" class="px-2 py-1 rounded border border-line text-[9px] text-cyan hover:bg-elevated">Memo</button>
+                       <div class="mt-0.5 text-[9px] ${_stanceColor(ai.stance)}">${ai.stance || "—"}</div>`
+                    : `<button onclick='loadDiscoveryAiAnalysis(${JSON.stringify(op).replace(/'/g, "&#39;")})' class="px-2 py-1 rounded border border-line text-[9px] text-cyan hover:bg-elevated">Análisis IA</button>`;
+                const overlap = op.sector_overlap_flag
+                    ? `<span class="text-[9px] px-1.5 py-0.5 rounded bg-yellow/10 text-yellow border border-yellow/30" title="Sector ya presente en tu portafolio: ${escapeHtml((op.sector_overlap_portfolio || []).join(", "))}">${escapeHtml(op.sector || "—")} ⚠️</span>`
+                    : `<span class="text-muted text-[9px]">—</span>`;
+
+                // Razon / contexto: se muestra resumido en fila y completo en el memo.
+                const contextLine = op.context_advisory
+                    ? `<span class="${op.context_advisory.label === "REVISAR" ? "text-yellow" : "text-muted"}">${op.context_advisory.label}: noticias ${op.context_advisory.news_sentiment} · macro ${op.context_advisory.macro_risk}</span>`
+                    : `<span class="text-muted">Contexto no disponible</span>`;
+
+                // Memo expandible por fila (igual que el Portafolio): el análisis IA
+                // se despliega abajo de la fila, no en un panel común.
+                const aiMeta = ai
+                    ? `<span class="text-[8px] px-1.5 py-0.5 rounded bg-elevated border border-line text-muted font-mono">${ai.provider || "local"}${ai.cached ? " · caché" : ""}</span>`
+                    : "";
+                const memoRow = (ai && ai.analysis)
+                    ? `<tr id="${memoId}" class="hidden bg-elevated"><td colspan="12" class="py-3 px-4">
+                        <div class="text-[10px] text-ink max-w-[1100px]">
+                            <div class="flex flex-wrap items-center gap-2 mb-2">
+                                <span class="font-bold text-cyan">${op.ticker}</span>
+                                <span class="${_stanceColor(ai.stance)}">${ai.stance || "ANÁLISIS"}</span>
+                                ${aiMeta}
+                            </div>
+                            ${_mdToHtml(ai.analysis)}
+                            <div class="mt-2 text-[8px] text-muted italic">${escapeHtml(ai.disclaimer || "")}</div>
+                        </div>
+                    </td></tr>` : "";
+
                 return `
                 <tr class="hover:bg-elevated transition">
                     <td class="py-2 px-3">
@@ -1183,9 +1476,10 @@
                     <td class="py-2 px-3 text-right font-mono text-red">$${(op.suggested_stop_loss || 0).toFixed(2)}</td>
                     <td class="py-2 px-3 text-right font-mono text-green">$${(op.suggested_take_profit || 0).toFixed(2)}</td>
                     <td class="py-2 px-3 text-center font-mono text-ink">${op.confidence_10 || 0}/10</td>
-                    <td class="py-2 px-3 text-center"><button onclick='loadDiscoveryAiAnalysis(${JSON.stringify(op).replace(/'/g, "&#39;")})' class="px-2 py-1 rounded border border-line text-[9px] text-cyan hover:bg-elevated">Análisis IA</button></td>
-                    <td class="py-2 px-3 text-muted text-[10px]">${(op.entry_rationale || "").slice(0, 65)}<div class="mt-1 ${op.context_advisory?.label === "REVISAR" ? "text-yellow" : "text-muted"}">${op.context_advisory ? `${op.context_advisory.label}: noticias ${op.context_advisory.news_sentiment} · macro ${op.context_advisory.macro_risk}` : "Contexto no disponible"}</div></td>
-                </tr>`;
+                    <td class="py-2 px-3 text-center">${overlap}</td>
+                    <td class="py-2 px-3 text-center">${aiCell}</td>
+                    <td class="py-2 px-3 text-muted text-[10px]">${(op.entry_rationale || "").slice(0, 65)}<div class="mt-1">${contextLine}</div></td>
+                </tr>${memoRow}`;
             }).join("");
         }
 
@@ -1217,15 +1511,38 @@
             return "text-red";
         }
 
-        async function loadDiscoveryAiAnalysis(candidate) {
-            const panel = document.getElementById("discovery-ai-panel");
-            if (!panel) return;
-            panel.classList.remove("hidden");
-            panel.innerHTML = `
-                <div class="flex items-center gap-2 mb-3">
-                    <i class="fa-solid fa-brain text-cyan fa-spin"></i>
-                    <span class="text-[11px] text-muted">Analizando <strong class="text-ink">${candidate.ticker}</strong> con todas las métricas…</span>
+        function _memoRowHtml(candidate, ai) {
+            const stanceClass = _stanceColor(ai.stance);
+            const providerBadge = `<span class="text-[8px] px-1.5 py-0.5 rounded bg-elevated border border-line text-muted font-mono">${ai.provider || "local"}${ai.cached ? " · caché" : ""}</span>`;
+            return `
+                <div class="text-[10px] text-ink max-w-[1100px]">
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                        <span class="font-bold text-cyan">${candidate.ticker}</span>
+                        <span class="${stanceClass}">${ai.stance || "ANÁLISIS"}</span>
+                        ${providerBadge}
+                    </div>
+                    <div class="text-[10px] leading-relaxed text-ink">${_mdToHtml(ai.analysis)}</div>
+                    <div class="mt-2 text-[8px] text-muted italic">${escapeHtml(ai.disclaimer || "")}</div>
                 </div>`;
+        }
+
+        async function loadDiscoveryAiAnalysis(candidate) {
+            const tbody = document.getElementById("discovery-tbody");
+            const memoId = `discai-${candidate.ticker}`;
+            if (!tbody || !memoId) return;
+            let memoRow = document.getElementById(memoId);
+            if (!memoRow) {
+                memoRow = document.createElement("tr");
+                memoRow.id = memoId;
+                memoRow.className = "bg-elevated";
+                memoRow.innerHTML = `<td colspan="12" class="py-3 px-4">
+                    <div class="flex items-center gap-2 text-[10px] text-muted">
+                        <i class="fa-solid fa-brain text-cyan fa-spin"></i>
+                        <span>Analizando <strong class="text-ink">${candidate.ticker}</strong> con todas las métricas…</span>
+                    </div>
+                </td>`;
+                tbody.appendChild(memoRow);
+            }
             try {
                 const res = await fetch("/api/opportunities/ai-analysis", {
                     method: "POST", headers: { "Content-Type": "application/json" },
@@ -1233,21 +1550,10 @@
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || "No se pudo generar el análisis");
-                const stanceClass = _stanceColor(data.stance);
-                const providerBadge = `<span class="text-[9px] px-1.5 py-0.5 rounded bg-elevated border border-line text-muted font-mono">${data.provider}${data.cached ? " · caché" : ""}</span>`;
-                panel.innerHTML = `
-                    <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-line">
-                        <i class="fa-solid fa-robot text-cyan"></i>
-                        <span class="font-bold text-ink text-[12px]">${candidate.ticker}</span>
-                        <span class="text-[12px] ${stanceClass}">${data.stance || "ANÁLISIS"}</span>
-                        ${providerBadge}
-                        <span class="ml-auto text-[9px] text-muted italic">${data.disclaimer}</span>
-                    </div>
-                    <div class="text-[11px] leading-relaxed text-ink discovery-analysis-body">
-                        ${_mdToHtml(data.analysis)}
-                    </div>`;
+                memoRow.innerHTML = `<td colspan="12" class="py-3 px-4">${_memoRowHtml(candidate, data)}</td>`;
+                memoRow.classList.remove("hidden");
             } catch (err) {
-                panel.innerHTML = `<div class="text-red text-[11px]"><i class="fa-solid fa-circle-exclamation mr-1"></i>Error: ${err.message}</div>`;
+                memoRow.innerHTML = `<td colspan="12" class="py-3 px-4"><div class="text-red text-[11px]"><i class="fa-solid fa-circle-exclamation mr-1"></i>Error: ${escapeHtml(err.message)}</div></td>`;
             }
         }
 
@@ -1296,12 +1602,13 @@
                 }
             };
             setVal("f-sector", f.sector);
+            setVal("f-country", f.country || "usa");
             setMulti("f-market-cap", f.market_cap);
             setVal("f-pe", f.pe_max);
             setVal("f-fpe", f.forward_pe_max);
             setVal("f-peg", f.peg_max);
             setVal("f-pfcf", f.pfcf_max);
-            setVal("f-price", f.price_max);
+            setVal("f-price", f.price_max || f.price_min);
             setVal("f-div", f.dividend_yield_min);
             setVal("f-rev-growth", f.revenue_growth);
             setVal("f-roe", f.roe_min);
@@ -1314,6 +1621,7 @@
             setVal("f-recom", f.analyst_recom);
             setVal("f-perf-4w", f.performance_4w);
             setVal("f-volume", f.avg_volume_min);
+            window._activePreset = preset;
             runDiscoverySearch();
         }
 

@@ -88,22 +88,31 @@ def _calculate_indicators_pandas(df: pd.DataFrame) -> Dict[str, Any]:
         macd_hist = round(float(hist.iloc[-1]), 4)
 
     atr_14 = None
-    if len(close) >= 15 and {"High", "Low"}.issubset(df.columns):
+    atr_14_precise = None
+    if len(close) >= 16 and {"High", "Low"}.issubset(df.columns):
         previous_close = close.shift(1)
         true_range = pd.concat([
             df["High"] - df["Low"],
             (df["High"] - previous_close).abs(),
             (df["Low"] - previous_close).abs(),
         ], axis=1).max(axis=1)
-        atr_value = true_range.rolling(window=14).mean().iloc[-1]
-        if pd.notna(atr_value):
-            atr_14 = round(float(atr_value), 2)
+        # Suavizado de Wilder (no media simple): ATR_t = (ATR_{t-1}*13 + TR_t) / 14.
+        # ewma con alpha=1/14 y min_periods=14 emula exactamente esa recursión.
+        atr_precise = true_range.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean().iloc[-1]
+        if pd.notna(atr_precise):
+            atr_14 = round(float(atr_precise), 2)
+            atr_14_precise = float(atr_precise)
 
     bb_upper, bb_lower = None, None
     if len(close) >= 20:
         std20 = close.rolling(window=20).std().iloc[-1]
         bb_upper = round(float(sma_20 + (2 * std20)), 2)
         bb_lower = round(float(sma_20 - (2 * std20)), 2)
+
+    # Máximos recientes para el Chandelier Exit (stop que protege ganancias:
+    # SL = máximo de N velas − k×ATR, sube con el precio sin perseguirlo).
+    recent_high_22 = float(df["High"].tail(22).max()) if len(df) >= 22 and "High" in df.columns else None
+    recent_high_10 = float(df["High"].tail(10).max()) if len(df) >= 10 and "High" in df.columns else None
 
     current_price = float(close.iloc[-1])
 
@@ -148,6 +157,9 @@ def _calculate_indicators_pandas(df: pd.DataFrame) -> Dict[str, Any]:
         "macd_signal": macd_signal,
         "macd_hist": macd_hist,
         "atr_14": atr_14,
+"atr_14_precise": atr_14_precise,
+        "recent_high_22": round(recent_high_22, 2) if recent_high_22 else None,
+        "recent_high_10": round(recent_high_10, 2) if recent_high_10 else None,
         "sma_20": round(sma_20, 2) if sma_20 else None,
         "sma_50": round(sma_50, 2) if sma_50 else None,
         "sma_200": round(sma_200, 2) if sma_200 else None,
@@ -168,6 +180,32 @@ def _get_tradingview_mapping(ticker: str) -> Dict[str, str]:
         exchange = "AMEX" if ticker_clean in ("SPY", "GLD", "SLV", "VOO") else "NASDAQ"
         return {"symbol": ticker_clean, "screener": "america", "exchange": exchange}
     return {"symbol": ticker_clean, "screener": "america", "exchange": "NASDAQ"}
+
+
+def _ensure_atr_and_bollinger(ticker: str, tv_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Completa ATR(14) y bandas de Bollinger desde el histórico aunque Tv viniera completo.
+
+    TradingView HTML no publica ATR ni bb_lower/bb_upper. El stop-loss por
+    volatilidad (SL = Soporte − k×ATR) los necesita, así que se calculan desde
+    yfinance cuando falten y el histórico lo permita.
+    """
+    if tv_result.get("atr_14") and tv_result.get("bb_lower"):
+        return tv_result
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(to_yfinance_ticker(ticker)).history(period="1y")
+        if hist.empty or len(hist) < 20:
+            return tv_result
+        calculated = _calculate_indicators_pandas(hist)
+        for key in ("atr_14", "atr_14_precise", "bb_upper", "bb_lower",
+                    "recent_high_22", "recent_high_10"):
+            if not tv_result.get(key):
+                tv_result[key] = calculated[key]
+        if tv_result.get("atr_14"):
+            tv_result["source"] = tv_result.get("source", "TradingView") + " + ATR(14) y Bollinger (Pandas)"
+    except Exception as e:
+        logger.debug(f"No se pudo completar ATR/Bollinger para {ticker}: {e}")
+    return tv_result
 
 
 def get_technical_analysis(ticker: str) -> Dict[str, Any]:
@@ -207,7 +245,7 @@ def _compute_technical_analysis(ticker: str) -> Dict[str, Any]:
             "bb_lower": None,
         }
         # The TradingView HTML can expose its aggregate label while omitting the
-        # individual indicators. Never treat those missing fields as zero/neutral:
+# individual indicators. Never treat those missing fields as zero/neutral:
         # calculate them from the same ticker's price history instead.
         missing_indicators = (
             tv_result["rsi"] is None
@@ -215,13 +253,13 @@ def _compute_technical_analysis(ticker: str) -> Dict[str, Any]:
             or (tv_result["buy_signals"] + tv_result["sell_signals"] + tv_result["neutral_signals"] == 0)
         )
         if not missing_indicators:
-            return tv_result
+            return _ensure_atr_and_bollinger(ticker, tv_result)
         try:
             import yfinance as yf
             hist = yf.Ticker(to_yfinance_ticker(ticker)).history(period="1y")
             if not hist.empty and len(hist) >= 20:
                 calculated = _calculate_indicators_pandas(hist)
-                # Preserve TradingView's aggregate view, but use calculated values
+# Preserve TradingView's aggregate view, but use calculated values
                 # only to fill the fields that TradingView did not publish.
                 for key in ("rsi", "sma_20", "sma_50", "sma_200"):
                     if tv_result[key] is None:
@@ -229,7 +267,7 @@ def _compute_technical_analysis(ticker: str) -> Dict[str, Any]:
                 if tv_result["buy_signals"] + tv_result["sell_signals"] + tv_result["neutral_signals"] == 0:
                     for key in ("buy_signals", "sell_signals", "neutral_signals"):
                         tv_result[key] = calculated[key]
-                for key in ("macd", "macd_signal", "macd_hist", "atr_14", "ema_20", "ema_50", "bb_upper", "bb_lower"):
+                for key in ("macd", "macd_signal", "macd_hist", "atr_14", "atr_14_precise", "ema_20", "ema_50", "bb_upper", "bb_lower", "recent_high_22", "recent_high_10"):
                     tv_result[key] = calculated[key]
                 tv_result["source"] = "TradingView + Algoritmo Cuantitativo (Pandas)"
                 tv_result["data_quality"] = "COMPLETE"

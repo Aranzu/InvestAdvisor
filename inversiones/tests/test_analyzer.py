@@ -31,6 +31,7 @@ from analytics.discovery import (
     add_saved_search,
     delete_saved_search,
     build_finviz_filters,
+    parse_finviz_url,
 )
 from analytics.opportunities import (
     analyze_candidate,
@@ -160,7 +161,7 @@ class TestWebSources(unittest.TestCase):
         self.assertLessEqual(plan["cost_usd"], plan["buying_power_usd"])
 
     def test_16_recommendation_has_three_tiers(self):
-        """El motor de recomendación retorna uno de los 3 tiers (MANTENER/OBSERVACION/VENDER)."""
+        """El motor de recomendación retorna uno de los tiers (MANTENER/OBSERVACION/VENDER/AJUSTAR_SL_TP)."""
         market = {"ticker": "TEST", "current_price": 100.0, "entry_price": 95.0, "unrealized_pnl_pct": 5.0, "daily_change_pct": 0.5, "sector": "Tech"}
         tech = {"recommendation": "BUY", "buy_signals": 12, "sell_signals": 2, "neutral_signals": 8, "rsi": 55.0, "sma_200": 90.0}
         fund = {"is_equity": True, "trailing_pe": 22.0, "profit_margins": 18.0, "roe": 15.0, "debt_to_equity": 80.0, "analyst_recommendation": "BUY", "analyst_upside_pct": 25.0, "target_mean_price": 130.0}
@@ -168,7 +169,7 @@ class TestWebSources(unittest.TestCase):
         geo = {"risk_level": "MODERADO", "macro_score": 5.0}
         scores = {"global_score": 50.0, "technical_score": 25.0, "fundamental_score": 25.0, "news_score": 10.0, "geopolitical_score": 5.0}
         rec = generate_recommendation(market, scores, tech, fund, news, geo)
-        self.assertIn(rec["action"], ["MANTENER", "OBSERVACION", "VENDER"])
+        self.assertIn(rec["action"], ["MANTENER", "OBSERVACION", "VENDER", "AJUSTAR_SL_TP"])
         self.assertIn("observation_flags", rec)
 
     def test_17_recommendation_observation_loss(self):
@@ -182,6 +183,43 @@ class TestWebSources(unittest.TestCase):
         rec = generate_recommendation(market, scores, tech, fund, news, geo)
         self.assertEqual(rec["action"], "OBSERVACION")
         self.assertGreater(len(rec["observation_flags"]), 0)
+
+    def test_18_recommendation_adjust_sl_tp(self):
+        """Ganancia relevante con tesis intacta → MANTENER + AJUSTAR SL/TP (sube el stop)."""
+        market = {"ticker": "TEST", "current_price": 130.0, "entry_price": 100.0, "unrealized_pnl_pct": 30.0, "daily_change_pct": 0.5, "sector": "Tech", "shares": 10}
+        tech = {"recommendation": "BUY", "buy_signals": 12, "sell_signals": 2, "neutral_signals": 8, "rsi": 55.0, "sma_200": 90.0, "atr_14": 2.5, "bb_lower": 120.0}
+        fund = {"is_equity": True, "trailing_pe": 22.0, "profit_margins": 18.0, "roe": 15.0, "debt_to_equity": 80.0, "analyst_recommendation": "BUY", "analyst_upside_pct": 20.0, "target_mean_price": 150.0}
+        news = {"sentiment_score": 25.0, "sentiment_label": "ALCISTA", "summary": "OK"}
+        geo = {"risk_level": "MODERADO", "macro_score": 5.0}
+        scores = {"global_score": 45.0, "technical_score": 25.0, "fundamental_score": 25.0, "news_score": 10.0, "geopolitical_score": 5.0}
+        rec = generate_recommendation(market, scores, tech, fund, news, geo)
+        self.assertEqual(rec["action"], "AJUSTAR_SL_TP")
+        self.assertGreater(rec["suggested_stop_loss"], market["entry_price"] * 0.90)
+        self.assertIn("execution_plan", rec)
+        self.assertIn("protective_stop_loss", rec)
+        # En XTB no se pueden declarar SL y TP al 100% a la vez: la prioridad
+        # aquí es proteger (SL 100% / TP manual).
+        plan = rec["execution_plan"]
+        self.assertEqual(plan["sell_stop_pct"], 100)
+        self.assertEqual(plan["sell_limit_pct"], 0)
+        self.assertIn("primary_order", plan)
+        self.assertIn("Sell Stop 100%", plan["primary_order"])
+
+    def test_19_execution_plan_respects_total_volume(self):
+        """Sell Stop + Sell Limit nunca superan el volumen total de la posición (XTB)."""
+        market = {"ticker": "TEST", "current_price": 130.0, "entry_price": 100.0, "unrealized_pnl_pct": 30.0, "daily_change_pct": 0.5, "sector": "Tech", "shares": 10}
+        tech = {"recommendation": "NEUTRAL", "buy_signals": 6, "sell_signals": 6, "neutral_signals": 6, "rsi": 55.0, "sma_200": 90.0, "atr_14": 3.0, "bb_lower": 110.0}
+        fund = {"is_equity": True, "trailing_pe": 25.0, "profit_margins": 20.0, "roe": 18.0, "debt_to_equity": 70.0, "analyst_recommendation": "BUY", "analyst_upside_pct": 15.0, "target_mean_price": 145.0}
+        news = {"sentiment_score": -20.0, "sentiment_label": "NEUTRAL", "summary": "OK"}
+        geo = {"risk_level": "MODERADO", "macro_score": 5.0}
+        scores = {"global_score": -15.0, "technical_score": 0.0, "fundamental_score": 25.0, "news_score": -20.0, "geopolitical_score": 5.0}
+        rec = generate_recommendation(market, scores, tech, fund, news, geo)
+        self.assertEqual(rec["action"], "VENDER")
+        plan = rec.get("execution_plan")
+        self.assertIsNotNone(plan)
+        self.assertAlmostEqual(plan["sell_stop_shares"] + plan["sell_limit_shares"], plan["total_shares"], places=5)
+        self.assertLessEqual(plan["sell_stop_pct"] + plan["sell_limit_pct"], 100)
+        self.assertIn("primary_order", plan)
 
 
 class TestInvestmentAnalyzer(unittest.TestCase):
@@ -236,7 +274,7 @@ class TestInvestmentAnalyzer(unittest.TestCase):
         self.assertIn("global_score", scores)
 
         rec = generate_recommendation(market, scores, tech, fund, news, geo)
-        self.assertIn(rec["action"], ["MANTENER", "VENDER"])
+        self.assertIn(rec["action"], ["MANTENER", "VENDER", "AJUSTAR_SL_TP"])
 
     def test_15_opportunity_scoring(self):
         """Verifica el motor de scoring de value/growth picks."""
@@ -353,17 +391,27 @@ class TestWebEndpoints(unittest.TestCase):
         self.assertGreater(data["shares_possible"], 0)
 
     def test_29_discovery_presets(self):
-        """Presets curados cargan desde el JSON."""
+        """Preset curado carga desde el JSON (exclusivo Finviz Elite, USA, filtros de calidad)."""
         presets = load_presets()
-        self.assertGreaterEqual(len(presets), 12)
-        ids = [p.get("id") for p in presets]
-        self.assertIn("sweet_spot", ids)
-        self.assertIn("tech_undervalued", ids)
-        self.assertIn("dip_buying_quality", ids)
-        self.assertIn("cash_flow_kings", ids)
-        self.assertIn("garp_peter_lynch", ids)
-        self.assertIn("wallstreet_upside", ids)
-        self.assertIn("momentum_fundamentals", ids)
+        self.assertEqual(len(presets), 1)
+        p = presets[0]
+        self.assertEqual(p.get("id"), "finviz_elite")
+        f = p.get("filters") or {}
+        self.assertEqual(f.get("country"), "usa")
+        self.assertGreaterEqual(len(f), 6)
+        self.assertTrue(p.get("label"))
+        self.assertTrue(p.get("description"))
+        raw_codes = p.get("raw_codes") or []
+        expected_codes = {
+            "an_recom_buybetter", "cap_2to200", "fa_debteq_u1", "fa_epsyoy1_o10",
+            "fa_fpe_u25", "fa_opermargin_pos", "fa_roe_o15", "fa_sales5years_pos",
+            "geo_usa", "sh_avgvol_o1000", "sh_price_o10", "sh_short_u10",
+            "ta_highlow52w_b5h", "ta_rsi_nob50", "ta_sma200_pa", "targetprice_a20",
+        }
+        self.assertEqual(set(raw_codes), expected_codes)
+        codes_built = build_finviz_filters(f)
+        for code in expected_codes:
+            self.assertIn(code, codes_built)
 
     def test_30_discovery_filter_builder(self):
         """build_finviz_filters traduce filtros UI → códigos Finviz."""
@@ -395,6 +443,18 @@ class TestWebEndpoints(unittest.TestCase):
         self.assertIn("targetprice_a20", out)
         self.assertIn("an_recom_buybetter", out)
         self.assertIn("fa_sales5years_pos", out)
+
+    def test_30b_discovery_country_usa(self):
+        """Discovery prioriza acciones USA: build_finviz_filters mapea country → geo_usa."""
+        f = {"country": "usa", "market_cap": ["large"]}
+        out = build_finviz_filters(f)
+        self.assertIn("geo_usa", out)
+        # cualquier país fuera del mapa no genera códigos inventados
+        null = build_finviz_filters({"country": "any"})
+        self.assertNotIn("geo", "".join(null))
+        # fuerza default USA si no se envía país
+        o2 = build_finviz_filters({"market_cap": ["large"]})
+        self.assertNotIn("geo_usa", o2)  # build es puro; el default lo inyecta search_opportunities
         # "any" no debe aparecer
         self.assertNotIn("fa_pe_any", out)
 
@@ -526,6 +586,7 @@ class TestWebEndpoints(unittest.TestCase):
         self.assertIn("OBSERVACION", data)
         self.assertIn("MANTENER", data)
         self.assertIn("VENDER", data)
+        self.assertIn("AJUSTAR_SL_TP", data)
         self.assertIn("OBSERVACION", data["summary"])
         total = data["summary"]["VENDER"] + data["summary"]["OBSERVACION"] + data["summary"]["MANTENER"]
         self.assertGreater(total, 0)
@@ -560,6 +621,40 @@ class TestWebEndpoints(unittest.TestCase):
         # Test observation_count
         rep = analyze_portfolio([])
         self.assertIn("observation_count", rep["summary_usd"])
+
+    def test_39_parse_finviz_url(self):
+        """parse_finviz_url extrae correctamente filtros, orden y códigos directos."""
+        url = "https://elite.finviz.com/screener?v=171&f=an_recom_buybetter,cap_2to200,fa_debteq_u1,fa_fpe_u25,geo_usa,sh_price_o10&ft=3&o=peg"
+        res = parse_finviz_url(url)
+        self.assertEqual(res["order"], "peg")
+        self.assertEqual(res["view"], "171")
+        self.assertIn("an_recom_buybetter", res["raw_codes"])
+        self.assertIn("cap_2to200", res["raw_codes"])
+        f = res["filters"]
+        self.assertEqual(f["country"], "usa")
+        self.assertEqual(f["analyst_recom"], "buybetter")
+        self.assertEqual(f["debt_to_equity_max"], "u1")
+        self.assertEqual(f["forward_pe_max"], "u25")
+        self.assertEqual(f["price_max"], "o10")
+        self.assertEqual(f["market_cap"], ["mid", "large"])
+        self.assertEqual(f["order"], "peg")
+
+    def test_40_api_parse_finviz_url(self):
+        """Endpoint /api/opportunities/parse-finviz-url procesa URLs y valida input."""
+        # URL válida
+        res = self.client.post("/api/opportunities/parse-finviz-url", json={
+            "url": "https://finviz.com/screener.ashx?v=121&f=sec_technology,fa_pe_u20&o=peg"
+        })
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["order"], "peg")
+        self.assertEqual(data["filters"]["sector"], "technology")
+        self.assertEqual(data["filters"]["pe_max"], "u20")
+
+        # URL vacía
+        res_err = self.client.post("/api/opportunities/parse-finviz-url", json={"url": ""})
+        self.assertEqual(res_err.status_code, 400)
 
 
 if __name__ == "__main__":

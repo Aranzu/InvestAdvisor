@@ -1,0 +1,12 @@
+# Dependencias de runtime. Los limites superiores son intencionales: una major
+# sin revisar puede cambiar el HTML que se parsea o la forma de los DataFrames.
+# pyproject.toml es la fuente de verdad; este archivo se mantiene para los que
+# instalan con `pip install -r requirements.txt` sin instalar el paquete.
+#
+# Para una instalacion reproducible, usar requirements.lock.txt.
+
+pandas>=2.0,<4.0
+openpyxl>=3.1,<4.0
+requests>=2.31,<3.0
+beautifulsoup4>=4.12,<5.0
+yfinance>=1.5,<2.0
