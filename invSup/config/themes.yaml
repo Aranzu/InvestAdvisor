@@ -1,0 +1,93 @@
+# Temas para el tope de concentracion (seccion 5.8: 30 % del equity).
+#
+# Respaldo (spec seccion 5.8): si un ticker no esta aca, el tema se toma del
+# sector que publica la fuente de datos y el informe lo declara.
+#
+# El listado es coherente con config/watchlist.yaml: los dos archivos cuentan la
+# misma universo y conviene que se revisen juntos.
+
+themes:
+  AAPL: semiconductors_ai
+  MSFT: software_cloud
+  ORCL: software_cloud
+  CRM: software_cloud
+  ADBE: software_cloud
+  ACN: software_it_services
+  IBM: software_it_services
+  TXN: semiconductors
+  INTC: semiconductors
+  MU: semiconductors
+  ADI: semiconductors
+  QCOM: semiconductors
+
+  NVDA: semiconductors_ai
+  AVGO: semiconductors_ai
+
+  AMD: semiconductors
+
+  GOOGL: communication_media
+  META: communication_media
+  NFLX: communication_media
+  DIS: communication_media
+  CMCSA: communication_media
+  EA: communication_media
+
+  T: communication_media
+  VZ: communication_media
+
+  AMZN: consumer_retail
+  TSLA: consumer_cyclical
+  HD: consumer_retail
+  LOW: consumer_retail
+  SBUX: consumer_cyclical
+  MCD: consumer_cyclical
+  NKE: consumer_cyclical
+  BKNG: consumer_cyclical
+
+  UNH: health_care
+  JNJ: health_care
+  LLY: health_care
+  PFE: health_care
+  MRK: health_care
+  ABBV: health_care
+  TMO: health_care
+  DHR: health_care
+  BMY: health_care
+
+  JPM: financials
+  BAC: financials
+  WFC: financials
+  GS: financials
+  MS: financials
+  BLK: financials
+  SPGI: financials
+  AXP: financials
+  SCHW: financials
+
+  CAT: industrials
+  BA: industrials
+  HON: industrials
+  UNP: industrials
+  GE: industrials
+  RTX: industrials
+  MMM: industrials
+
+  XOM: energy
+  CVX: energy
+  COP: energy
+  SLB: energy
+
+  LIN: materials
+  APD: materials
+  SHW: materials
+  ECL: materials
+
+  PG: consumer_staples
+  KO: consumer_staples
+  PEP: consumer_staples
+  NEE: utilities
+  AMT: real_estate
+
+# Etiquetas que son el mismo tema aunque la fuente las separe. Se dejan vacias:
+# no se unifican hasta que los datos muestren el cruce.
+aliases: {}

@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swing-engine"
+version = "0.1.0"
+description = "Motor de swing trading para operar solo de noche (Evening Desk). Recomienda; nunca ejecuta ordenes."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7,<3.0",
+    "pandas>=2.2,<4.0",
+    "numpy>=1.26,<3.0",
+    "typer>=0.12",
+    "PyYAML>=6.0",
+    "yfinance>=1.5,<2.0",
+    "openpyxl>=3.1,<4.0",
+]
+
+[project.optional-dependencies]
+# Los tests de red son opt-in (RUN_LIVE=1) y no se necesitan para la corrida normal.
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6,<1.0",
+    "mypy>=1.11,<2.0",
+    "pandas-stubs>=2.2",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+swing = "swing.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# El informe emite texto en espanol con acentos y flechas a proposito; el archivo
+# esta en UTF-8 (mismo criterio que el proyecto hermano).
+exclude = [".venv", "cache", "output", "reports"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "W",    # warnings
+    "I",    # isort
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "UP",   # pyupgrade
+    "RUF",  # reglas propias de ruff
+]
+ignore = [
+    "E501",  # el line-length de ruff ya lo cubre
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+# yfinance no publica tipos; se prefiere no ensuciar el codigo con un ignore
+# por llamada.
+ignore_missing_imports = true
+exclude = ["^\\.venv/", "^cache/", "^output/", "^reports/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -q por default: el agente imprime el detalle con -v cuando hace falta.
+addopts = "-q"
+markers = [
+    "live: requiere red (RUN_LIVE=1)",
+]

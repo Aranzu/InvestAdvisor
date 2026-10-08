@@ -1,0 +1,97 @@
+# Universo de candidatos. Decision D2 de docs/DECISIONES.md.
+#
+# La puerta 4 (fuerza relativa, seccion 5.2) es CROSS-SECTIONAL: el percentil de
+# un ticker depende de este listado, asi que cambiarlo cambia que se compra.
+# >= min_universe (40) para que la puerta este activa.
+#
+# PROPUESTA inicial para que la apruebes o la edites antes de usarla. Son large
+# caps de EE. UU. con volumen y precio que pasan las puertas 5.2.5.
+# Los tickers son de Yahoo Finance (las clases usan guion: BRK-B).
+
+universe:
+  # Software y semiconductores
+  - AAPL
+  - MSFT
+  - NVDA
+  - AVGO
+  - ORCL
+  - CRM
+  - AMD
+  - ADBE
+  - ACN
+  - QCOM
+  - TXN
+  - INTC
+  - MU
+  - IBM
+  - ADI
+  # Comunicacion y medios
+  - GOOGL
+  - META
+  - NFLX
+  - DIS
+  - CMCSA
+  - T
+  - VZ
+  - EA
+  # Consumer discrecional y retail
+  - AMZN
+  - TSLA
+  - HD
+  - MCD
+  - NKE
+  - SBUX
+  - LOW
+  - BKNG
+  # Salud
+  - UNH
+  - JNJ
+  - LLY
+  - PFE
+  - MRK
+  - ABBV
+  - TMO
+  - DHR
+  - BMY
+  # Financieras
+  - JPM
+  - BAC
+  - WFC
+  - GS
+  - MS
+  - BLK
+  - SPGI
+  - AXP
+  - SCHW
+  # Industriales
+  - CAT
+  - BA
+  - HON
+  - UNP
+  - GE
+  - RTX
+  - MMM
+  # Energia
+  - XOM
+  - CVX
+  - COP
+  - SLB
+  # Materiales
+  - LIN
+  - APD
+  - SHW
+  - ECL
+  # Defensivos, servicios publicos y Realty
+  - PG
+  - KO
+  - PEP
+  - NEE
+  - AMT
+
+# Sin entradas a proposito. Cada exclusion lleva su motivo; agregar nombres
+# aqui es una decision consciente, no un filtro automatico.
+excluded:
+  # Verificar el estado societario vigente antes de reincorporarlo: una
+  # reorganizacion o un concurso de creditorios cambia el perfil de riesgo y no
+  # hay forma de reaccionar intradia (spec seccion 17).
+  - SEDG

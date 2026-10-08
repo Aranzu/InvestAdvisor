@@ -1,0 +1,18 @@
+# Datos cacheados y salidas de corridas: se regeneran, no se versionan.
+cache/
+output/
+logs/
+
+# Estado del broker: contiene datos de la cuenta.
+state/
+
+# Secretos locales (claves de API). NUNCA versionar.
+.secrets/
+.env
+
+# Entornos y herramientas.
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/

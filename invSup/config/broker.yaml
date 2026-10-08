@@ -1,0 +1,44 @@
+# Supuestos del broker. Mientras un campo diga "unknown" o tenga un comentario
+# VERIFICAR, el planificador usa el valor CONSERVADOR y lo declara en el informe.
+#
+# El resultado de cada verificacion se vuelca aqui desde
+# docs/VERIFICACION_BROKER.md. Orden de prioridad (spec v3.1 seccion 2, pie):
+# #4 y #6 primero (deciden tranche_mode y si la venta a mercado en cola es
+# compatible con el stop), luego #10 (decide el modelo de costos, que mueve la
+# puerta de validacion).
+
+broker: xtb
+
+# El trailing stop no existe para acciones ni ETFs reales: confirmado por XTB.
+# El trailing es manual, el sistema recalcula el stop cada noche.
+trailing_stop_stocks: false
+
+# Confirmado por el usuario: SL y TP son ordenes de venta separadas y el volumen
+# total de ventas pendientes no puede superar las acciones poseidas. No hay OCO,
+# por lo tanto cada accion admite UNA sola orden de venta en reposo.
+sl_tp_share_same_shares: false
+
+# VERIFICADO (#1): se pueden ingresar ordenes con el mercado cerrado y se
+# ejecutan al abrir. El modelo nocturno es viable.
+pending_outside_hours: true
+
+# VERIFICAR (#3): adjuntar el SL a la orden de entrada pendiente.
+attach_stop_to_entry: false
+
+# Confirmado en general; falta probarlo con un Sell Stop vigente sobre el resto
+# de las acciones (VERIFICAR #4). Si el broker lo rechaza, el planificador
+# reduce primero el volumen del stop y la venta va despues.
+queued_market_orders: true
+
+# VERIFICAR (#5). unknown -> acciones enteras, avisado en el informe.
+pending_fractional: unknown
+
+# VERIFICAR (#2). unknown -> el plan incluye CANCEL de entradas no ejecutadas.
+order_expiry: unknown
+
+# VERIFICAR (#6): el Sell Stop se asocia al instrumento completo o a la
+# posicion/lote. per_lot obliga a tranche_mode: separate_positions.
+stop_scope: per_instrument
+
+# VERIFICAR (#7): que pasa con el ID de la posicion tras un cierre parcial.
+partial_close_keeps_id: unknown

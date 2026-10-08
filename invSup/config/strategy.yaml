@@ -1,0 +1,133 @@
+# Configuracion de la estrategia. Fuente unica de verdad de los PARAMETROS del
+# spec v3.1 seccion 7. Ningun valor numerico vive en el codigo.
+#
+# Todos los valores por defecto son CONVENCIONES DE LA INDUSTRIA, no resultados:
+# los decide la fase 3 (backtest con puerta de validacion, seccion 11.3).
+
+account:
+  base_currency: CLP
+  equity_scope: [xtb, local]
+  trade_unit: ticker
+
+costs:
+  # 0.5 por pierna. Con un round-trip de 1.0 y un R tipico de 8 (seccion 16.2),
+  # la friccion vale ~0.125 R: la puerta pide > +0.15 R neto, o sea que el sistema
+  # necesita ~+0.275 R bruto. Verificar #10 puede mover ese numero de 45 %.
+  fx_fee_per_leg_pct: 0.5
+  # Modelo de cobro de la conversion. per_trade_leg = 0.5 en cada pierna;
+  # on_funding_only = solo al mover fondos (NO verificado, no usar de momento).
+  fx_fee_model: per_trade_leg
+  commission_pct: 0.0
+  stop_slippage_pct: 0.1
+  monthly_commission_free_limit_clp: null
+
+regime:
+  index: SPY
+  vix_max: 30
+
+# Decision D3 de docs/DECISIONES.md. El margen es una estimacion y por eso es un
+# parametro: se ajusta contra lo que se observe en la primera corrida real.
+# Por debajo del margen, DATA_GAP. Nunca se usa la vela anterior en silencio.
+data:
+  min_minutes_after_close: 90
+  earnings_source_required: true
+
+risk:
+  risk_per_trade_pct: 0.75
+  max_position_pct: 10
+  max_theme_pct: 30
+  max_open_trades: 15
+  max_heat_pct: 6
+  monthly_loss_limit_pct: 6
+  cash_buffer_pct: 3
+  max_stop_distance_pct: 12
+  # Colchon para el dia de relleno sin stop (seccion 4.5).
+  unprotected_buffer_atr: 1.0
+  # CAP_TRIM: se dispara cuando el tema pasa max_theme_pct + 5 pp y se vende
+  # hasta max_theme_pct + 2 pp (seccion 5.8). Una sola vez por tema y noche.
+  theme_trim_trigger_pp: 5
+  theme_trim_target_pp: 2
+
+gates:
+  rs_lookback_days: 126
+  rs_min_percentile: 70
+  min_universe: 40
+  min_above_52w_low: 1.30
+  min_vs_52w_high: 0.75
+  min_avg_volume: 1000000
+  min_price: 10
+  # Blackout de entrada por earnings, en SESIONES (no dias calendario, seccion 4.6).
+  earnings_entry_blackout_sessions: 20
+
+setups:
+  pullback:
+    drop_pct: [5, 10]
+    rsi: [38, 55]
+    confirm_prior_high: true
+    entry_limit_atr: 0.25
+
+stops:
+  atr_period: 14
+  swing_low_days: 10
+  swing_low_buffer_atr: 0.5
+  atr_band: [1.5, 3.0]
+  breakeven_buffer_pct: 1.0
+  min_raise_atr: 0.75
+
+exits:
+  tranches:
+    - {name: A, fraction: 0.50, tp_r: 1.0}
+    - {name: R, fraction: 0.50, tp_r: null}
+  exit_limit_atr: 0.5
+  runner_trail:
+    lookback_days: 22
+    atr_mult: 3.0
+    tighten_after_days: 60
+    tightened_atr_mult: 1.5
+  stall:
+    days: 15
+    min_progress_r: 0.5
+  max_hold_days: 90
+  min_tp1_cost_multiple: 3
+  earnings:
+    policy: exit_unlocked
+    lead_sessions: 2
+  reentry_cooldown_days: 5
+
+operations:
+  max_actions_per_evening: 8
+  max_new_entries_per_evening: 2
+
+legacy:
+  adopt: true
+  max_loss_from_cost_pct: 18
+  profit_tiers:
+    - {gain_pct: 25, sell_fraction: 0.5}
+    - {gain_pct: 40, sell_fraction: 0.5}
+  post_tier_trail_atr_mult: 3.0
+
+horizon:
+  end_date: 2027-03-31
+  tighten_days_before: 45
+  no_entries_days_before: 30
+
+llm:
+  enabled: true
+  veto_only: true
+  max_searches_per_ticker: 3
+  weekly_day: sunday
+
+safety:
+  # Aviso con n >= 20 (el error estandar de la expectativa ronda 0.2 R y el azar
+  # basta para disparar). Modo defensivo con n >= 40 y el margen de error.
+  kill_warn_trades: 20
+  kill_min_trades: 40
+  kill_expectancy_se_mult: 1.0
+  kill_max_drawdown_pct: 15
+
+validation:
+  min_oos_trades: 150
+  expectancy_ci_level: 0.90
+  max_earnings_derisk_share_pct: 15
+  # Sensibilidad ilustrativa, NO calculo tributario (seccion 11.3 #8).
+  tax_sensitivity_pct: [0, 20, 35]
