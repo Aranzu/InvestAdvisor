@@ -129,8 +129,8 @@ def canonical_ticker(raw: str) -> str:
     fuente de datos. El resto se devuelve en mayusculas.
     """
     ticker = raw.strip().upper().removesuffix(".US")
-    if ticker.endswith(".B") and "." in ticker:
-        ticker = ticker.replace(".", "-")
+    if ticker.endswith(".B"):
+        ticker = ticker[:-2] + "-B"
     return ticker
 
 
@@ -252,7 +252,10 @@ def reconcile_positions(
 
 
 def _closed_price(lots: tuple[BrokerLot, ...]) -> float | None:
-    filled = [lot.closed_price for lot in lots if lot.closed_price is not None]
+    filled = [(lot.volume, lot.closed_price) for lot in lots if lot.closed_price is not None]
     if not filled:
         return None
-    return max(filled)
+    total_vol = sum(vol for vol, _ in filled)
+    if total_vol <= 0.0:
+        return max(price for _, price in filled)
+    return sum(price * vol for vol, price in filled) / total_vol

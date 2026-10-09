@@ -42,6 +42,11 @@ class Reason(StrEnum):
     PRICE_BELOW_FLOOR = "PRICE_BELOW_FLOOR"
     EARNINGS_NEAR = "EARNINGS_NEAR"
 
+    # --- Puertas fundamentales (funcion 2: screener) ---
+    FUNDAMENTALS_MISSING = "FUNDAMENTALS_MISSING"
+    FUNDAMENTAL_GRADE = "FUNDAMENTAL_GRADE"
+    LOW_TARGET_UPSIDE = "LOW_TARGET_UPSIDE"
+
     # --- Setup y stops (secciones 5.3 y 5.4) ---
     NO_SETUP = "NO_SETUP"
     STOP_TOO_WIDE = "STOP_TOO_WIDE"

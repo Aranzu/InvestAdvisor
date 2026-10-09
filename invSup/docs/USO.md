@@ -10,44 +10,41 @@ las ordenes en el broker y confirmas lo hecho.
 - Opcional (segunda opinion de la IA): claves locales en `.secrets/` (ignorado por git):
   - `.secrets/tavily_api_key.txt` o `TAVILY_API_KEY` → busqueda web.
   - `.secrets/llm_api_key.txt` / `.secrets/llm.json` → LLM (endpoint/modelo).
+- Opcional (notificacion de la corrida nocturna): `SWING_NOTIFY_WEBHOOK` o
+  `SWING_TELEGRAM_BOT_TOKEN` + `SWING_TELEGRAM_CHAT_ID` (ver `docs/PROGRAMACION.md`).
 
 Sin claves, todo funciona igual en modo determinista.
 
 ## Flujo semanal (o diario, si queres candidatos frescos)
 
-```powershell
-swing discover            # rastrea el S&P 500, prefiltra y rankea por fuerza relativa
-                          # deja state/candidates.json
-```
-
-## Flujo de cada noche
+Las dos funciones del producto:
 
 ```powershell
-# 1) Que hacer con lo que ya tenes (solo salidas):
+# Funcion 1 - que hacer con lo que ya tenes (la IA decide mantener/vender; el motor el stop):
 swing review --llm --web-search --formato tabla
 
-# 2) Plan completo de la noche (incluye entradas sobre los candidatos):
-swing daily --universe candidates            # --no-llm para omitir la IA; --dry-run para no escribir
+# Funcion 2 - que comprar (screener dinamico: tecnico + fundamentales + proyecciones):
+swing screen --llm --top 20           # deja state/candidates.json con score y veredicto
 ```
 
-`review` y `daily` escriben en `output/`:
+## Corrida nocturna (fase 8)
+
+Para dejarlo agendado y sin intervencion, una sola pasada:
+
+```powershell
+swing nightly --llm --web-search      # screen + review, resumen en output/nightly_<fecha>.md
+swing schedule                        # imprime la hora local y el comando schtasks
+```
+
+`nightly` escribe el resumen, lo notifica si hay canal configurado y devuelve un
+codigo combinado (`config/datos` > `IA` > `hallazgos`). El detalle del agendado
+esta en `docs/PROGRAMACION.md`.
+
+## Salida
+
+`review` escribe en `output/`:
 - `review_<fecha>.md` — recomendacion por posicion (o `--out`).
-- `plan_<fecha>.md` — tickets numerados de la noche.
 - `contexto_<fecha>.md` / `.json` — resumen macro (se reutiliza; `--refresh-contexto` lo regenera).
-
-## Despues de colocar las ordenes
-
-```powershell
-swing confirm <id> --done        # o --skip; el id sale del journal
-swing stats                      # metricas, kill switch y alerta de coherencia
-```
-
-## Aportes de capital
-
-```powershell
-swing allocate 2000000           # reparte entre los candidatos respetando los topes;
-                                 # si no hay candidatos validos responde "mantener en caja"
-```
 
 ## Diagnostico
 
@@ -65,9 +62,13 @@ swing data-health                # velas, frescura, huecos y earnings por ticker
   lo deriva al `legacy.max_loss_from_cost_pct` y lo declara.
 - **Tambien aplica, pero va despues**: otra regla se cumple, pero queda detras por orden de
   seguridad (primero se protege el riesgo).
-- **Tesis (IA)**: segunda opinion con fuentes (noticias). No cambia la regla. `WEAKENED` =
-  vigilar; `BROKEN` = revisar salida.
-- **Contexto macro**: Fed/tasas, dolar, elecciones, geopolica, petroleo, con fuentes.
+- **Tesis (IA)**: el veredicto de la IA (`Mantener`/`Vender`/`Comprar`) con fuentes
+  (noticias). `WEAKENED` = vigilar; `BROKEN` = revisar salida. Nunca fija niveles.
+- **Contexto macro**: Fed/tasas, dolar, elecciones, geopolitica, petroleo, con fuentes.
+
+En `screen`, lee la tabla por **score compuesto** (valor/calidad/crecimiento/proyecciones
+sobre 100), `upside%` = potencial al objetivo de analistas y `cobert%` = cuántas métricas
+tenía el ticker; un `-` significa "sin dato" (nunca un cero). `--min-score` filtra.
 
 ## Codigos de salida
 

@@ -6,6 +6,9 @@ logs/
 # Estado del broker: contiene datos de la cuenta.
 state/
 
+# Exports del broker (numero de cuenta y posiciones): dato sensible, no se versiona.
+posiciones/
+
 # Secretos locales (claves de API). NUNCA versionar.
 .secrets/
 .env
@@ -16,3 +19,7 @@ state/
 .ruff_cache/
 .pytest_cache/
 *.egg-info/
+
+# Artefactos compilados de Python: se regeneran, no se versionan.
+__pycache__/
+*.py[cod]

@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import shutil
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 import typer
 
@@ -32,22 +34,21 @@ from swing.adapters.data_yahoo import (
     provider_from_project,
     sectors_from,
 )
-from swing.adapters.journal import DONE, SKIPPED, Journal
+from swing.adapters.fundamentals import provider_from_project as fundamentals_provider_from_project
 from swing.adapters.llm import LLMClient, LLMError, client_from_env
+from swing.adapters.notify import Notification, notifiers_from_env, send_all
 from swing.adapters.search import search_from_env
 from swing.adapters.universe import UniverseUnavailable, sp500_universe
 from swing.adapters.xtb_report import ReportFormatError, load_positions_report
-from swing.backtest import SimOptions, run_backtest, validate_run
 from swing.core.analysis import Market, Quote, analyze, render_markdown
 from swing.core.calendar import SessionCalendar
 from swing.core.dataquality import (
     check_freshness,
     check_series,
     find_unadjusted_jumps,
-    rebased_series,
     sessions_to_earnings,
 )
-from swing.core.discovery import rank_candidates
+from swing.core.discovery import DiscoveredCandidate, rank_candidates
 from swing.core.engine import (
     IndicatorFrame,
     MarketSnapshot,
@@ -56,15 +57,14 @@ from swing.core.engine import (
     position_exposures,
     relative_strength_percentiles,
 )
-from swing.core.llm import LLMReview, ReviewContext, ReviewSchemaError, ThesisStatus, apply_reviews, parse_review
+from swing.core.fundamentals import Fundamentals
+from swing.core.llm import LLMReview, ReviewContext, ReviewSchemaError, ThesisStatus, parse_review
 from swing.core.market import PriceSeries
-from swing.core.metrics import KillState
 from swing.core.models import BrokerConfig, StrategyConfig, ThemesConfig, WatchlistConfig
-from swing.core.planner import adopt_positions, plan_tickets, render_plan, render_review, render_table
+from swing.core.planner import adopt_positions, render_review, render_table
 from swing.core.portfolio import PortfolioState
 from swing.core.reconcile import BrokerLot, reconcile_positions
 from swing.core.report import LocalPosition, PositionReport
-from swing.core.state import TradeState
 
 app = typer.Typer(
     add_completion=False,
@@ -80,6 +80,10 @@ DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 #: Cierre de NYSE en hora local del mercado. Vive aqui y no en ``core/`` porque solo
 #: el diagnostico lo necesita; el nucleo razona en sesiones, no en horas de reloj.
 MARKET_CLOSE_NY = dt.time(hour=16)
+
+#: Zona de la operacion nocturna del usuario (spec seccion 14). El horario del
+#: Programador de tareas se calcula en esta zona a partir del cierre de EE. UU.
+LOCAL_TZ = ZoneInfo("America/Santiago")
 
 
 @app.callback()
@@ -236,9 +240,8 @@ def data_health(
 ) -> None:
     """Estado de los datos de cada ticker: velas, frescura, huecos y earnings.
 
-    Es la forma de ver la capa de datos sinplan completo: no calcula entradas ni
-    tickets. Sale con codigo 2 cuando hay datos incompletos o inconsistentes, el mismo
-    codigo que usa ``daily`` (seccion 14).
+    Es la forma de ver la capa de datos sin plan completo: no calcula entradas ni
+    tickets. Sale con codigo 2 cuando hay datos incompletos o inconsistentes.
 
     Requiere red la primera vez; despues lee de ``cache/bars``.
     """
@@ -405,10 +408,18 @@ def _report_dir() -> Path:
 
 
 def _newest_report(report_dir: Path) -> Path:
-    candidates = sorted(report_dir.glob("*.xlsx"))
-    if not candidates:
+    found = _newest_report_or_none(report_dir)
+    if found is None:
         typer.secho(f"FALLA  no hay exports de XTB en {report_dir}; pase --report", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
+    return found
+
+
+def _newest_report_or_none(report_dir: Path) -> Path | None:
+    """El export mas nuevo de ``posiciones/`` o ``None`` si no hay ninguno."""
+    candidates = sorted(report_dir.glob("*.xlsx"))
+    if not candidates:
+        return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
@@ -471,148 +482,12 @@ def _relative_strength(
     return percentiles or None
 
 
-#: Canasta de ETFs de la puerta de robustez (spec 11.3 #6). No es universo
-#: operable (D2): son vehiculos de control, no candidatos.
-BACKTEST_ETF_BASKET = ("SPY", "QQQ", "SMH", "XLK", "XLF", "XLV")
-
 #: Simbolo del indice de volatilidad en Yahoo.
 VIX_SYMBOL = "^VIX"
 
 #: Historia de calentamiento que se pide antes de ``--start``: la SMA200 mas el
 #: slope de 20 barras necesita ~220 sesiones; se piden dos anos por margen.
 BACKTEST_WARMUP_DAYS = 730
-
-
-@app.command("backtest")
-def backtest(
-    config_dir: Annotated[
-        Path,
-        typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
-    ] = DEFAULT_CONFIG_DIR,
-    start: Annotated[
-        str,
-        typer.Option("--start", help="Inicio del walk-forward (YYYY-MM-DD)."),
-    ] = "2010-01-01",
-    end: Annotated[
-        str | None,
-        typer.Option("--end", help="Fin del walk-forward (YYYY-MM-DD). Por defecto la ultima sesion."),
-    ] = None,
-    cache_dir: Annotated[
-        Path | None,
-        typer.Option("--cache-dir", help="Donde viven las velas cacheadas. Por defecto cache/bars."),
-    ] = None,
-    equity: Annotated[
-        float,
-        typer.Option("--equity", help="Equity inicial de la corrida, en CLP."),
-    ] = 1_000_000.0,
-    trials: Annotated[
-        int,
-        typer.Option("--trials", help="Trials de la prueba aleatoria de entradas."),
-    ] = 1000,
-    offline: Annotated[
-        bool,
-        typer.Option("--offline", help="Solo lee cache/bars; no toca la red."),
-    ] = False,
-    out: Annotated[
-        Path | None,
-        typer.Option("--out", help="Ademas de imprimirlo, escribe el informe a este archivo."),
-    ] = None,
-    universe_source: Annotated[
-        str,
-        typer.Option("--universe", help="Fuente del universo: sp500 (vivo) o watchlist (archivo local)."),
-    ] = "sp500",
-) -> None:
-    """Corre el backtest walk-forward y la puerta de validacion (seccion 11).
-
-    Por defecto usa red (Yahoo) para las velas y la cache para lo que ya bajo;
-    con ``--offline`` solo lee ``cache/bars``. Imprime el veredicto de la puerta
-    (seccion 11.3) y sale con 0 si aprueba, 2 si no aprueba o es NO CONCLUYENTE,
-    y 1 si faltan configuracion o datos.
-    """
-    try:
-        strategy, broker, watchlist, themes_file = _load_config(config_dir)
-    except ConfigError as exc:
-        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-    tickers, themes, origin = _resolve_universe(universe_source, watchlist, themes_file, cache_dir, offline)
-    typer.secho(f"universo: {origin} ({len(tickers)} tickers)", fg=typer.colors.BLUE)
-
-    calendar = SessionCalendar.us()
-    provider = provider_from_project(cache_dir, offline=offline)
-    try:
-        start_date = dt.date.fromisoformat(start)
-        end_date = (
-            dt.date.fromisoformat(end)
-            if end is not None
-            else _last_closed_session(calendar, strategy.data.min_minutes_after_close)
-        )
-    except ValueError as exc:
-        typer.secho(f"FALLA  fecha invalida: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-    if end_date <= start_date:
-        typer.secho("FALLA  --end debe ser posterior a --start", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-
-    wanted = list(
-        dict.fromkeys([*tickers, *BACKTEST_ETF_BASKET, strategy.regime.index, VIX_SYMBOL])
-    )
-    series, missing = _collect_series(provider, wanted, start_date - dt.timedelta(days=BACKTEST_WARMUP_DAYS), end_date)
-    # D6: el backtest reescala a proposito la serie sin ajustar (splits) para que los
-    # indicadores no lean un salto que no existio en el mercado.
-    series = {name: rebased_series(bars) for name, bars in series.items()}
-    spy = series.get(strategy.regime.index)
-    if spy is None or spy.is_empty:
-        typer.secho(
-            f"FALLA  sin velas de {strategy.regime.index}: no hay regimen con el que decidir",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(code=1)
-    vix = series.get(VIX_SYMBOL)
-    if vix is None or vix.is_empty:
-        typer.secho(f"  aviso: sin {VIX_SYMBOL}; el regimen usara vix=0", fg=typer.colors.YELLOW)
-        vix = PriceSeries(ticker=VIX_SYMBOL, bars=())
-    if missing:
-        typer.secho(
-            f"  aviso: {len(missing)} ticker(s) sin datos y fuera de la corrida: {', '.join(missing)}",
-            fg=typer.colors.YELLOW,
-        )
-
-    options = SimOptions(initial_equity_clp=equity)
-    run = run_backtest(
-        strategy,
-        broker,
-        themes,
-        calendar,
-        series,
-        spy,
-        vix,
-        universe=tickers,
-        start=start_date,
-        end=end_date,
-        options=options,
-    )
-    etf_run = run_backtest(
-        strategy,
-        broker,
-        themes,
-        calendar,
-        series,
-        spy,
-        vix,
-        universe=BACKTEST_ETF_BASKET,
-        start=start_date,
-        end=end_date,
-        options=options,
-    )
-    report = validate_run(run, strategy.validation, series=series, etf_run=etf_run, trials=trials)
-    informe = report.render_markdown()
-    if out is not None:
-        out.write_text(informe + "\n", encoding="utf-8")
-        typer.echo(f"Informe escrito en {out}")
-    typer.echo(informe)
-    if not report.gate.approved:
-        raise typer.Exit(code=2)
 
 
 def _warn_jumps(series: dict[str, PriceSeries]) -> None:
@@ -668,272 +543,6 @@ def _last_closed_session(calendar: SessionCalendar, min_minutes_after_close: int
         minutes=min_minutes_after_close
     )
     return last if now_ny >= closed else calendar.previous_session(last)
-
-
-@app.command("daily")
-def daily(
-    config_dir: Annotated[
-        Path,
-        typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
-    ] = DEFAULT_CONFIG_DIR,
-    portfolio: Annotated[
-        Path | None,
-        typer.Option("--portfolio", help="Export de XTB (xlsx). Por defecto el mas nuevo de posiciones/."),
-    ] = None,
-    no_llm: Annotated[
-        bool,
-        typer.Option("--no-llm", help="Plan determinista, sin capa LLM (fase 6)."),
-    ] = False,
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="No escribe output/plan_<fecha>.md."),
-    ] = False,
-    offline: Annotated[
-        bool,
-        typer.Option("--offline", help="Solo lee cache/bars; no toca la red."),
-    ] = False,
-    out: Annotated[
-        Path | None,
-        typer.Option("--out", help="Escribe el plan a este archivo en vez de output/."),
-    ] = None,
-    cache_dir: Annotated[
-        Path | None,
-        typer.Option("--cache-dir", help="Donde viven las velas cacheadas. Por defecto cache/bars."),
-    ] = None,
-    journal: Annotated[
-        Path | None,
-        typer.Option("--journal", help="Ruta del journal SQLite. Por defecto state/journal.db."),
-    ] = None,
-    universe_source: Annotated[
-        str,
-        typer.Option("--universe", help="Fuente del universo: sp500 (vivo) o watchlist (archivo local)."),
-    ] = "sp500",
-) -> None:
-    """Corre la noche: lee el reporte, reconcilia, decide y emite el plan con tickets.
-
-    Es la fase 4 del spec: importa el reporte de XTB, adopta las posiciones
-    abiertas, reconcilia contra el libro, llama ``decide()`` (el mismo motor que
-    usa el backtest) y deja los tickets numerados listos para copiar. Recomienda,
-    nunca envia ordenes. Sale con 0 si la noche esta limpia y 2 si hay hallazgos.
-
-    Por defecto usa red (Yahoo) para velas y earnings; con ``--offline`` solo lee
-    ``cache/bars``.
-    """
-    try:
-        strategy, broker, watchlist, themes_file = _load_config(config_dir)
-    except ConfigError as exc:
-        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-    tickers, themes, origin = _resolve_universe(universe_source, watchlist, themes_file, cache_dir, offline)
-    typer.echo(f"universo: {origin} ({len(tickers)} tickers)")
-
-    calendar = SessionCalendar.us()
-    report_path = portfolio if portfolio is not None else _newest_report(_report_dir())
-    if not report_path.is_file():
-        typer.secho(f"FALLA  no existe el reporte: {report_path}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-    try:
-        model = load_positions_report(report_path)
-    except ReportFormatError as exc:
-        typer.secho(f"FALLA  {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-
-    provider = provider_from_project(cache_dir, offline=offline)
-    today = _last_closed_session(calendar, strategy.data.min_minutes_after_close)
-    held = sorted({lot.ticker for lot in model.lots})
-    symbols = list(
-        dict.fromkeys([*tickers, *held, strategy.regime.index, VIX_SYMBOL])
-    )
-    series, missing = _collect_series(provider, symbols, today - dt.timedelta(days=BACKTEST_WARMUP_DAYS), today)
-    _warn_jumps(series)
-    frames: dict[str, IndicatorFrame] = {}
-    for name, bars in series.items():
-        frame = IndicatorFrame.build(bars, strategy)
-        if frame is not None:
-            frames[name] = frame
-
-    spy = series.get(strategy.regime.index)
-    spy_frame = frames.get(strategy.regime.index)
-    if spy is None or spy.is_empty or spy_frame is None:
-        typer.secho(
-            f"FALLA  sin velas de {strategy.regime.index}: no hay regimen con el que decidir",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(code=1)
-    spy_features = spy_frame.features_at(spy_frame.last_index)
-    vix_series = series.get(VIX_SYMBOL)
-
-    earnings: dict[str, dt.date] = {}
-    for ticker in symbols:
-        try:
-            info = provider.earnings(ticker)
-        except (CacheError, DataUnavailable):
-            continue
-        if not info.is_missing and info.date is not None:
-            earnings[ticker] = info.date
-
-    fx = _live_fx(provider, today) or _implied_fx(model)
-    cash = model.cash_balance_clp
-    equity = cash + model.open_value_clp
-    snapshot = MarketSnapshot(
-        today=today,
-        series=series,
-        frames=frames,
-        equity_clp=equity,
-        cash_clp=cash,
-        fx=fx,
-        spy_close=spy_features.close if spy_features is not None else None,
-        spy_sma200=spy_features.sma200 if spy_features is not None else None,
-        vix=vix_series.last_close if vix_series is not None and not vix_series.is_empty else None,
-        earnings=earnings,
-        rs=relative_strength_percentiles(frames, strategy.gates.rs_lookback_days),
-    )
-
-    lots = _broker_lots(model)
-    reconciled = reconcile_positions(lots, {})
-    book = adopt_positions(reconciled.positions, frames, strategy, calendar, today)
-    recon = reconcile_positions(lots, book)
-    state = PortfolioState(
-        equity_clp=equity,
-        cash_clp=cash,
-        positions=position_exposures(book, snapshot, themes),
-    )
-    journal_path = journal if journal is not None else _journal_path()
-    kill = KillState.OK
-    if journal_path.is_file():
-        with Journal(journal_path) as store:
-            kill = store.kill_state(strategy.safety, store.max_drawdown_pct())
-    plan = decide(
-        snapshot,
-        state,
-        book,
-        strategy,
-        broker,
-        calendar,
-        themes,
-        universe=tickers,
-        kill=kill,
-    )
-
-    reviews: list[LLMReview] = []
-    llm_failed = False
-    if not no_llm:
-        client = client_from_env()
-        if client is None:
-            typer.secho(
-                "  aviso: sin clave del LLM (SWING_LLM_API_KEY o .secrets/llm_api_key.txt); "
-                "el plan es determinista",
-                fg=typer.colors.YELLOW,
-            )
-        else:
-            try:
-                reviews = _review_plan(client, plan, book, today)
-            except LLMError as exc:
-                llm_failed = True
-                typer.secho(f"  aviso LLM: {exc}; el plan determinista sigue", fg=typer.colors.YELLOW)
-            if reviews:
-                outcome = apply_reviews(reviews, today, [entry.ticker for entry in plan.entries])
-                if outcome.thesis_broken:
-                    plan = decide(
-                        snapshot,
-                        state,
-                        book,
-                        strategy,
-                        broker,
-                        calendar,
-                        themes,
-                        universe=tickers,
-                        kill=kill,
-                        thesis_broken=outcome.thesis_broken,
-                    )
-                if outcome.deferred_entries:
-                    allowed = set(outcome.allowed_entries)
-                    kept = tuple(entry for entry in plan.entries if entry.ticker in allowed)
-                    moved = tuple(entry for entry in plan.entries if entry.ticker not in allowed)
-                    plan = replace(plan, entries=kept, deferrals=plan.deferrals + moved)
-
-    tickets = plan_tickets(plan, broker)
-    informe = render_plan(
-        plan,
-        tickets,
-        account=model.account,
-        fx=fx,
-        broker=broker,
-        today=today,
-        next_session=calendar.next_session(today),
-        reviews=reviews,
-    )
-
-    for issue in recon.issues:
-        typer.secho(f"  {issue.kind.value}: {issue.detail}", fg=typer.colors.YELLOW)
-    if missing:
-        typer.secho(f"  aviso: {len(missing)} ticker(s) sin datos: {', '.join(missing)}", fg=typer.colors.YELLOW)
-
-    target = out if out is not None else _output_dir() / f"plan_{today.isoformat()}.md"
-    if not dry_run:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(informe, encoding="utf-8")
-        typer.echo(f"Plan escrito en {target}")
-        with Journal(journal_path) as store:
-            run_id = store.record_run(
-                run_date=today,
-                equity_clp=equity,
-                cash_clp=cash,
-                fx=fx,
-                regime=plan.regime.value,
-                kill=plan.kill.value,
-            )
-            store.record_actions(run_id, tickets)
-            store.snapshot_metrics(plan.kill.value)
-            store.append_csv(
-                {
-                    "date": today.isoformat(),
-                    "event": "RUN",
-                    "equity": round(equity, 2),
-                    "regime": plan.regime.value,
-                    "kill": plan.kill.value,
-                }
-            )
-    typer.echo(informe.rstrip())
-    if llm_failed:
-        raise typer.Exit(code=3)
-    if plan.alerts or recon.has_issues:
-        raise typer.Exit(code=2)
-
-
-def _review_plan(
-    client: LLMClient,
-    plan: NightPlan,
-    book: dict[str, TradeState],
-    today: dt.date,
-) -> list[LLMReview]:
-    """Consulta al LLM por los finalistas de entrada (max 5) y las posiciones abiertas."""
-    reviews: list[LLMReview] = []
-    for entry in plan.entries[:5]:
-        reviews.append(
-            client.review(
-                entry.ticker,
-                ReviewContext.ENTRY_REVIEW,
-                {"theme": entry.theme, "setup": entry.detail, "rs_percentile": entry.rs_percentile},
-                today,
-            )
-        )
-    for ticker, trade in sorted(book.items()):
-        reviews.append(
-            client.review(
-                ticker,
-                ReviewContext.POSITION_REVIEW,
-                {
-                    "current_r": round(trade.current_r, 2),
-                    "days_open": trade.days_open,
-                    "stop": trade.stop,
-                    "close": trade.close,
-                },
-                today,
-            )
-        )
-    return reviews
 
 
 def _output_dir() -> Path:
@@ -1106,7 +715,7 @@ def review(
     ] = None,
     llm: Annotated[
         bool,
-        typer.Option("--llm", help="Agrega la segunda opinion de la IA; anota, no decide."),
+        typer.Option("--llm", help="Pide a la IA su veredicto (mantener/vender); el motor fija los niveles."),
     ] = False,
     web_search: Annotated[
         bool,
@@ -1121,15 +730,17 @@ def review(
         typer.Option("--refresh-contexto", help="Regenera el contexto macro aunque ya exista el de hoy."),
     ] = False,
 ) -> None:
-    """Recomendacion sobre tus posiciones: que hacer con cada una (fase 4, solo salidas).
+    """Funcion 1: recomendacion sobre tus posiciones (la IA decide, el motor fija niveles).
 
     Lee el reporte, adopta las posiciones (stop inicial derivado de
     ``legacy.max_loss_from_cost_pct`` si el broker no trae Sell Stop), corre las diez
-    reglas de salida de la seccion 5.7 --las mismas del backtest y del plan nocturno--
+    reglas de salida de la seccion 5.7 --las mismas del motor de decisiones--
     y dictamina por posicion: la regla de mayor precedencia o MANTENER. No mira el
-    universo ni propone entradas. Con ``--llm`` agrega una segunda opinion de la IA
-    (tesis con fuentes, via busqueda web): anota, nunca cambia la regla. Sale con 0 si
-    no hay nada que hacer, 2 si hay acciones y 3 si la IA falla (la recomendacion sale igual).
+    universo ni propone entradas. Con ``--llm`` la IA pondera fundamentales,
+    proyecciones de analistas, noticias y contexto macro y entrega su veredicto
+    (mantener/vender) con fuentes; el motor sigue fijando stop/meta/tamano. Sale con 0
+    si no hay nada que hacer, 2 si hay acciones y 3 si la IA falla (la recomendacion
+    determinista sale igual).
     """
     try:
         _, _, _, themes_file = _load_config(config_dir)
@@ -1175,6 +786,8 @@ def review(
         market.calendar,
         market.today,
     )
+    fprovider = fundamentals_provider_from_project(cache_dir, offline=offline)
+    fundamentals = fprovider.get_many(held, today=market.today) if held else {}
     recon = reconcile_positions(lots, book)
     state = PortfolioState(
         equity_clp=equity,
@@ -1210,7 +823,9 @@ def review(
             out_dir = out.parent if out is not None else _output_dir()
             macro = _macro_brief(client, market.today, out_dir, refresh=refresh_contexto)
             contexto = macro.fundamento if macro is not None and macro.fundamento else ""
-            reviews, failed = _review_positions(client, plan, themes, market.today, model.local, contexto)
+            reviews, failed = _review_positions(
+                client, plan, themes, market.today, model.local, contexto, fundamentals
+            )
             if failed:
                 llm_failed = True
                 typer.secho(
@@ -1289,21 +904,27 @@ def _review_positions(
     today: dt.date,
     local: Sequence[LocalPosition] = (),
     macro_context: str = "",
+    fundamentals: Mapping[str, Fundamentals] | None = None,
 ) -> tuple[list[LLMReview], list[str]]:
-    """Segunda opinion de la IA por posicion; anota, no cambia la regla del motor.
+    """Segunda opinion de la IA por posicion; la IA decide mantener o vender.
 
     Incluye las posiciones locales (p. ej. SQM-B), que no pasan por el motor pero si
-    se buscan con noticias. ``macro_context`` (el resumen macro de la corrida) se
-    inyecta en cada consulta para que el fundamento considere el contexto. Un fallo
-    puntual de la IA en un ticker no tira la revision de los demas: se reintenta una
-    vez y, si vuelve a fallar, ese ticker queda sin opinion.
+    se buscan con noticias. ``macro_context`` (el resumen macro de la corrida) y los
+    ``fundamentals`` (valoracion, proyecciones) se inyectan en cada consulta para que
+    el fundamento pondere todo. Un fallo puntual de la IA en un ticker no tira la
+    revision de los demas: se reintenta una vez y, si vuelve a fallar, ese ticker
+    queda sin opinion.
     """
     reviews: list[LLMReview] = []
     failed: list[str] = []
 
-    def _consult(ticker: str, facts: dict[str, object]) -> None:
+    def _consult(ticker: str, price: float, facts: dict[str, object]) -> None:
         if macro_context:
             facts = {**facts, "contexto_macro": macro_context}
+        if fundamentals is not None:
+            f = fundamentals.get(ticker)
+            if f is not None and not f.is_empty:
+                facts = {**_fundamental_fields(f, price), **facts}
         for attempt in range(2):
             try:
                 reviews.append(client.review(ticker, ReviewContext.POSITION_REVIEW, facts, today))
@@ -1316,6 +937,7 @@ def _review_positions(
         trade = judgment.trade
         _consult(
             trade.ticker,
+            trade.close,
             {
                 "theme": themes.themes.get(trade.ticker, "sin_tema"),
                 "entry": trade.entry_price,
@@ -1333,6 +955,7 @@ def _review_positions(
         )
         _consult(
             position.ticker,
+            position.last_price_clp,
             {
                 "name": position.name,
                 "ticker": position.ticker,
@@ -1411,6 +1034,55 @@ def _macro_data(provider: YahooDataProvider, today: dt.date) -> dict[str, str]:
     return out
 
 
+@app.command("screen")
+def screen(
+    config_dir: Annotated[
+        Path,
+        typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
+    ] = DEFAULT_CONFIG_DIR,
+    cache_dir: Annotated[
+        Path | None,
+        typer.Option("--cache-dir", help="Donde viven las velas cacheadas. Por defecto cache/bars."),
+    ] = None,
+    offline: Annotated[
+        bool,
+        typer.Option("--offline", help="Solo lee cache; no toca la red."),
+    ] = False,
+    top: Annotated[
+        int,
+        typer.Option("--top", help="Cuantos candidatos guardar."),
+    ] = 25,
+    breadth: Annotated[
+        str,
+        typer.Option("--breadth", help="Conjunto base a rastrear: sp500 (vivo) o watchlist."),
+    ] = "sp500",
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Archivo de candidatos. Por defecto state/candidates.json."),
+    ] = None,
+    min_score: Annotated[
+        float | None,
+        typer.Option("--min-score", help="Score compuesto minimo (0-100). Por defecto strategy.screener."),
+    ] = None,
+    llm: Annotated[
+        bool,
+        typer.Option("--llm", help="Agrega la tesis de compra de la IA por candidato."),
+    ] = False,
+    web_search: Annotated[
+        bool,
+        typer.Option("--web-search", help="Pide la tesis con busqueda web (si hay TAVILY_API_KEY)."),
+    ] = False,
+) -> None:
+    """Screener de compra (funcion 2): tecnico + fundamentales + proyecciones.
+
+    Rastrea un conjunto amplio (S&P 500 vivo por defecto), aplica el prefiltro
+    tecnico y las puertas fundamentales y ordena por score compuesto. Deja los
+    candidatos en ``state/candidates.json``. Con ``--llm`` agrega la tesis de compra
+    de la IA (veredicto BUY/WATCH). Sale con 0 si hay candidatos y 2 si no.
+    """
+    _run_screener(config_dir, cache_dir, offline, top, breadth, out, min_score, llm, web_search)
+
+
 @app.command("discover")
 def discover(
     config_dir: Annotated[
@@ -1423,7 +1095,7 @@ def discover(
     ] = None,
     offline: Annotated[
         bool,
-        typer.Option("--offline", help="Solo lee cache/bars; no toca la red."),
+        typer.Option("--offline", help="Solo lee cache; no toca la red."),
     ] = False,
     top: Annotated[
         int,
@@ -1438,18 +1110,28 @@ def discover(
         typer.Option("--out", help="Archivo de candidatos. Por defecto state/candidates.json."),
     ] = None,
 ) -> None:
-    """Descubre candidatos por metricas sobre un conjunto amplio (fase 5).
+    """Alias heredado de ``screen`` (el screener de compra, funcion 2)."""
+    _run_screener(config_dir, cache_dir, offline, top, breadth, out, None, False, False)
 
-    Es el reemplazo del watchlist estatico: rastrea el S&P 500, aplica el prefiltro
-    de tendencia/rango/liquidez y ordena por fuerza relativa. Deja la lista en
-    ``state/candidates.json`` para que ``daily``/``scan`` la usen con
-    ``--universe candidates``. Sale con 0 si hay candidatos y 2 si no.
-    """
+
+def _run_screener(
+    config_dir: Path,
+    cache_dir: Path | None,
+    offline: bool,
+    top: int,
+    breadth: str,
+    out: Path | None,
+    min_score: float | None,
+    llm: bool,
+    web_search: bool,
+) -> None:
+    """Implementacion compartida del screener por ``screen`` y ``discover``."""
     try:
         strategy, _, watchlist, themes_file = _load_config(config_dir)
     except ConfigError as exc:
         typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
+    threshold = strategy.screener.min_composite_score if min_score is None else min_score
     tickers, themes, origin = _resolve_universe(breadth, watchlist, themes_file, cache_dir, offline)
     typer.secho(f"universo base: {origin} ({len(tickers)} tickers)", fg=typer.colors.BLUE)
 
@@ -1463,35 +1145,110 @@ def discover(
         frame = IndicatorFrame.build(bars, strategy)
         if frame is not None:
             frames[name] = frame
-    result = rank_candidates(frames, themes.themes, strategy, top=top)
+
+    fprovider = fundamentals_provider_from_project(cache_dir, offline=offline)
+    fundamentals = fprovider.get_many(list(frames), today=today)
+    result = rank_candidates(frames, themes.themes, strategy, top=top, fundamentals=fundamentals)
+    candidates = (
+        [c for c in result.candidates if c.composite is None or c.composite >= threshold]
+        if threshold > 0.0
+        else list(result.candidates)
+    )
 
     typer.echo("")
-    typer.echo("| RS% | momentum | ADV MUSD | ticker | tema |")
-    typer.echo("|---|---|---|---|---|")
-    for candidate in result.candidates:
+    typer.echo("| score | valor | calidad | crec | proy | upside% | cobert% | RS% | ADV MUSD | ticker | tema |")
+    typer.echo("|---|---|---|---|---|---|---|---|---|---|---|")
+    for candidate in candidates:
         typer.echo(
-            f"| {candidate.rs_percentile:.1f} | {candidate.momentum * 100:+.1f}% | "
+            f"| {_num(candidate.composite)} | {_num(candidate.value)} | {_num(candidate.quality)} | "
+            f"{_num(candidate.growth)} | {_num(candidate.projections)} | {_pct(candidate.target_upside)} | "
+            f"{_pct(candidate.coverage)} | {candidate.rs_percentile:.1f} | "
             f"{candidate.adv_usd / 1e6:.1f} | {candidate.ticker} | {candidate.theme} |"
         )
     typer.echo("")
-    typer.echo(f"{result.kept} sobreviven el prefiltro de {result.evaluated}; guardo {len(result.candidates)}.")
+    typer.echo(
+        f"{result.kept} pasan tecnico+fundamentales de {result.evaluated}; "
+        f"{result.scored} con score; guardo {len(candidates)} (score >= {threshold:.0f})."
+    )
+    if result.rejected:
+        muestra = ", ".join(f"{r.ticker}({r.reasons[0].reason.value})" for r in result.rejected[:8])
+        typer.secho(f"  rechazados por fundamentales: {muestra}", fg=typer.colors.YELLOW)
     if missing:
-        typer.secho(f"  aviso: {len(missing)} ticker(s) sin datos", fg=typer.colors.YELLOW)
+        typer.secho(f"  aviso: {len(missing)} ticker(s) sin velas", fg=typer.colors.YELLOW)
+
+    reviews: dict[str, LLMReview] = {}
+    if llm and candidates:
+        client = client_from_env(web_search=web_search)
+        if client is None:
+            typer.secho("  aviso: sin clave del LLM; la tesis de compra se omite", fg=typer.colors.YELLOW)
+        else:
+            if web_search and search_from_env() is None:
+                typer.secho("  aviso: sin TAVILY_API_KEY; la IA corre sin busqueda web", fg=typer.colors.YELLOW)
+            reviews = _review_candidates(client, candidates, fundamentals, today)
+            typer.echo("")
+            for candidate in candidates:
+                review = reviews.get(candidate.ticker)
+                if review is not None:
+                    typer.echo(f"**{candidate.ticker}** -> {review.verdict.value} ({review.confidence.value}): {review.fundamento}")
 
     path = out if out is not None else _candidate_path()
     payload = [
-        {"ticker": c.ticker, "theme": c.theme, "rs_percentile": round(c.rs_percentile, 2), "momentum": round(c.momentum, 4)}
-        for c in result.candidates
+        {
+            "ticker": c.ticker,
+            "theme": c.theme,
+            "rs_percentile": round(c.rs_percentile, 2),
+            "momentum": round(c.momentum, 4),
+            "composite": None if c.composite is None else round(c.composite, 2),
+            "target_upside_pct": None if c.target_upside is None else round(c.target_upside * 100.0, 2),
+            "verdict": reviews[c.ticker].verdict.value if c.ticker in reviews else None,
+        }
+        for c in candidates
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     typer.echo(f"Candidatos escritos en {path}")
-    if not result.candidates:
+    if not candidates:
         raise typer.Exit(code=2)
 
 
-@app.command("scan")
-def scan(
+def _worst_exit(codes: Sequence[int]) -> int:
+    """Codigo combinado de la noche: config/datos manda sobre IA, y esta sobre hallazgos."""
+    severity = {0: 0, 2: 1, 3: 2, 1: 3}
+    if not codes:
+        return 0
+    return max(codes, key=lambda code: severity.get(code, 1))
+
+
+def _read_candidate_tickers(path: Path) -> list[str]:
+    """Tickers del ``state/candidates.json`` mas reciente; lista vacia si no hay."""
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(item["ticker"]) for item in data if isinstance(item, dict) and "ticker" in item]
+
+
+def _render_nightly(
+    today: dt.date,
+    lines: Sequence[str],
+    candidates: Sequence[str],
+    review_path: Path | None,
+) -> str:
+    out = [f"# Corrida nocturna {today.isoformat()}", "", "## Que paso", "", *lines, ""]
+    if candidates:
+        out += ["## Candidatos de compra", "", ", ".join(candidates[:15]), ""]
+    if review_path is not None:
+        out += ["## Revision de posiciones", "", f"Informe completo: {review_path}", ""]
+    out += ["_El motor recomienda, nunca ejecuta ordenes._", ""]
+    return "\n".join(out)
+
+
+@app.command("nightly")
+def nightly(
     config_dir: Annotated[
         Path,
         typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
@@ -1502,247 +1259,254 @@ def scan(
     ] = None,
     offline: Annotated[
         bool,
-        typer.Option("--offline", help="Solo lee cache/bars; no toca la red."),
+        typer.Option("--offline", help="Solo lee cache; no toca la red."),
     ] = False,
-    equity: Annotated[
-        float,
-        typer.Option("--equity", help="Equity nominal para dimensionar (no hay cartera)."),
-    ] = 1_000_000.0,
-    universe_source: Annotated[
-        str,
-        typer.Option("--universe", help="Fuente del universo: sp500 (vivo) o watchlist (archivo local)."),
-    ] = "sp500",
-) -> None:
-    """Escanea el universo y lista candidatos y rechazos con su motivo (fase 5).
-
-    No hay cartera: usa un equity nominal para dimensionar y muestra que tickers
-    pasarian las puertas esta noche. Sale con 0 si hay algun candidato y 2 si no.
-    """
-    try:
-        _, _, watchlist, themes_file = _load_config(config_dir)
-    except ConfigError as exc:
-        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-    tickers, themes, origin = _resolve_universe(universe_source, watchlist, themes_file, cache_dir, offline)
-    typer.echo(f"universo: {origin} ({len(tickers)} tickers)")
-    try:
-        market = _build_market(config_dir, cache_dir, offline, tickers, themes, [], equity, equity, None)
-    except ConfigError as exc:
-        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-    except DataUnavailable as exc:
-        typer.secho(f"FALLA  {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-
-    state = PortfolioState(equity_clp=equity, cash_clp=equity, positions=())
-    plan = decide(
-        market.snapshot,
-        state,
-        {},
-        market.strategy,
-        market.broker,
-        market.calendar,
-        market.themes,
-        universe=market.universe,
-    )
-
-    typer.echo("")
-    for entry in plan.entries:
-        typer.secho(
-            f"  ENTRA   {entry.ticker:<6} {entry.theme:<20} limite {entry.limit_price:8.2f} "
-            f"stop {entry.stop_target:8.2f} vol {entry.volume:.4f}",
-            fg=typer.colors.GREEN,
-        )
-    typer.echo("")
-    for candidate in plan.candidates:
-        if candidate.rejections:
-            reasons = ", ".join(r.reason.value for r in candidate.rejections)
-            typer.secho(f"  rechaza {candidate.ticker:<6} {reasons}", fg=typer.colors.YELLOW)
-    typer.echo("")
-    typer.echo(f"{len(plan.entries)} candidato(s) aceptado(s) de {len(market.universe)}.")
-    if not plan.entries:
-        raise typer.Exit(code=2)
-
-
-@app.command("allocate")
-def allocate(
-    amount: Annotated[float, typer.Argument(help="Monto a repartir, en CLP.")],
-    config_dir: Annotated[
-        Path,
-        typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
-    ] = DEFAULT_CONFIG_DIR,
+    top: Annotated[
+        int,
+        typer.Option("--top", help="Cuantos candidatos guarda el screener."),
+    ] = 25,
     portfolio: Annotated[
         Path | None,
-        typer.Option("--portfolio", help="Export de XTB para el equity actual. Por defecto el mas nuevo."),
+        typer.Option("--portfolio", help="Export de XTB (xlsx). Por defecto el mas nuevo de posiciones/."),
     ] = None,
-    cache_dir: Annotated[
-        Path | None,
-        typer.Option("--cache-dir", help="Donde viven las velas cacheadas. Por defecto cache/bars."),
-    ] = None,
-    offline: Annotated[
+    llm: Annotated[
         bool,
-        typer.Option("--offline", help="Solo lee cache/bars; no toca la red."),
+        typer.Option("--llm", help="Pide la opinion de la IA en el screener y en la revision."),
     ] = False,
-    universe_source: Annotated[
-        str,
-        typer.Option("--universe", help="Fuente del universo: sp500 (vivo) o watchlist (archivo local)."),
-    ] = "sp500",
+    web_search: Annotated[
+        bool,
+        typer.Option("--web-search", help="Habilita busqueda web para la IA (si hay TAVILY_API_KEY)."),
+    ] = False,
+    out_dir: Annotated[
+        Path | None,
+        typer.Option("--out-dir", help="Donde escribir el resumen. Por defecto output/."),
+    ] = None,
+    notify: Annotated[
+        bool,
+        typer.Option("--notify/--no-notify", help="Envia el resumen por los canales configurados."),
+    ] = True,
 ) -> None:
-    """Reparte un aporte entre los candidatos aceptados respetando los topes (fase 5).
+    """Corrida nocturna sin intervencion: screener + revision, resumen y aviso (fase 8).
 
-    Suma ``amount`` a la caja y el equity, vuelve a correr el motor y muestra el
-    reparto; si no hay candidatos validos responde "mantener en caja".
+    Es el punto de entrada que agenda el Programador de tareas. Corre `screen`
+    (siempre) y `review` (si hay export de XTB), escribe un resumen en
+    ``output/nightly_<fecha>.md`` y, si hay canales configurados, lo notifica.
+    El codigo de salida combina los dos: config/datos > IA > hallazgos. Como los
+    comandos fallan cerrado ante datos incompletos, una corrida con datos malos
+    termina en 2 y no opera.
     """
-    report: PositionReport | None = None
-    candidate_path = portfolio if portfolio is not None else _newest_report_or_none(_report_dir())
-    if candidate_path is not None and candidate_path.is_file():
-        try:
-            report = load_positions_report(candidate_path)
-        except ReportFormatError as exc:
-            typer.secho(f"FALLA  {exc}", fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=1) from exc
-
-    base_cash = report.cash_balance_clp if report is not None else 0.0
-    base_value = report.open_value_clp if report is not None else 0.0
-    held = sorted({lot.ticker for lot in report.lots}) if report is not None else []
-    equity = base_cash + base_value + amount
-    cash = base_cash + amount
-    fx = _implied_fx(report) if report is not None else None
-
     try:
-        _, _, watchlist, themes_file = _load_config(config_dir)
+        strategy = load_strategy(config_dir / "strategy.yaml")
     except ConfigError as exc:
         typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
-    tickers, themes, origin = _resolve_universe(universe_source, watchlist, themes_file, cache_dir, offline)
-    typer.echo(f"universo: {origin} ({len(tickers)} tickers)")
 
-    try:
-        market = _build_market(config_dir, cache_dir, offline, tickers, themes, held, equity, cash, fx)
-    except ConfigError as exc:
-        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
-    except DataUnavailable as exc:
-        typer.secho(f"FALLA  {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1) from exc
+    calendar = SessionCalendar.us()
+    today = _last_closed_session(calendar, strategy.data.min_minutes_after_close)
+    target_dir = out_dir if out_dir is not None else _output_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    book: dict[str, TradeState] = {}
-    if report is not None:
-        lots = _broker_lots(report)
-        book = adopt_positions(
-            reconcile_positions(lots, {}).positions,
-            market.frames,
-            market.strategy,
-            market.calendar,
-            market.today,
-        )
-    state = PortfolioState(
-        equity_clp=equity,
-        cash_clp=cash,
-        positions=position_exposures(book, market.snapshot, market.themes),
-    )
-    plan = decide(
-        market.snapshot,
-        state,
-        book,
-        market.strategy,
-        market.broker,
-        market.calendar,
-        market.themes,
-        universe=market.universe,
-    )
-
-    typer.echo("")
-    if not plan.entries:
-        typer.secho(f"  mantener en caja: no hay candidatos validos para {amount:,.0f} CLP", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=2)
-    total = 0.0
+    codes: list[int] = []
     lines: list[str] = []
-    lines.append("| ticker | tema | limite | stop | acciones | notional CLP |")
-    lines.append("|---|---|---|---|---|---|")
-    for entry in plan.entries:
-        notional = entry.volume * entry.limit_price * market.snapshot.fx
-        total += notional
-        lines.append(
-            f"| {entry.ticker} | {entry.theme} | {entry.limit_price:.2f} | "
-            f"{entry.stop_target:.2f} | {entry.volume:.4f} | {notional:,.0f} |"
-        )
-    typer.echo("\n".join(lines))
-    typer.echo("")
-    typer.echo(f"  repartido {total:,.0f} CLP de {amount:,.0f} CLP aportados.")
+
+    try:
+        _run_screener(config_dir, cache_dir, offline, top, "sp500", None, None, llm, web_search)
+        screen_code = 0
+    except typer.Exit as exc:
+        screen_code = int(exc.exit_code or 0)
+    candidates = _read_candidate_tickers(_candidate_path())
+    codes.append(screen_code)
+    lines.append(f"- screen: codigo {screen_code} ({len(candidates)} candidatos en {_candidate_path()})")
+
+    report_path = portfolio if portfolio is not None else _newest_report_or_none(_report_dir())
+    review_path: Path | None = None
+    if report_path is None:
+        lines.append("- review: omitido (no hay export de XTB en posiciones/)")
+    else:
+        review_path = target_dir / f"review_{today.isoformat()}.md"
+        try:
+            review(
+                config_dir=config_dir,
+                portfolio=report_path,
+                cache_dir=cache_dir,
+                offline=offline,
+                out=review_path,
+                llm=llm,
+                web_search=web_search,
+                formato="tabla",
+                refresh_contexto=False,
+            )
+            review_code = 0
+        except typer.Exit as exc:
+            review_code = int(exc.exit_code or 0)
+        codes.append(review_code)
+        lines.append(f"- review: codigo {review_code} ({review_path})")
+
+    summary = _render_nightly(today, lines, candidates, review_path)
+    summary_path = target_dir / f"nightly_{today.isoformat()}.md"
+    summary_path.write_text(summary, encoding="utf-8")
+    typer.echo(f"Resumen de la corrida en {summary_path}")
+    typer.echo(summary.rstrip())
+
+    if notify:
+        notifiers = notifiers_from_env()
+        if notifiers:
+            errors = send_all(notifiers, Notification(title=f"Corrida nocturna {today.isoformat()}", body=summary))
+            for error in errors:
+                typer.secho(f"  aviso notificacion: {error}", fg=typer.colors.YELLOW)
+        else:
+            typer.secho(
+                "  aviso: sin canal de notificacion (SWING_NOTIFY_WEBHOOK o Telegram); resumen solo en disco",
+                fg=typer.colors.YELLOW,
+            )
+
+    code = _worst_exit(codes)
+    if code:
+        raise typer.Exit(code=code)
 
 
-def _newest_report_or_none(report_dir: Path) -> Path | None:
-    candidates = sorted(report_dir.glob("*.xlsx"))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+def _evening_trigger(config_dir: Path, *, on: dt.date | None = None) -> tuple[dt.date, dt.time]:
+    """Hora local (America/Santiago) del cierre de EE. UU. mas el margen D3."""
+    strategy = load_strategy(config_dir / "strategy.yaml")
+    calendar = SessionCalendar.us()
+    reference = on if on is not None else dt.date.today()
+    session = calendar.last_session_on_or_before(reference)
+    close_ny = dt.datetime.combine(session, MARKET_CLOSE_NY, tzinfo=MARKET_TZ)
+    local = (close_ny + dt.timedelta(minutes=strategy.data.min_minutes_after_close)).astimezone(LOCAL_TZ)
+    return local.date(), local.time().replace(second=0, microsecond=0)
 
 
-def _journal_path() -> Path:
-    return _report_dir().parent / "state" / "journal.db"
+def _swing_exe() -> str:
+    """Ruta del ejecutable ``swing`` para el Programador de tareas."""
+    found = shutil.which("swing")
+    if found:
+        return found
+    return str(Path(sys.executable).with_name("swing.exe"))
 
 
-@app.command("stats")
-def stats(
+@app.command("schedule")
+def schedule(
     config_dir: Annotated[
         Path,
         typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
     ] = DEFAULT_CONFIG_DIR,
-    journal: Annotated[
-        Path | None,
-        typer.Option("--journal", help="Ruta del journal SQLite. Por defecto state/journal.db."),
-    ] = None,
+    llm: Annotated[
+        bool,
+        typer.Option("--llm", help="Incluye --llm --web-search en el comando agendado."),
+    ] = False,
+    weekly: Annotated[
+        bool,
+        typer.Option("--weekly", help="Imprime tambien la variante semanal (domingos)."),
+    ] = False,
 ) -> None:
-    """Metricas rodantes y kill switch desde el journal (fase 7)."""
-    path = journal if journal is not None else _journal_path()
-    if not path.is_file():
-        typer.secho(f"FALLA  no existe el journal: {path}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-    strategy = load_strategy(config_dir / "strategy.yaml")
-    with Journal(path) as store:
-        metrics = store.metrics()
-        kill = store.kill_state(strategy.safety, store.max_drawdown_pct())
-        pending = store.pending_actions()
-    typer.echo(f"trades cerrados : {metrics.n}")
-    typer.echo(f"win rate        : {metrics.win_rate:.1%}")
-    typer.echo(f"expectativa     : {metrics.expectancy_r:+.3f} R")
-    typer.echo(f"profit factor   : {metrics.profit_factor:.2f}")
-    typer.echo(f"SQN             : {metrics.sqn:.2f}")
-    typer.echo(f"kill switch     : {kill.value}")
-    typer.echo(f"acciones PENDING: {len(pending)}")
-    if metrics.coherence_alarm():
-        typer.secho(
-            "aviso: win rate alto con expectativa <= 0 (coherencia imposible, seccion 13)",
-            fg=typer.colors.YELLOW,
-        )
+    """Imprime como agendar ``swing nightly`` en el Programador de tareas (fase 8).
+
+    No toca el sistema: calcula la hora local (America/Santiago) equivalente al
+    cierre de EE. UU. mas el margen D3 e imprime el comando ``schtasks`` listo para
+    pegar. El horario se corre con los cambios de horario de verano; conviene
+    revisarlo en marzo y septiembre.
+    """
+    try:
+        _, trigger = _evening_trigger(config_dir)
+    except ConfigError as exc:
+        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    hhmm = trigger.strftime("%H:%M")
+    exe = _swing_exe()
+    flags = " --llm --web-search" if llm else ""
+    task = "Swing nightly"
+    typer.echo(f"Corrida nocturna (America/Santiago): {hhmm}")
+    typer.echo("  = cierre NYSE 16:00 ET + margen D3, en hora local del usuario.")
+    typer.echo("  El horario se corre con el DST: revisar en marzo y septiembre.")
+    typer.echo("")
+    typer.echo("Programador de tareas (PowerShell):")
+    typer.echo(f'  schtasks /Create /TN "{task}" /SC DAILY /ST {hhmm} /TR "\\"{exe}\\" nightly{flags}" /F')
+    if weekly:
+        typer.echo("")
+        typer.echo("Variante semanal (domingos), si preferis correr una sola vez por semana:")
+        typer.echo(f'  schtasks /Create /TN "{task} (semanal)" /SC WEEKLY /D SUN /ST {hhmm} /TR "\\"{exe}\\" nightly{flags}" /F')
+    typer.echo("")
+    typer.echo("Ver docs/PROGRAMACION.md para el detalle y la notificacion opcional.")
 
 
-@app.command("confirm")
-def confirm(
-    action_id: Annotated[int, typer.Argument(help="Id de la accion en el journal.")],
-    done: Annotated[bool, typer.Option("--done", help="La accion se ejecuto.")] = False,
-    skip: Annotated[bool, typer.Option("--skip", help="La accion no se ejecuto.")] = False,
-    journal: Annotated[
-        Path | None,
-        typer.Option("--journal", help="Ruta del journal SQLite. Por defecto state/journal.db."),
-    ] = None,
-) -> None:
-    """Marca una accion del journal como ``DONE`` o ``SKIPPED`` (fase 7)."""
-    status = DONE if done else SKIPPED if skip else None
-    if status is None:
-        typer.secho("FALLA  pase --done o --skip", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-    path = journal if journal is not None else _journal_path()
-    if not path.is_file():
-        typer.secho(f"FALLA  no existe el journal: {path}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-    with Journal(path) as store:
-        updated = store.confirm(action_id, status)
-    if not updated:
-        typer.secho(f"FALLA  no existe la accion {action_id}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-    typer.echo(f"accion {action_id}: {status}")
+def _num(value: float | None, ndigits: int = 1) -> str:
+    return "-" if value is None else f"{value:.{ndigits}f}"
+
+
+def _pct(value: float | None) -> str:
+    return "-" if value is None else f"{value * 100:+.1f}"
+
+
+#: Campos de ``Fundamentals`` que se inyectan a la IA (los que valen ``None`` se omiten).
+_FUNDAMENTAL_KEYS: tuple[str, ...] = (
+    "sector",
+    "industry",
+    "forward_pe",
+    "trailing_pe",
+    "price_to_book",
+    "peg_ratio",
+    "return_on_equity",
+    "profit_margin",
+    "revenue_growth",
+    "earnings_growth",
+    "debt_to_equity",
+    "dividend_yield",
+    "beta",
+    "target_mean",
+    "target_high",
+    "target_low",
+    "recommendation_mean",
+    "recommendation_key",
+    "analyst_count",
+    "eps_forward",
+    "eps_growth_estimate",
+    "revenue_growth_estimate",
+)
+
+
+def _fundamental_fields(f: Fundamentals, price: float) -> dict[str, object]:
+    """Fundamentales no nulos + potencial, listos para el prompt de la IA."""
+    facts: dict[str, object] = {}
+    for name in _FUNDAMENTAL_KEYS:
+        value = getattr(f, name)
+        if value is not None:
+            facts[name] = value
+    upside = f.target_upside(price)
+    if upside is not None:
+        facts["target_upside_pct"] = round(upside * 100, 1)
+    if f.business_summary:
+        facts["business"] = f.business_summary[:280]
+    return facts
+
+
+def _review_candidates(
+    client: LLMClient,
+    candidates: Sequence[DiscoveredCandidate],
+    fundamentals: Mapping[str, Fundamentals],
+    today: dt.date,
+) -> dict[str, LLMReview]:
+    """Tesis de compra de la IA por candidato; un fallo puntual no tira el resto."""
+    reviews: dict[str, LLMReview] = {}
+    for candidate in candidates:
+        facts: dict[str, object] = {
+            "theme": candidate.theme,
+            "close": candidate.close,
+            "rs_percentile": round(candidate.rs_percentile, 1),
+            "momentum_pct": round(candidate.momentum * 100, 1),
+            "composite_score": None if candidate.composite is None else round(candidate.composite, 1),
+        }
+        f = fundamentals.get(candidate.ticker)
+        if f is not None and not f.is_empty:
+            facts.update(_fundamental_fields(f, candidate.close))
+        for attempt in range(2):
+            try:
+                reviews[candidate.ticker] = client.review(candidate.ticker, ReviewContext.SCREEN_REVIEW, facts, today)
+                break
+            except LLMError:
+                if attempt == 1:
+                    typer.secho(f"  aviso LLM: sin tesis para {candidate.ticker}", fg=typer.colors.YELLOW)
+    return reviews
 
 
 def main() -> None:

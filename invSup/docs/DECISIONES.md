@@ -361,6 +361,8 @@ borra datos de la cache por sorpresa es peor que uno que dice que hacer.
 ---
 
 ## D18. La IA es un veto de segunda opinion, no el motor
+**Nota:** invertida por **D25/D27** (la IA decide y el motor fija niveles). Se conserva
+el registro histórico; el diseño vigente está en D27.
 
 **Que estaba abierto.** El spec (seccion 12) permite un LLM como veto con autoridad
 asimetrica. Faltaba decidir como acceder a noticias y como evitar que invente.
@@ -437,8 +439,9 @@ lista fija.
 **Decision.** `swing discover` rastrea el **S&P 500 vivo** (Wikipedia, que trae Symbol +
 GICS Sector; de ahi sale tambien el tema), aplica un prefiltro (`core/discovery`: tendencia
 SMA200/stack, rango 52 semanas, liquidez, precio) y ordena por fuerza relativa; deja
-`state/candidates.json`. `daily`/`scan`/`allocate`/`backtest` aceptan
-`--universe candidates|sp500|watchlist`.
+`state/candidates.json`. Hoy `screen` (y su alias `discover`) aceptan
+`--universe sp500|watchlist`; los comandos archivados (`daily`, `scan`, `allocate`,
+`backtest`) tambien aceptaban `candidates`.
 
 **Por que Wikipedia y por que cache.** Es enumerable sin key; se cachea en
 `cache/universe/sp500.json` y sin red se usa la copia (o `watchlist.yaml`). Limitacion
@@ -460,6 +463,9 @@ caida real; el motor no puede decidirlo solo.
 **Por que un tratamiento distinto.** El backtest necesita series continuas para medir; en
 vivo el dato correcto es declarar (`DATA_GAP`) y revisar, no borrar el movimiento.
 
+> **Estado (D25).** El backtest esta archivado; en vivo quedan `review`, `screen` y
+> `discover`, que siguen sin reescalar y avisando con `_warn_jumps`.
+
 ---
 
 ## D24. Journal en SQLite + CSV
@@ -473,6 +479,101 @@ snapshot de metricas); `stats` calcula metricas y kill switch; `confirm` marca
 
 **Por que SQLite.** Sin dependencias, local y transaccional; suficiente para el volumen.
 
+> **Estado (D25).** El journal y sus comandos (`stats`, `confirm`) estan archivados en
+> `legacy/adapters_journal.py`; `core/metrics.py` sigue en el paquete porque `decide()` lo
+> usa para el `KillState`.
+
+---
+
+## D25. El producto pasa a dos funciones: revision de posiciones y screener de compra
+
+**Que estaba abierto.** El motor original era una operacion nocturna completa (descubrir,
+escanear, comprar, vender, asignar, confirmar). El usuario pide dos funciones concretas:
+(1) analizar posiciones con fundamentales/noticias/proyecciones/macro y la IA recomendando
+mantener o vender, y (2) un screener **dinamico** que recomiende compras por
+tecnico+fundamentales+proyecciones.
+
+**Decision.** El motor (y lo que sirve: universo, velas, reglas de salida, niveles) se
+**extiende** para alimentar ambas funciones y se **poda** lo que deja de aportar. Las dos
+funciones implementadas:
+- `swing review --llm` (funcion 1): la IA pondera fundamentales, proyecciones, noticias y
+  contexto macro y emite su veredicto (`BUY/HOLD/SELL/WATCH`).
+- `swing screen` (funcion 2): con el mismo universo, aplica puertas **fundamentales** y
+  ordena por score compuesto; `--llm` agrega la tesis de compra.
+
+El resto (`backtest`, `allocate`, `confirm`, journal, `scan`, `daily`) se **poda**: su
+codigo queda archivado en `legacy/` (fuera del paquete, no se instala) para consulta, y sus
+comandos salen del CLI. La superficie publica queda en `check-config`, `verify-broker`,
+`data-health`, `analyze-positions`, `review` y `screen`/`discover`.
+
+## D26. Fundamentales y proyecciones: yfinance + cache con TTL
+
+**Que estaba abierto.** De donde sacar fundamentales y objetivo de analistas sin pagar.
+
+**Decision.** `adapters/fundamentals.py` lee `Ticker.info` de **yfinance** (gratis, ya
+integrado para velas) y normaliza a un `Fundamentals` puro: valoracion (PE fw/trailing,
+P/B, PEG, deuda), calidad (ROE, margen), crecimiento (rev/eps, estimados +1y) y
+proyecciones (objetivo medio/alto/bajo, recomendacion, cobertura de analistas). El dato se
+cachea en `cache/fundamentals/<ticker>.json` con TTL (7 dias en vivo, infinito en
+offline) y se guarda con `source`. Nunca se inventa un cero: un campo ausente es `None` y
+el informe declara la cobertura. SQM-B (bolsa local) queda sin fundamentales hasta que
+haya fuente chilena: se declara, no se adivina.
+
+## D27. La IA decide, el motor fija los niveles
+
+**Que estaba abierto.** El diseno original convertia al LLM en un veto asimetrico ("solo
+degradar", nunca decidir).
+
+**Decision.** Invertida la autoridad (D25). La IA emite el **veredicto** (`BUY/HOLD/SELL/
+WATCH`) en `review` —donde solo puede mantener o vender; "comprar" sobre una posicion se
+rechaza— y en `screen`. El motor jamas delega los numeros: stop, meta, tamaño y riesgo
+siguen auditables en `decide()`. `veto_only: false` en `strategy.yaml`; el campo queda por
+compatibilidad y `true` restaura el comportamiento viejo.
+
+**Por que.** La razon de ser de las dos funciones es la opinion (con fundamentos y
+fuentes), y la evidencia numerica de los niveles sigue siendo del motor.
+
+## D28. Screener S&P 500 con score compuesto configurable
+
+**Que estaba abierto.** Como ordenar compras sobre cientos de tickers sin una lista curada.
+
+**Decision.** `core/fundamentals.py` convierte cada metrica en un `0..1` contra anclas de
+config (`score:`), promedia en cuatro bloques (valor/calidad/crecimiento/proyecciones) y
+los pesa (`weights:`); el compuesto ordena el ranking. Las **puertas** fundamentales
+(PE, P/B, ROE, margen, deuda, crecimiento, potencial) filtran antes de rankear con
+`fundamentals:` en `strategy.yaml`; `screener:` fija `top` y `min_composite_score`. Sin
+datos fundamentales el screener vuelve a ordenar por fuerza relativa y lo declara.
+
+## D29. Fase 8: una corrida nocturna (`nightly`) y notificacion best-effort
+
+**Que estaba abierto.** El spec (seccion 14) pedia documentar como agendar `daily`
+en el Programador de tareas de Windows, con zona `America/Santiago` y al menos 60
+minutos tras el cierre, y la fase 8 pedia "corrida nocturna sin intervencion;
+falla segura con datos obsoletos". Con D25 el producto quedo en `review` y `screen`,
+asi que no habia un unico comando que agendara.
+
+**Decision.** Se agregan `swing nightly` y `swing schedule`:
+
+- **`nightly`** corre `screen` (siempre) y `review` (si hay export) en una pasada,
+  escribe `output/nightly_<fecha>.md` y combina los codigos de salida con
+  precedencia **config/datos > IA > hallazgos**. No inventa un camino propio: cada
+  subcomando falla cerrado como ya lo hacia, de modo que datos obsoletos terminan
+  en codigo 2 y no en un plan silencioso.
+- **`schedule`** calcula la hora local `America/Santiago` (cierre de NYSE 16:00 ET +
+  `data.min_minutes_after_close`) e **imprime** el comando `schtasks`. No toca el
+  sistema: registrar una tarea es una accion del usuario, no del motor.
+- **Notificacion opcional** (`adapters/notify.py`): webhook generico o Telegram,
+  activados por entorno o `.secrets/`. El envio es **best-effort**: un fallo de red
+  se reporta y no tumba una corrida que ya escribio sus informes.
+
+**Por que best-effort y no bloqueante.** El valor de la corrida son los informes; el
+aviso es una comodidad. Hacer que un webhook caido convierta una corrida correcta en
+un fallo ensuciaria el codigo de salida que usan los scripts que la agendan.
+
+**Limite declarado.** El horario local se corre con el DST de Chile y el de EE. UU.
+(que no coinciden); el comando lo advierte y `docs/PROGRAMACION.md` pide revisarlo en
+marzo y septiembre. `schedule` no corrige el horario solo.
+
 ---
 
 ## Preguntas que siguen abiertas
@@ -483,3 +584,7 @@ snapshot de metricas); `stats` calcula metricas y kill switch; `confirm` marca
   umbral de la puerta de validacion.
 - **Si `SINGLE` resulta ser una fraccion relevante del libro.** La palanca es el
   riesgo por trade o el equity (D10), no un tope de precio.
+- ~~**Poda de comandos (D25).**~~ **Resuelto: se poda.** `backtest`, `allocate`,
+  `confirm`, journal, `scan` y `daily` salen del CLI y su codigo se archiva en
+  `legacy/` (`legacy/backtest/`, `legacy/adapters_journal.py`, `legacy/tests/`). El
+  paquete `swing` queda con las dos funciones de D25.

@@ -17,21 +17,25 @@ tiene evidencia a su favor.
 | 0 | Base, config tipada, indicadores | hecho |
 | 1 | Datos: provider, cache, calidad de datos, FX implícito | hecho |
 | 2 | Núcleo puro: razones, puertas, regime, stops, sizing, calendario, estado, salidas, cartera | hecho |
-| 3 | Backtest walk-forward + puerta de validación | hecho (`swing backtest`) |
-| 4 | Importación XTB, reconciliación, plan nocturno con tickets y adopción | hecho (`swing daily`, `--no-llm`) |
-| 5 | Scanner y reparto de aportes (`scan`, `allocate`) | hecho |
-| 6 | Capa LLM de veto (autoridad asimétrica, `--no-llm`) | hecho |
-| 7 | Journal SQLite, métricas, kill switch (`stats`, `confirm`) | hecho |
-| 8 | Programación y notificación | pendiente |
+| 3 | Backtest walk-forward + puerta de validación | archivado (`legacy/backtest/`) |
+| 4 | Importación XTB, reconciliación, plan nocturno con tickets y adopción | archivado (`legacy/`) |
+| 5 | **Funcion 2**: screener de compra (técnico + fundamentales + proyecciones) | hecho (`swing screen`) |
+| 6 | **Funcion 1**: revisión de posiciones con IA que decide mantener/vender | hecho (`swing review --llm`) |
+| 7 | Journal SQLite, métricas, kill switch | archivado (`legacy/adapters_journal.py`) |
+| 8 | Programación y notificación | hecho (`swing nightly`, `swing schedule`) |
 
-El backtest es funcional pero **la puerta no se corrió**: la tabla de resultados en
-`docs/ESTRATEGIA.md` sigue en "pendiente" y ese es el número real hasta correr
-`swing backtest` sobre datos reales. El **paper trading** de la fase 7 es una actividad
-operativa (4 semanas corriendo y revisando), no código: el journal y las métricas que la
-alimentan ya existen.
+El producto se redujo a **dos funciones** (D25): `review` (fase 6) y `screen` (fase 5).
+El resto (fases 3, 4 y 7: backtest, plan nocturno, journal) se **archivó** en `legacy/`
+(fuera del paquete, no se instala) y sus comandos salieron del CLI; el código queda como
+referencia. **No hay parámetro validado**: el backtest nunca se corrió sobre datos reales.
 
 Las verificaciones de broker (`docs/VERIFICACION_BROKER.md`) necesitan una cuenta demo
 del usuario y son bloqueantes para operar, no para escribir código.
+
+La fase 8 ya está: `swing nightly` corre las dos funciones de una pasada y deja un
+resumen, y `swing schedule` imprime el horario local (`America/Santiago`) y el comando
+para el Programador de tareas. La notificación (webhook genérico o Telegram) es
+opcional. Ver `docs/PROGRAMACION.md`.
 
 ## Comandos
 
@@ -43,15 +47,14 @@ python -m venv .venv
 .venv\Scripts\swing.exe verify-broker   # qué de broker.yaml sigue sin verificar
 .venv\Scripts\swing.exe data-health     # velas, frescura, huecos y earnings por ticker
 .venv\Scripts\swing.exe analyze-positions  # el objetivo: valuar posiciones y hallazgos
-.venv\Scripts\swing.exe daily           # plan de la noche con tickets (fase 4)
-.venv\Scripts\swing.exe review          # recomendación sobre tus posiciones (solo salidas)
-.venv\Scripts\swing.exe discover        # descubre candidatos por métricas (S&P 500)
-.venv\Scripts\swing.exe scan            # escanea el universo y lista candidatos/rechazos
-.venv\Scripts\swing.exe allocate 2000000  # reparte un aporte entre los candidatos
-.venv\Scripts\swing.exe stats           # métricas y kill switch desde el journal
-.venv\Scripts\swing.exe confirm 3 --done  # marca una acción del journal
-.venv\Scripts\swing.exe backtest        # backtest walk-forward + puerta de validación
-.venv\Scripts\python.exe -m pytest      # 368 tests offline (+1 live con RUN_LIVE=1)
+.venv\Scripts\swing.exe review          # función 1: recomendación sobre tus posiciones
+.venv\Scripts\swing.exe review --llm    # función 1: la IA pondera todo y decide mantener/vender
+.venv\Scripts\swing.exe screen          # función 2: screener de compra (S&P 500 + fundamentales)
+.venv\Scripts\swing.exe screen --llm    # función 2: agrega la tesis de compra de la IA
+.venv\Scripts\swing.exe discover        # alias heredado de `screen`
+.venv\Scripts\swing.exe nightly         # fase 8: screen + review en una corrida, resumen y aviso
+.venv\Scripts\swing.exe schedule        # fase 8: horario local y comando para el Programador de tareas
+.venv\Scripts\python.exe -m pytest      # tests offline (+1 live con RUN_LIVE=1)
 .venv\Scripts\python.exe -m ruff check .
 .venv\Scripts\python.exe -m mypy src
 ```
@@ -77,18 +80,11 @@ reporte y declara la fuente. Los hallazgos y las acciones sugeridas salen en Mar
 por convención el código de salida es 0 sin hallazgos, 1 si el reporte o la config
 fallan y 2 con hallazgos contra `strategy.yaml`.
 
-`daily` es la fase 4: lee el export de XTB, adopta las posiciones abiertas
-(`legacy.adopt`, con el stop derivado de `legacy.max_loss_from_cost_pct` cuando el
-broker no trae Sell Stop), reconcilia contra el libro, llama al mismo `decide()` que usa
-el backtest y escribe `output/plan_<fecha>.md` con los **tickets numerados** (acción,
-ticker, orden, volumen, precio, vigencia, motivo). `--no-llm` fuerza el plan
-determinista, `--dry-run` no escribe el archivo ni el journal y `--offline` no toca la
-red. Sale con 0 si la noche está limpia, 2 con hallazgos y 3 si el LLM falla (el plan
-determinista igual se escribe).
-
-`review` es la recomendación **solo sobre tus posiciones**: adopta lo abierto y corre las
-diez reglas de salida de §5.7 (las mismas del backtest) sin mirar el universo ni proponer
-entradas. Hay dos formatos con `--formato`:
+`review` es la **función 1**: recomendación sobre tus posiciones. Adopta lo abierto y corre
+las diez reglas de salida de §5.7 (las mismas del backtest) sin mirar el universo ni proponer
+entradas. Con `--llm` la IA pondera fundamentales, proyecciones de analistas, noticias y
+contexto macro y **decide** mantener o vender con su veredicto (`BUY/HOLD/SELL/WATCH`);
+el motor sigue fijando stop, meta y tamaño. Hay dos formatos con `--formato`:
 
 - `detalle` (por defecto): bloque por posición con **qué hacer** en una frase concreta
   (el nivel del stop, el % a vender), **qué más aplica** (las reglas que la precedencia
@@ -105,26 +101,21 @@ valuación). Como el export no trae Sell Stop, el stop inicial se deriva al
 Con `--llm`, `review` agrega un bloque **"Contexto macro"**: datos deterministas (VIX,
 10Y, DXY, régimen) más una **síntesis macro con búsqueda** (Fed/tasas, inflación, dólar,
 elecciones, geopolítica/aranceles, petróleo) que se **inyecta en cada posición** para que
-el fundamento y la acción consideren el contexto de EE.UU. y del mundo.
+el fundamento y la acción consideren el contexto de EE.UU. y del mundo. Un veredicto
+`WEAKENED` pasa a `REVISAR TESIS (IA)` delante de la regla y `BROKEN` (con evidencia
+fechada y con fuente) entra al motor como la regla `THESIS_EXIT`.
 
-`scan` lista qué tickers pasarían las puertas esta noche (con equity nominal); `allocate`
-reparte un aporte respetando los topes y responde "mantener en caja" si no hay
-candidatos. `stats` lee el journal (`state/journal.db`) e imprime métricas y kill switch;
-`confirm <id> --done|--skip` marca lo que el usuario ejecutó. El **journal** (SQLite +
-`state/journal.csv` append-only) es la memoria entre noches: runs, acciones
-`PENDING/DONE/RECURRING`, trades cerrados y snapshots de métricas.
-
-`backtest` corre el walk-forward desde `--start` (por defecto 2010-01-01) sobre el
-universo más una canasta de ETFs de control y aplica la puerta de validación (§11.3):
-mínimo de trades fuera de muestra, expectativa con IC bootstrap, profit factor, SQN,
-prueba de entrada aleatoria y robustez en ETFs. Imprime `APROBADO`/`NO APROBADO` con
-`--out`; sale con 0 si aprueba y 2 si no.
+`screen` es la **función 2**: el screener de compra. Rastrea el S&P 500 vivo, aplica el
+prefiltro técnico de tendencia/rango/liquidez y las **puertas fundamentales**
+(`fundamentals:` en `strategy.yaml`: valoración, ROE, margen, deuda, crecimiento y
+potencial al objetivo de analistas) y ordena por **score compuesto** (valor/calidad/
+crecimiento/proyecciones). Con `--min-score` filtra por ese score; con `--llm` agrega la
+tesis de compra de la IA (veredicto `BUY/WATCH`) y la deja en el JSON. Los candidatos
+quedan en `state/candidates.json`.
 
 ### Clave del LLM (fase 6)
 
-La capa de IA es **opcional** y nunca crea entradas, sube tamaños ni cambia la
-recomendación: solo puede vetar una entrada o marcar una tesis rota (y `BROKEN` exige
-hechos fechados con fuente). La clave se lee del entorno (`SWING_LLM_API_KEY` o
+La capa de IA es **opcional**. La clave se lee del entorno (`SWING_LLM_API_KEY` o
 `OPENAI_API_KEY`) y, como último recurso local, de `.secrets/llm_api_key.txt` (ignorado
 por git). El `base_url` y el `model` salen de `SWING_LLM_BASE_URL`/`SWING_LLM_MODEL` o de
 un `.secrets/llm.json` local. Sin clave, todo sale igual (determinista).
@@ -135,44 +126,44 @@ Ejemplo con DeepSeek (chat OpenAI-compatible), en `.secrets/llm.json`:
 {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"}
 ```
 
-`review --llm` agrega la segunda opinión por posición; `--web-search` habilita la
-búsqueda web **por function calling** (DeepSeek no ejecuta `web_search` del lado del
-servidor, pero sí llamadas a función): el modelo pide `web_search`, la resolvemos con
-**Tavily** y le devolvemos resultados con `url`, que alimentan `key_facts.source_url`.
-La clave de Tavily se lee de `TAVILY_API_KEY` o `.secrets/tavily_api_key.txt`
-(ignorado por git). Sin backend de búsqueda, `--web-search` cae a chat sin búsqueda.
-`daily` usa la IA como veto si no se pasa `--no-llm`.
+`review --llm` agrega la decisión por posición y `screen --llm` la tesis de compra;
+`--web-search` habilita la búsqueda web **por function calling** (DeepSeek no ejecuta
+`web_search` del lado del servidor, pero sí llamadas a función): el modelo pide
+`web_search`, la resolvemos con **Tavily** y le devolvemos resultados con `url`, que
+alimentan `key_facts.source_url`. La clave de Tavily se lee de `TAVILY_API_KEY` o
+`.secrets/tavily_api_key.txt` (ignorado por git). Sin backend de búsqueda, `--web-search`
+cae a chat sin búsqueda.
 
-Con `--llm`, el veredicto **incorpora la tesis sin ceder autoridad**: `WEAKENED` pasa a
-`REVISAR TESIS (IA)` delante de la regla, y `BROKEN` (con evidencia fechada y con fuente)
-entra al motor como la regla `THESIS_EXIT`. La IA solo puede **degradar** (pedir cautela o
-salida); nunca crea entradas ni sube tamaños. Un fallo puntual de la IA en un ticker no
-tira la revisión de los demás.
+La IA **decide** (mantener/vender en `review`, comprar/vigilar en `screen`) pero nunca
+fija niveles: stop, meta y tamaño los calcula siempre el motor. En una posición la IA no
+puede sumar (solo mantener o vender). Un fallo puntual de la IA en un ticker no tira la
+revisión de los demás.
 
 ### Búsqueda web (Tavily)
 
 `adapters/search.py` ejecuta la herramienta `web_search` del function calling contra
-Tavily (plan gratis). La IA **solo anota** (tesis con fuentes); nunca cambia la
-recomendación del motor.
+Tavily (plan gratis). La IA la usa para anclarse en **hechos con fuente** y emitir su
+veredicto.
 
-### Universo y descubrimiento de candidatos
+### Universo y screener
 
-No hay una lista de observación curada. `swing discover` rastrea un conjunto amplio (el
+No hay una lista de observación curada. `swing screen` rastrea un conjunto amplio (el
 S&P 500 vivo, de Wikipedia, que trae el **sector GICS** y de ahí sale el tema de cada
-ticker), aplica un prefiltro de tendencia/rango de 52 semanas/liquidez/precio y ordena por
-**fuerza relativa**; deja los mejores en `state/candidates.json`. El motor (`decide`) sigue
-siendo el que decide con las seis puertas y el setup completo.
+ticker), aplica el prefiltro de tendencia/rango de 52 semanas/liquidez/precio, baja los
+**fundamentales y proyecciones** de analistas (yfinance, cacheados en
+`cache/fundamentals/` con TTL) y ordena por **score compuesto** (configurable en
+`fundamentals:` y `screener:` de `strategy.yaml`); deja los mejores en
+`state/candidates.json`.
 
-`scan`, `daily`, `allocate` y `backtest` aceptan `--universe candidates|sp500|watchlist`:
+`screen` (y su alias `discover`) acepta `--universe sp500|watchlist`:
 
-- `candidates` (recomendado): usa lo que dejó `swing discover` (evita re-barrer 500
-  tickers en la corrida nocturna).
-- `sp500`: el índice vivo, cacheado en `cache/universe/sp500.json`; sin red usa la copia.
+- `sp500` (por defecto): el índice vivo, cacheado en `cache/universe/sp500.json`; sin red
+  usa la copia.
 - `watchlist`: el archivo local, solo como respaldo.
 
-`watchlist.yaml` y `themes.yaml` quedan como respaldo local. Limitación declarada: son los
-constituyentes **de hoy**, así que el backtest arrastra el sesgo de supervivencia del
-§11.1.
+`watchlist.yaml` y `themes.yaml` quedan como respaldo local. Limitación declarada: el
+S&P 500 son los constituyentes **de hoy**; cualquier medición histórica arrastra el sesgo de
+supervivencia del §11.1.
 
 ## Estructura
 
@@ -195,27 +186,28 @@ constituyentes **de hoy**, así que el backtest arrastra el sesgo de supervivenc
 | `core/exits.py` | 5.7, 4.3, 4.6 | Precedencia de las diez reglas y transiciones de §5.6 |
 | `core/portfolio.py` | 5.5, 5.8 | Heat, pérdida mensual, topes por ticker y tema, `CAP_TRIM` |
 | `core/orders.py` | 4.2, 11.2 | Semántica de relleno (Buy Limit, Sell Stop, ventas) y `Ticket` |
-| `core/engine.py` | 5, 11.3 | `decide()`: la única función que decide la noche (backtest y producción) |
+| `core/engine.py` | 5, 11.3 | `decide()`: la única función que decide (entradas y salidas) |
 | `core/report.py` | — | Modelo del export de XTB y agregación filas → posiciones |
 | `core/analysis.py` | 5.7, 5.8 | Valua la cartera y genera hallazgos, acciones y veredicto por posición |
 | `core/planner.py` | 4, 9 | Adopta posiciones del reporte, arma tickets y el informe de la noche |
 | `core/reconcile.py` | 9 | Libro vs reporte del broker: `UNMANAGED_LOT`, `STOP_MISSING`, cierres |
 | `core/metrics.py` | 13 | Expectativa, PF, SQN, drawdown y kill switch |
-| `core/llm.py` | 12 | Esquema del veto LLM y autoridad asimétrica (solo degrada) |
-| `core/discovery.py` | 5.2 | Prefiltro de tendencia/rango/liquidez y ranking por fuerza relativa |
-| `backtest/simulator.py` | 11.2 | Walk-forward noche por noche con el mismo `decide()` |
-| `backtest/validation.py` | 11.3 | Puerta de validación e informe del veredicto |
+| `core/fundamentals.py` | 5.2 | `Fundamentals`, puertas y score compuesto (valor/calidad/crecimiento/proyecciones) |
+| `core/llm.py` | 12 | Esquema del veredicto LLM; la IA decide, el motor fija niveles |
+| `core/discovery.py` | 5.2 | Prefiltro técnico + puertas/score fundamentales y ranking del screener |
 | `adapters/config_loader.py` | 7 | YAML → modelos, con errores que dicen qué falta |
 | `adapters/cache.py` | 6 | Una vela diaria por símbolo en CSV, escritura atómica, rango faltante |
 | `adapters/data_yahoo.py` | 6, 8 | Yahoo sin ajustes, earnings, `CLP=X`, mapeo de símbolos, sector |
+| `adapters/fundamentals.py` | 5.2 | Fundamentales y proyecciones de yfinance, cacheados con TTL |
 | `adapters/universe.py` | 5.2, 11.1 | S&P 500 vivo (Wikipedia) con sector GICS, cache y respaldo local |
 | `adapters/llm.py` | 12 | Cliente LLM (chat + function calling); la clave sale del entorno, no del código |
 | `adapters/search.py` | 12 | Búsqueda web por function calling (Tavily) para la segunda opinión |
-| `adapters/journal.py` | 9, 13 | Journal SQLite + CSV: runs, acciones, trades y métricas |
+| `adapters/notify.py` | 14 | Notificación opcional de la corrida (webhook genérico o Telegram), best-effort |
 | `adapters/xtb_report.py` | — | Export de XTB → `PositionReport` puro (hojas + hoja local CLP) |
-| `cli.py` | — | `check-config`, `verify-broker`, `data-health`, `analyze-positions`, `review`, `discover`, `daily`, `scan`, `allocate`, `stats`, `confirm`, `backtest` |
+| `cli.py` | — | `check-config`, `verify-broker`, `data-health`, `analyze-positions`, `review`, `screen`/`discover`, `nightly`, `schedule` |
 
-Queda la fase 8 (programar la corrida nocturna y notificar). El núcleo no depende de ella.
+Queda la fase 8 implementada como `swing nightly` + `swing schedule`: el núcleo no
+depende de ella y la notificación es opcional. Ver `docs/PROGRAMACION.md`.
 
 ## Reglas que el código sostiene
 
@@ -233,9 +225,10 @@ Queda la fase 8 (programar la corrida nocturna y notificar). El núcleo no depen
 ## Decisiones y documentos
 
 - `docs/ARQUITECTURA.md` — **cómo funciona todo**: capas, flujo de una corrida, el motor
-  `decide()`, la capa de IA, el journal y los datos. Empezar por acá.
+  `decide()`, la capa de IA y los datos. Empezar por acá.
 - `docs/USO.md` — guía operativa: flujo semanal/noche, formatos, códigos de salida y claves.
-- `docs/DECISIONES.md` — D1 a D24. Cada ambigüedad del spec que se resolvió y por qué.
+- `docs/PROGRAMACION.md` — fase 8: agendar `nightly` en Windows y notificar (webhook/Telegram).
+- `docs/DECISIONES.md` — D1 a D29. Cada ambigüedad del spec que se resolvió y por qué.
   Es lo que hay que leer antes de cuestionar un parámetro.
 - `docs/ESTRATEGIA.md` — linaje de cada componente, evidencia, y sobre todo **lo que no
   es fuente de ventaja** (la salida escalonada sube el win rate por construcción).

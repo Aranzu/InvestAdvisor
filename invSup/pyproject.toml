@@ -14,8 +14,11 @@ dependencies = [
     "numpy>=1.26,<3.0",
     "typer>=0.12",
     "PyYAML>=6.0",
-    "yfinance>=1.5,<2.0",
+    "yfinance>=0.2,<1.0",
     "openpyxl>=3.1,<4.0",
+    # Windows no trae la base IANA de zonas horarias: sin tzdata,
+    # ``ZoneInfo("America/New_York")`` falla al importar ``data_yahoo``.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -39,7 +42,7 @@ line-length = 120
 target-version = "py311"
 # El informe emite texto en espanol con acentos y flechas a proposito; el archivo
 # esta en UTF-8 (mismo criterio que el proyecto hermano).
-exclude = [".venv", "cache", "output", "reports"]
+exclude = [".venv", "cache", "output", "reports", "legacy"]
 
 [tool.ruff.lint]
 select = [
@@ -71,7 +74,7 @@ warn_unused_ignores = true
 # yfinance no publica tipos; se prefiere no ensuciar el codigo con un ignore
 # por llamada.
 ignore_missing_imports = true
-exclude = ["^\\.venv/", "^cache/", "^output/", "^reports/"]
+exclude = ["^\\.venv/", "^cache/", "^output/", "^reports/", "^legacy/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

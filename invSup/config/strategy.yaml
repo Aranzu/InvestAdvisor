@@ -59,6 +59,50 @@ gates:
   # Blackout de entrada por earnings, en SESIONES (no dias calendario, seccion 4.6).
   earnings_entry_blackout_sessions: 20
 
+# Funcion 2 (screener de compra). Las puertas fundamentales filtran; el score
+# ordena. Ningun umbral vive en el codigo. Un tope/piso en null desactiva el filtro.
+fundamentals:
+  max_forward_pe: 40.0
+  max_trailing_pe: 60.0
+  max_price_to_book: 12.0
+  min_return_on_equity: 0.05
+  min_profit_margin: 0.0
+  min_revenue_growth: -0.05
+  max_debt_to_equity: 3.0
+  min_target_upside_pct: 5.0
+  min_analyst_count: 0
+  require_target: false
+  require_fundamentals: false
+  # Anclas de normalizacion 0..1 por metrica (good es el mejor extremo).
+  score:
+    forward_pe_good: 15.0
+    forward_pe_bad: 45.0
+    pb_good: 2.0
+    pb_bad: 10.0
+    roe_good: 0.25
+    roe_bad: 0.02
+    margin_good: 0.20
+    margin_bad: 0.0
+    debt_good: 0.3
+    debt_bad: 2.5
+    rev_growth_good: 0.20
+    rev_growth_bad: -0.05
+    eps_growth_good: 0.20
+    eps_growth_bad: -0.10
+    upside_good: 0.20
+    upside_bad: 0.0
+  weights:
+    value: 0.30
+    quality: 0.30
+    growth: 0.20
+    projections: 0.20
+
+screener:
+  top: 25
+  min_composite_score: 0.0
+  require_fundamentals: false
+
+
 setups:
   pullback:
     drop_pct: [5, 10]
@@ -102,8 +146,8 @@ legacy:
   adopt: true
   max_loss_from_cost_pct: 18
   profit_tiers:
-    - {gain_pct: 25, sell_fraction: 0.5}
-    - {gain_pct: 40, sell_fraction: 0.5}
+    - {gain_pct: 25, sell_fraction: 0.4}
+    - {gain_pct: 40, sell_fraction: 0.4}
   post_tier_trail_atr_mult: 3.0
 
 horizon:
@@ -113,7 +157,9 @@ horizon:
 
 llm:
   enabled: true
-  veto_only: true
+  # false = la IA puede decidir mantener/vender y recomendar compra (motor fija
+  # niveles: stop, meta, tamano). true = conserva el diseno original de solo veto.
+  veto_only: false
   max_searches_per_ticker: 3
   weekly_day: sunday
 

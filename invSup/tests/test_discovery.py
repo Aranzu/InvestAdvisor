@@ -15,6 +15,7 @@ from swing import cli
 from swing.adapters.config_loader import load_strategy
 from swing.core.discovery import rank_candidates
 from swing.core.engine import IndicatorFrame
+from swing.core.fundamentals import Fundamentals
 from swing.core.market import Bar, PriceSeries
 from swing.core.models import ThemesConfig, WatchlistConfig
 
@@ -88,3 +89,89 @@ def test_resolve_universe_candidatos_sin_archivo_cae_a_watchlist(tmp_path: Path,
     tickers, _, origin = cli._resolve_universe("candidates", watchlist, themes, None, True)
     assert tickers == ("AAPL",)
     assert origin == "watchlist"
+
+
+# --------------------------------------------------------------------------- #
+# Screener de compra: las puertas y el score fundamentales entran al ranking
+# --------------------------------------------------------------------------- #
+
+
+def _fund(ticker: str, **overrides: object) -> Fundamentals:
+    base: dict[str, object] = {
+        "ticker": ticker,
+        "as_of": START,
+        "source": "test",
+        "forward_pe": 14.0,
+        "price_to_book": 2.0,
+        "return_on_equity": 0.28,
+        "profit_margin": 0.22,
+        "revenue_growth": 0.18,
+        "earnings_growth": 0.18,
+        "debt_to_equity": 0.4,
+        "analyst_count": 11,
+        "eps_growth_estimate": 0.15,
+    }
+    base.update(overrides)
+    return Fundamentals(**base)  # type: ignore[arg-type]
+
+
+def _two_in_trend() -> tuple[dict[str, IndicatorFrame], dict[str, str]]:
+    frames: dict[str, IndicatorFrame] = {}
+    for ticker in ("GOOD", "BAD"):
+        frame = IndicatorFrame.build(_series(ticker, 0.003), STRATEGY)
+        assert frame is not None
+        frames[ticker] = frame
+    return frames, {"GOOD": "tema", "BAD": "tema"}
+
+
+def _close(frame: IndicatorFrame) -> float:
+    feature = frame.features_at(frame.last_index)
+    assert feature is not None and feature.close is not None
+    return feature.close
+
+
+def _weak(ticker: str, close: float) -> Fundamentals:
+    return _fund(
+        ticker,
+        forward_pe=39.0,
+        price_to_book=11.5,
+        return_on_equity=0.06,
+        profit_margin=0.001,
+        revenue_growth=-0.04,
+        earnings_growth=-0.08,
+        debt_to_equity=2.9,
+        target_mean=close * 1.08,
+        eps_growth_estimate=-0.09,
+        analyst_count=2,
+    )
+
+
+def test_screener_ordena_por_score_fundamental() -> None:
+    frames, themes = _two_in_trend()
+    good = _fund("GOOD", target_mean=_close(frames["GOOD"]) * 1.2)
+    bad = _weak("BAD", _close(frames["BAD"]))
+    result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals={"GOOD": good, "BAD": bad})
+    tickers = [c.ticker for c in result.candidates]
+    assert tickers[0] == "GOOD"
+    assert result.scored == 2
+    assert result.candidates[0].composite is not None
+    assert result.candidates[0].composite > (result.candidates[1].composite or 0.0)
+
+
+def test_screener_rechaza_por_puerta_fundamental() -> None:
+    frames, themes = _two_in_trend()
+    good = _fund("GOOD", target_mean=_close(frames["GOOD"]) * 1.2)
+    caro = _fund("BAD", forward_pe=999.0, target_mean=_close(frames["BAD"]) * 1.2)
+    result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals={"GOOD": good, "BAD": caro})
+    assert [c.ticker for c in result.candidates] == ["GOOD"]
+    assert [r.ticker for r in result.rejected] == ["BAD"]
+
+
+def test_screener_exige_fundamentales_si_la_config_lo_pide() -> None:
+    frames, themes = _two_in_trend()
+    strict = STRATEGY.model_copy(
+        update={"fundamentals": STRATEGY.fundamentals.model_copy(update={"require_fundamentals": True})}
+    )
+    result = rank_candidates(frames, themes, strict, top=10, fundamentals={})
+    assert result.candidates == ()
+    assert {r.ticker for r in result.rejected} == {"GOOD", "BAD"}

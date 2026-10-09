@@ -30,9 +30,21 @@ class ReviewContext(StrEnum):
 
     ENTRY_REVIEW = "ENTRY_REVIEW"
     POSITION_REVIEW = "POSITION_REVIEW"
+    SCREEN_REVIEW = "SCREEN_REVIEW"
+    """Opinion de compra sobre un candidato del screener (funcion 2)."""
     WEEKLY = "WEEKLY"
     MACRO = "MACRO"
     """Resumen del contexto macro (EE.UU. y mundo) que afecta a las posiciones."""
+
+
+class Verdict(StrEnum):
+    """Recomendacion final de la IA (funcion 1 y 2). El motor fija los niveles."""
+
+    BUY = "BUY"
+    HOLD = "HOLD"
+    SELL = "SELL"
+    WATCH = "WATCH"
+    UNKNOWN = "UNKNOWN"
 
 
 class ThesisStatus(StrEnum):
@@ -77,7 +89,9 @@ class LLMReview:
     confidence: Confidence
     requested_info: tuple[str, ...]
     accion: str = ""
-    """Que hacer sugerido, en texto (``Mantener``, ``Vender 40%``...). Nunca suma."""
+    """Que hacer sugerido, en texto (``Mantener``, ``Vender 40%``, ``Comprar``)."""
+    verdict: Verdict = Verdict.UNKNOWN
+    """Recomendacion final: ``BUY``/``HOLD``/``SELL``/``WATCH``/``UNKNOWN``."""
     fundamento: str = ""
     """Parrafo breve en lenguaje llano: valorizacion, objetivos de analistas, noticias."""
     catalizador: str = ""
@@ -126,10 +140,11 @@ def parse_review(payload: Mapping[str, object], today: dt.date) -> LLMReview:
         confidence=_enum(payload, "confidence", Confidence),
         requested_info=_text_list(payload.get("requested_info")),
         accion=_optional_text(payload, "accion") or "",
+        verdict=_optional_enum(payload, "verdict", Verdict, Verdict.UNKNOWN),
         fundamento=_optional_text(payload, "fundamento") or "",
         catalizador=_optional_text(payload, "catalizador") or "",
     )
-    _check_action(review.accion)
+    _check_action(review.accion, review.context)
     if review.thesis_status is ThesisStatus.BROKEN and not review.broken_is_confirmed(today):
         review = replace(review, thesis_status=ThesisStatus.WEAKENED)
     if review.veto and not review.veto_reason:
@@ -137,14 +152,21 @@ def parse_review(payload: Mapping[str, object], today: dt.date) -> LLMReview:
     return review
 
 
-#: Verbos que significarian que la IA quiere SUMAR; no tiene autoridad para eso.
-_BUYING_VERBS = ("comprar", "comprá", "compr ", "aumentar", "añadir", "aniadir", "agregar")
+#: Verbos que serian "sumar" en una posicion (donde solo cabe mantener o vender).
+_BUYING_VERBS = ("comprar", "comprá", "compra", "compr ", "aumentar", "añadir", "aniadir", "agregar")
 
 
-def _check_action(accion: str) -> None:
+def _check_action(accion: str, context: ReviewContext) -> None:
+    """En ``POSITION_REVIEW`` la IA solo puede mantener o vender (funcion 1).
+
+    En el screener (``SCREEN_REVIEW``) y en el macro si puede recomendar compra:
+    ahi la pregunta es, justamente, que comprar.
+    """
+    if context is not ReviewContext.POSITION_REVIEW:
+        return
     low = accion.strip().lower()
     if low.startswith(_BUYING_VERBS):
-        raise ReviewSchemaError("la accion de la IA no puede sumar (solo degradar o mantener)")
+        raise ReviewSchemaError("la accion sobre una posicion no puede sumar (solo mantener o vender)")
 
 
 def apply_reviews(
@@ -169,7 +191,7 @@ def apply_reviews(
     broken = {
         review.ticker: True
         for review in reviews
-        if review.thesis_status is ThesisStatus.BROKEN and review.broken_is_confirmed(today)
+        if review.thesis_status is ThesisStatus.BROKEN and review.broken_is_confirmed(today) and review.context is ReviewContext.POSITION_REVIEW
     }
     return VetoOutcome(
         allowed_entries=allowed,
@@ -209,6 +231,19 @@ def _boolean(payload: Mapping[str, object], key: str) -> bool:
 
 def _enum(payload: Mapping[str, object], key: str, enum: type[_E]) -> _E:
     value = payload.get(key)
+    if not isinstance(value, str):
+        raise ReviewSchemaError(f"{key} debe ser texto")
+    for member in enum:
+        if member.value == value:
+            return member
+    raise ReviewSchemaError(f"{key} debe ser uno de {sorted(member.value for member in enum)}")
+
+
+def _optional_enum(payload: Mapping[str, object], key: str, enum: type[_E], default: _E) -> _E:
+    """Enum opcional: ausente o vacio cae al ``default`` (compatibilidad de esquema)."""
+    value = payload.get(key)
+    if value is None or value == "":
+        return default
     if not isinstance(value, str):
         raise ReviewSchemaError(f"{key} debe ser texto")
     for member in enum:

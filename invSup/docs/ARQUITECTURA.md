@@ -6,70 +6,77 @@ de producto y el estado de las fases, ver el `README.md`; para el spec, ver
 
 ## 1. Qué es
 
-Motor de swing trading **nocturno**: cada noche decide qué hacer (entrar, salir, mover
-stops) sobre una cartera y lo deja en un informe con tickets. **Recomienda, nunca ejecuta
-órdenes.** El núcleo es determinista y auditable; la IA es opcional y solo puede
-*degradar* (vetar una entrada, avisar de una tesis rota), nunca crear entradas, subir
-tamaños, aflojar stops ni bajar metas.
+Motor de swing trading con **dos funciones** (D25): cada noche **revisa tus posiciones**
+(`review`) y **rastrea compras** (`screen`). **Recomienda, nunca ejecuta órdenes.** El
+núcleo es determinista y auditable; la IA es opcional y **decide** (`BUY/HOLD/SELL/WATCH`,
+D27), pero nunca fija niveles: stop, meta y tamaño los calcula siempre el motor.
+
+El producto original (backtest, plan nocturno, journal) se **archivó** en `legacy/`: su
+código queda como referencia y ya no se instala ni expone comandos.
 
 ## 2. Capas
 
 ```
 core/         nucleo PURO: sin disco, sin red, sin importar adapters/ (un test lo verifica)
-adapters/     I/O: Yahoo, cache, config YAML, parser XTB, LLM, busqueda, journal, universo
-backtest/     simulador walk-forward + puerta de validacion (reusa core/engine)
+adapters/     I/O: Yahoo, cache, config YAML, parser XTB, fundamentales, LLM, busqueda, universo, notificacion
 cli.py        comandos (Typer); es la capa que toca disco/red y arma los objetos de core
+legacy/       codigo archivado (backtest, journal); fuera del paquete, solo referencia
 ```
 
 Regla de oro: **`core/` no importa `adapters/`**. Los datos entran ya resueltos
 (`Bar`, `PriceSeries`, `TradeState`, `PositionReport`) y la salida son objetos
-(`NightPlan`, `Analysis`, `Ticket`). Eso permite que el backtest y la producción usen
+(`NightPlan`, `Analysis`, `Ticket`). Eso permite que las dos funciones compartan
 exactamente la misma función de decisión.
 
 ## 3. Flujo de una corrida
 
-### 3.1 Noche — `swing daily --universe candidates [--no-llm]`
+### 3.1 (archivado) Plan nocturno — `swing daily`
 
-1. **Config** (`adapters/config_loader`): `strategy.yaml`, `broker.yaml`, `watchlist.yaml`,
-   `themes.yaml` → modelos pydantic (`core/models`).
-2. **Universo** (`_resolve_universe`): candidatos descubiertos (`state/candidates.json`),
-   o S&P 500 vivo (`adapters/universe`), o `watchlist.yaml`. El tema de cada ticker sale
-   del sector GICS o de `themes.yaml`.
-3. **Datos** (`adapters/data_yahoo` + `adapters/cache`): velas del universo + posiciones
-   + `SPY` + `^VIX`, con cache incremental. Se calculan indicadores (`core/engine.IndicatorFrame`).
-4. **Reporte de posiciones** (`adapters/xtb_report`): export XTB → `core/report.PositionReport`.
-5. **Reconciliación** (`core/reconcile`): lotes del broker vs libro → `UNMANAGED_LOT`,
-   `STOP_MISSING`, cierres.
-6. **Adopción** (`core/planner.adopt_positions`): reconstruye el `TradeState` de cada
-   posición (stop inicial derivado del `legacy.max_loss_from_cost_pct` si el broker no
-   trae Sell Stop).
-7. **Decisión** (`core/engine.decide`): régimen → salidas (§5.7) → cartera (heat/tope) →
-   entradas (6 puertas + setup).
-8. **IA (opcional)**: veto de finalistas y tesis de posiciones; una tesis `BROKEN`
-   confirmada entra al motor como `THESIS_EXIT` y se rehace `decide`.
-9. **Tickets** (`core/planner.plan_tickets`) e **informe** (`render_plan`) →
-   `output/plan_<fecha>.md`. Se registra la noche en el journal (`adapters/journal`).
+El plan nocturno con tickets (fase 4) se **archivó** en `legacy/`; ya no hay comando. El
+motor `decide()` sigue siendo el mismo que consumen `review` y `screen`, y el flujo era:
+config → universo → datos → reporte XTB → reconciliación → adopción → `decide()` → IA
+opcional → tickets e informe (`output/plan_<fecha>.md`).
 
-### 3.2 Recomendación de posiciones — `swing review [--llm --web-search --formato tabla]`
+### 3.2 Función 1 — revisión de posiciones: `swing review [--llm --web-search --formato tabla]`
 
-Solo mira lo abierto (sin universo ni entradas):
+Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantiene o se vende:
 1. Reporte → adopción → `decide(universe=())` (solo salidas).
-2. La IA (opcional) revisa cada posición **y la local SQM-B**, con búsqueda web.
-3. **Contexto macro**: `_macro_brief` (una consulta macro con búsqueda; se cachea en
+2. **Fundamentales y proyecciones** (porposición): `adapters/fundamentals` inyecta
+   valoración, ROE/margen, crecimiento y objetivo de analistas del ticker.
+3. La IA (opcional) pondera técnico + fundamental + proyecciones + noticias y emite su
+   **veredicto** (`BUY/HOLD/SELL/WATCH`) y la **acción** (`Mantener`, `Vender 50%`,
+   ...); sobre una posición no puede sumar. El motor sigue fijando stop/meta/tamaño.
+4. **Contexto macro**: `_macro_brief` (una consulta macro con búsqueda; se cachea en
    `output/contexto_<fecha>.json/.md` y se reutiliza) + datos deterministas
    (`VIX`, `10Y`, `DXY`, régimen). Se inyecta en cada posición.
-4. Informe: `--formato detalle` (bloques explicados) o `--formato tabla`
+5. Informe: `--formato detalle` (bloques explicados) o `--formato tabla`
    (`Activo · Plat. · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`).
 
-### 3.3 Descubrimiento y backtest
+### 3.3 Función 2 — screener de compra: `swing screen [--llm]`
 
-- `swing discover`: rastrea el S&P 500 vivo, prefiltra (`core/discovery`) y ordena por
-  fuerza relativa → `state/candidates.json`.
-- `swing backtest`: walk-forward (`backtest/simulator`) + puerta (`backtest/validation`).
+1. Universo amplio: S&P 500 vivo desde Wikipedia (GICS → tema) o watchlist local.
+2. Prefiltro técnico (`core/discovery`): tendencia SMA200, stack, rango 52 semanas,
+   liquidez y precio.
+3. Fundamentales y proyecciones (`adapters/fundamentals`, cacheados con TTL):
+   puertas (`fundamentals:` en `strategy.yaml`) y **score compuesto** por bloque
+   (valor/calidad/crecimiento/proyecciones; `core/fundamentals.py`).
+4. Ranking por score → los `top` mejores y `min_composite_score` van a
+   `state/candidates.json`. Con `--llm`, la IA emite su tesis de compra
+    (`BUY/WATCH`) por candidato.
+
+### 3.4 Corrida nocturna (fase 8) — `swing nightly`
+
+Es el punto de entrada que se agenda: corre `screen` (siempre) y `review` (si hay export
+de XTB) en una pasada, escribe `output/nightly_<fecha>.md` y **combina los códigos de
+salida** con precedencia config/datos > IA > hallazgos. No agrega lógica de decisión:
+cada subcomando falla cerrado como ya lo hacía, así que datos obsoletos terminan en 2.
+La **notificación** (`adapters/notify`) es opcional y **best-effort** (webhook o
+Telegram); un fallo de red se reporta y no tumba la corrida. `swing schedule` calcula
+la hora local `America/Santiago` e imprime el comando `schtasks`. Ver `docs/PROGRAMACION.md`.
 
 ## 4. El motor `decide()` (`core/engine.py`)
 
-Es **una sola función** que comparten el backtest y la producción. Entradas:
+Es **una sola función** que comparten `review` y `screen`. Entradas:
 `MarketSnapshot` (frames, SPY, VIX, earnings, RS), `PortfolioState` (equity, caja,
 posiciones), `open_trades: dict[str, TradeState]`, la config y `kill`. Salida: `NightPlan`.
 
@@ -85,16 +92,18 @@ Orden de trabajo (cambiarlo cambia el resultado; hay un test que lo fija):
    (`_detect_setup`), sizing (`core/sizing`), stops (`core/stops`).
 
 Semántica de relleno (`core/orders`): Buy Limit, Sell Stop, venta a mercado y Sell
-Limit; es **la misma** que usa el simulador, garantizando sim ≡ producción.
+Limit; la misma que usaba el simulador archivado.
 
 ## 5. Capa de IA (`core/llm.py` + `adapters/llm.py` + `adapters/search.py`)
 
+- **Veredicto** (`core/llm.Verdict`): `BUY/HOLD/SELL/WATCH/UNKNOWN`. La IA decide
+  (D25/D27); el motor fija los niveles. En `POSITION_REVIEW` "comprar" se rechaza
+  (`_check_action`); en `SCREEN_REVIEW` se permite.
 - **Esquema** validado (`parse_review`): `thesis_status` (`INTACT/WEAKENED/BROKEN/UNKNOWN`),
-  `veto`, `key_facts` (con `source_url`), `accion`, `fundamento`, `catalizador`,
+  `verdict`, `veto`, `key_facts` (con `source_url`), `accion`, `fundamento`, `catalizador`,
   `confidence`. Un `BROKEN` **sin evidencia fechada y con fuente** se degrada a `WEAKENED`.
-- **Autoridad asimétrica, en código**: `LLMReview` no tiene campos para tamanos/stops/metas;
-  `apply_reviews` solo **quita** entradas (veto) y marca tesis rotas; `_check_action`
-  rechaza acciones que "suman".
+- **Protección estructural**: `LLMReview` no tiene campos para tamanos/stops/metas;
+  `apply_reviews` solo **quita** entradas (veto) y marca tesis rotas.
 - **Búsqueda web por function calling** (`adapters/llm`): DeepSeek (u otro chat compatible)
   no ejecuta `web_search` del servidor, así que el cliente ofrece la herramienta
   `web_search`, la ejecuta con **Tavily** (`adapters/search`) y le devuelve resultados con
@@ -105,13 +114,12 @@ Limit; es **la misma** que usa el simulador, garantizando sim ≡ producción.
 - **Clave**: `SWING_LLM_API_KEY`/`OPENAI_API_KEY`, `SWING_LLM_BASE_URL`/`SWING_LLM_MODEL`
   o `.secrets/llm.json` (ej. DeepSeek). Sin clave, todo sale determinista.
 
-## 6. Journal y métricas (`adapters/journal.py`, `core/metrics.py`)
+## 6. Journal y métricas (archivado)
 
-SQLite (`state/journal.db`) + `state/journal.csv` append-only: `runs`, `actions`
-(`PENDING/DONE/RECURRING`), `trades`, `tranches`, `signals`, `llm_reviews`,
-`metrics_snapshots`. `swing stats` calcula métricas y el **kill switch**
-(`OK`/`WARN`/`DEFENSIVE`) sobre los trades cerrados y el drawdown; `swing confirm` marca
-lo ejecutado.
+El journal SQLite (`state/journal.db`) + `state/journal.csv` y el cálculo de métricas y
+**kill switch** (`core/metrics.py`, `OK`/`WARN`/`DEFENSIVE`) se **archivaron**:
+`legacy/adapters_journal.py`. `core/metrics.py` sigue en el paquete porque
+`core/engine.decide()` lo usa para el `KillState`.
 
 ## 7. Datos
 
@@ -119,11 +127,15 @@ lo ejecutado.
   sector. Import perezoso de `yfinance`; `offline=True` no toca red.
 - **`adapters/cache`**: una vela diaria por símbolo en CSV, escritura atómica; solo baja
   lo que falta.
+- **`adapters/fundamentals`**: `Ticker.info` (yfinance) → `Fundamentals` normalizado,
+  cacheado en `cache/fundamentals/<ticker>.json` con TTL (7 días en vivo, infinito en
+  offline). Un campo ausente es `None`, nunca un cero inventado.
+- **`core/fundamentals`**: puertas y score compuesto por bloque contra `strategy.yaml`.
 - **`core/dataquality`**: frescura (D3), huecos, splits, sesiones hasta earnings.
-- **Rebase de splits (D6)**: el **backtest** aplica `rebased_series` (serie continua para
-  los indicadores). En **vivo** no se reescala en silencio (un salto grande puede ser un
-  split o una caída real): `_warn_jumps` avisa de los saltos no ajustados para revisar antes
-  de operar.
+- **Rebase de splits (D6)**: en **vivo** no se reescala en silencio (un salto grande puede
+  ser un split o una caída real): `_warn_jumps` avisa de los saltos no ajustados para
+  revisar antes de operar. `core/dataquality.rebased_series` (serie continua para medir)
+  vivía en el backtest archivado.
 - **`core/fx`**: CLP/USD implícito por mediana, con descarte de outliers.
 - **`adapters/universe`**: S&P 500 vivo (Wikipedia, con GICS) cacheado.
 
@@ -141,19 +153,22 @@ conjunto que la watchlist — hay un test). Los invariantes se validan al cargar
 | `verify-broker` | campos de `broker.yaml` sin verificar |
 | `data-health` | frescura/huecos/earnings por ticker |
 | `analyze-positions` | valúa la cartera y hallazgos (sin reglas de salida completas) |
-| `review` | recomendación sobre las posiciones (motor + IA + macro) |
-| `discover` | candidatos por métricas sobre el S&P 500 |
-| `daily` | plan de la noche con tickets |
-| `scan` / `allocate` | candidatos por puertas / reparto de un aporte |
-| `stats` / `confirm` | journal: métricas + kill switch / marcar acciones |
-| `backtest` | walk-forward + puerta de validación |
+| `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto |
+| `screen` / `discover` | **funcion 2**: screener de compra (técnico + fundamentales + proyecciones) |
+| `nightly` | **fase 8**: `screen` + `review` en una corrida, resumen y notificación opcional |
+| `schedule` | **fase 8**: hora local del cierre + margen y comando `schtasks` |
+
+Los comandos archivados (`daily`, `scan`, `allocate`, `stats`, `confirm`, `backtest`)
+ya no existen; su código está en `legacy/`.
 
 Códigos de salida: `0` limpio, `1` error de config/datos, `2` hallazgos/acciones,
 `3` fallo de IA (el informe determinista igual se escribe).
 
 ## 10. Limitaciones declaradas
 
-- No hay datos fundamentales point-in-time; el backtest arrastra sesgo de supervivencia.
+- No hay datos fundamentales point-in-time; cualquier medición histórica arrastraría el
+  sesgo de supervivencia del índice de hoy.
 - El stop inicial de posiciones adoptadas se deriva del 18 % (no siempre el real).
 - El régimen determinista solo mira SPY + VIX; el macro global viene de la IA (con fuentes).
-- La IA no ejecuta órdenes ni fija niveles; su `accion`/`fundamento` son opinión.
+- La IA decide (mantener/vender/comprar) pero nunca ejecuta órdenes ni fija niveles; su
+  `verdict`/`accion`/`fundamento` son opinión sobre niveles que calcula el motor.

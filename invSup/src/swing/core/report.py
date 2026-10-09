@@ -175,7 +175,7 @@ def group_open(lots: tuple[OpenLot, ...]) -> tuple[BookPosition, ...]:
             cost_clp=previous.cost_clp + (lot.value_clp - lot.profit_clp),
             open_price_usd=(previous.open_price_usd * previous.volume + lot.open_price_usd * lot.volume)
             / (previous.volume + lot.volume),
-            open_date=max(previous.open_date, lot.open_date),
+            open_date=min(previous.open_date, lot.open_date),
             report_value_clp=previous.report_value_clp + lot.value_clp,
             report_profit_clp=previous.report_profit_clp + lot.profit_clp,
             report_price_usd=lot.price_usd if lot.price_usd is not None else previous.report_price_usd,
@@ -304,7 +304,7 @@ def closed_stats(closed: tuple[ClosedPosition, ...], calendar: SessionCalendar) 
     profits = [pos.profit_clp for pos in closed]
     n = len(profits)
     wins = [p for p in profits if p > 0.0]
-    losses = [p for p in profits if p <= 0.0]
+    losses = [p for p in profits if p < 0.0]
     gross_win = sum(wins)
     gross_loss = -sum(losses)
     details = sorted(closed, key=lambda pos: pos.profit_clp, reverse=True)

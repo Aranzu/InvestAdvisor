@@ -17,6 +17,7 @@ from swing.core.llm import (
     ReviewContext,
     ReviewSchemaError,
     ThesisStatus,
+    Verdict,
     apply_reviews,
     parse_review,
 )
@@ -91,11 +92,21 @@ def test_contexto_invalido_falla() -> None:
         parse_review(_payload(context="LO_QUE_SEA"), TODAY)
 
 
-def test_la_accion_de_la_ia_no_puede_comprar() -> None:
+def test_la_ia_no_suma_en_una_posicion() -> None:
     import pytest
 
     with pytest.raises(ReviewSchemaError, match="sumar"):
-        parse_review(_payload(accion="Comprar 100%"), TODAY)
+        parse_review(_payload(context="POSITION_REVIEW", accion="Comprar 100%"), TODAY)
+
+
+def test_la_ia_puede_recomendar_compra_en_el_screener() -> None:
+    review = parse_review(_payload(context="SCREEN_REVIEW", accion="Comprar", verdict="BUY"), TODAY)
+    assert review.context is ReviewContext.SCREEN_REVIEW
+    assert review.verdict is Verdict.BUY
+
+
+def test_veredicto_ausente_cae_a_unknown() -> None:
+    assert parse_review(_payload(), TODAY).verdict is Verdict.UNKNOWN
 
 
 def test_la_ia_puede_sugerir_vender_o_mantener() -> None:

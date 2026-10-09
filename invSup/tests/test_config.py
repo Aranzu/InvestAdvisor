@@ -230,11 +230,11 @@ def test_rechaza_trail_que_se_ensancha(tmp_path: Path) -> None:
     _invalid(tmp_path, mutate, "solo se estrecha")
 
 
-def test_rechaza_llm_que_no_es_solo_veto(tmp_path: Path) -> None:
-    def mutate(data: dict[str, Any]) -> None:
-        data["llm"]["veto_only"] = False
-
-    _invalid(tmp_path, mutate, "veto_only")
+def test_llm_puede_decidir_si_veto_only_es_false() -> None:
+    # El diseno nuevo permite que la IA decida (veto_only=false); el motor sigue
+    # fijando los niveles. Cargar la config entregada ya lo demuestra.
+    config = load_strategy(CONFIG_DIR / "strategy.yaml")
+    assert config.llm.veto_only is False
 
 
 def test_rechaza_entradas_nuevas_sobre_el_tope_de_acciones(tmp_path: Path) -> None:

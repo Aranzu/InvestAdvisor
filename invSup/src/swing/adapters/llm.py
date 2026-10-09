@@ -40,22 +40,36 @@ SECRETS_FILE = Path(__file__).resolve().parents[3] / ".secrets" / "llm_api_key.t
 #: Config local opcional (``base_url``/``model``/``api_key``). No se versiona.
 LLM_CONFIG_FILE = Path(__file__).resolve().parents[3] / ".secrets" / "llm.json"
 
-#: Instruccion de sistema: el LLM solo opina y debe responder JSON valido.
+#: Instruccion de sistema: la IA pondera todo y emite un veredicto; el motor fija niveles.
 SYSTEM_PROMPT = (
-    "Eres un analista de posiciones de inversion. Respondes SOLO con un objeto JSON "
-    "que cumple exactamente este esquema: "
-    '{"ticker":string,"context":"ENTRY_REVIEW|POSITION_REVIEW|WEEKLY",'
-    '"thesis_status":"INTACT|WEAKENED|BROKEN|UNKNOWN","veto":boolean,'
-    '"veto_reason":string|null,"accion":string,"fundamento":string,"catalizador":string,'
-    '"confidence":"LOW|MEDIUM|HIGH","key_facts":[{"fact":string,"date":"YYYY-MM-DD",'
-    '"source_url":string}],"search_conclusive":boolean,"requested_info":[string]}. '
-    "En 'accion' propones QUE HACER con la posicion, con el porcentaje si aplica, en "
-    "espanol (ej: 'Mantener', 'Mantener (no anadir)', 'Vender 40%', 'Vender 100%'); "
-    "NUNCA propones comprar ni subir tamano, ni fijas stops o metas. "
-    "En 'fundamento' escribes un parrafo breve (2-3 frases) en espanol con la "
-    "valorizacion, los objetivos de analistas y las noticias que sostienen la accion. "
-    "En 'catalizador' pones el proximo evento relevante con su fecha si la conoces. "
-    "Si no tienes evidencia fechada y con fuente, no marcas BROKEN. El precio no es un argumento."
+    "Eres un analista de inversiones. Respondes SOLO con un objeto JSON que cumple "
+    "exactamente este esquema: "
+    '{"ticker":string,"context":"ENTRY_REVIEW|POSITION_REVIEW|SCREEN_REVIEW|WEEKLY",'
+    '"thesis_status":"INTACT|WEAKENED|BROKEN|UNKNOWN","verdict":"BUY|HOLD|SELL|WATCH|UNKNOWN",'
+    '"veto":boolean,"veto_reason":string|null,"accion":string,"fundamento":string,'
+    '"catalizador":string,"confidence":"LOW|MEDIUM|HIGH",'
+    '"key_facts":[{"fact":string,"date":"YYYY-MM-DD","source_url":string}],'
+    '"search_conclusive":boolean,"requested_info":[string]}. '
+    "Pondera TODO lo disponible: fundamentales (valorizacion, calidad, crecimiento), "
+    "proyecciones de analistas (objetivo medio y recomendacion), tecnico (tendencia, "
+    "fuerza relativa, R y distancia al stop), noticias recientes y contexto macro. "
+    "En 'verdict' emite la recomendacion: BUY, HOLD, SELL o WATCH. En 'accion' la "
+    "exprimes con el porcentaje si aplica (ej: 'Mantener', 'Vender 50%'). NO fijas "
+    "stops ni metas: los niveles los calcula el motor. En 'fundamento' un parrafo "
+    "breve (2-3 frases) con la valorizacion, los objetivos de analistas y las noticias "
+    "que sostienen la recomendacion. En 'catalizador' el proximo evento relevante con "
+    "su fecha si la conoces. Si no tienes evidencia fechada y con fuente, no marcas "
+    "BROKEN. El precio por si solo no es un argumento."
+)
+
+#: Instruccion para la opinion de compra sobre candidatos del screener (funcion 2).
+SCREEN_PROMPT = (
+    "Eres un analista de compra. Te dan candidatos ya filtrados por tecnico y "
+    "fundamentales; tu trabajo es la tesis de compra. Respondes SOLO con el mismo "
+    "objeto JSON del esquema. Usa 'verdict' BUY (comprar ahora) o WATCH (buena pero "
+    "no es el momento). En 'fundamento' explica la tesis en 2-3 frases (valorizacion, "
+    "crecimiento, proyecciones, riesgo). Usa la herramienta web_search si esta "
+    "disponible para verificar noticias recientes. No fijas stops ni metas."
 )
 
 #: Instruccion extra en modo busqueda: exige evidencia reciente con fuente.
@@ -201,6 +215,8 @@ class OpenAICompatibleClient:
             ensure_ascii=True,
         )
         base = MACRO_PROMPT if context is ReviewContext.MACRO else SYSTEM_PROMPT
+        if context is ReviewContext.SCREEN_REVIEW:
+            base = SCREEN_PROMPT
         system = base + (SEARCH_SUFFIX if self.web_search else "")
         if self.web_search and self.search is not None:
             return self._chat_with_search(system, user)

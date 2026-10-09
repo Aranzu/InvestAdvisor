@@ -365,6 +365,13 @@ class HorizonConfig(StrictModel):
 
 
 class LlmConfig(StrictModel):
+    """Autoridad de la IA.
+
+    ``veto_only=True`` conserva el diseno original (la IA solo puede degradar).
+    ``veto_only=False`` habilita que la IA **decida** mantener/vender/recomendar
+    compra; el motor sigue fijando stop, meta y tamano (niveles auditables).
+    """
+
     enabled: bool
     veto_only: bool
     max_searches_per_ticker: int = Field(ge=0, le=20)
@@ -401,6 +408,102 @@ class ValidationConfig(StrictModel):
         return self
 
 
+class ScoreAnchors(StrictModel):
+    """Anclas para normalizar cada metrica fundamental a ``0..1``.
+
+    Cada par ``good``/``bad`` define una interpolacion lineal: en ``forward_pe``,
+    ``pb`` y ``debt`` el ancla ``good`` es el valor **menor**; en el resto, el
+    **mayor**. Un valor fuera del rango se recorta a ``0`` o ``1``. Sin anclas en
+    config el scoring seria una constante cocida en el codigo, que es justo lo
+    que el spec prohibe.
+    """
+
+    forward_pe_good: float = Field(gt=0.0)
+    forward_pe_bad: float = Field(gt=0.0)
+    pb_good: float = Field(gt=0.0)
+    pb_bad: float = Field(gt=0.0)
+    roe_good: float
+    roe_bad: float
+    margin_good: float
+    margin_bad: float
+    debt_good: float = Field(ge=0.0)
+    debt_bad: float = Field(gt=0.0)
+    rev_growth_good: float
+    rev_growth_bad: float
+    eps_growth_good: float
+    eps_growth_bad: float
+    upside_good: float
+    upside_bad: float
+
+    @model_validator(mode="after")
+    def _check(self) -> ScoreAnchors:
+        lower_better = (
+            ("forward_pe", self.forward_pe_good, self.forward_pe_bad),
+            ("pb", self.pb_good, self.pb_bad),
+            ("debt", self.debt_good, self.debt_bad),
+        )
+        for name, good, bad in lower_better:
+            if good >= bad:
+                raise ValueError(f"fundamentals.score.{name}_good ({good}) debe ser menor que {name}_bad ({bad})")
+        higher_better = (
+            ("roe", self.roe_good, self.roe_bad),
+            ("margin", self.margin_good, self.margin_bad),
+            ("rev_growth", self.rev_growth_good, self.rev_growth_bad),
+            ("eps_growth", self.eps_growth_good, self.eps_growth_bad),
+            ("upside", self.upside_good, self.upside_bad),
+        )
+        for name, good, bad in higher_better:
+            if good <= bad:
+                raise ValueError(f"fundamentals.score.{name}_good ({good}) debe ser mayor que {name}_bad ({bad})")
+        return self
+
+
+class FundamentalWeights(StrictModel):
+    """Peso relativo de cada bloque del score compuesto (no tienen que sumar 1)."""
+
+    value: float = Field(ge=0.0, le=1.0)
+    quality: float = Field(ge=0.0, le=1.0)
+    growth: float = Field(ge=0.0, le=1.0)
+    projections: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _check(self) -> FundamentalWeights:
+        if self.value + self.quality + self.growth + self.projections <= 0.0:
+            raise ValueError("fundamentals.weights no puede sumar 0")
+        return self
+
+
+class FundamentalsConfig(StrictModel):
+    """Criterios fundamentales del screener (seccion 5.2 ampliada).
+
+    Un tope/piso en ``None`` desactiva ese filtro. ``require_fundamentals`` decide
+    si un ticker sin datos fundamentales se rechaza (``True``) o solo se reporta
+    sin score (``False``). ``require_target`` exige objetivo de analistas.
+    """
+
+    max_forward_pe: float | None = Field(default=None, gt=0.0)
+    max_trailing_pe: float | None = Field(default=None, gt=0.0)
+    max_price_to_book: float | None = Field(default=None, gt=0.0)
+    min_return_on_equity: float | None = None
+    min_profit_margin: float | None = None
+    min_revenue_growth: float | None = None
+    max_debt_to_equity: float | None = Field(default=None, ge=0.0)
+    min_target_upside_pct: float | None = None
+    min_analyst_count: int = Field(default=0, ge=0)
+    require_target: bool
+    require_fundamentals: bool
+    score: ScoreAnchors
+    weights: FundamentalWeights
+
+
+class ScreenerConfig(StrictModel):
+    """Ajustes del screener de compra."""
+
+    top: int = Field(ge=1, le=500)
+    min_composite_score: float = Field(ge=0.0, le=100.0)
+    require_fundamentals: bool
+
+
 class StrategyConfig(StrictModel):
     account: AccountConfig
     costs: CostsConfig
@@ -408,6 +511,8 @@ class StrategyConfig(StrictModel):
     data: DataConfig
     risk: RiskConfig
     gates: GatesConfig
+    fundamentals: FundamentalsConfig
+    screener: ScreenerConfig
     setups: SetupsConfig
     stops: StopsConfig
     exits: ExitsConfig
@@ -432,11 +537,6 @@ class StrategyConfig(StrictModel):
                 f"exits.stall.days ({self.exits.stall.days}) + exits.earnings.lead_sessions "
                 f"({self.exits.earnings.lead_sessions}) = {minimum}: una entrada con earnings "
                 "cercano no alcanza a trabajar y se cierra en STALL_EXIT cerca de 0 R menos costos"
-            )
-        if self.llm.enabled and not self.llm.veto_only:
-            raise ValueError(
-                "llm.veto_only debe ser true: el LLM no crea entradas, no sube tamanos ni "
-                "afloja stops (seccion 12, autoridad asimetrica)"
             )
         return self
 

@@ -242,8 +242,9 @@ def relative_strength_percentiles(
     ordered = sorted(values.values())
     n = len(ordered)
     out: dict[str, float] = {}
+    import bisect
     for ticker, ret in values.items():
-        count = sum(1 for other in ordered if other <= ret)
+        count = bisect.bisect_right(ordered, ret)
         out[ticker] = count / n * 100.0
     return out
 
@@ -579,7 +580,9 @@ def decide(
 
         # --- Stop y R (seccion 5.4) ---
         limit_price = setup.trigger_price
-        assert signal_features.atr is not None and signal_features.swing_low10 is not None and limit_price > 0.0
+        if signal_features.atr is None or signal_features.swing_low10 is None or limit_price <= 0.0:
+            candidates.append(CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=(Rejected(reason=Reason.INDICATOR_NOT_READY, detail="ATR, swing_low10 o precio limite invalidos"),)))
+            continue
         stop_result = initial_stop(
             limit_price=limit_price,
             atr=signal_features.atr,
@@ -906,9 +909,9 @@ def position_exposures(
             PositionExposure(
                 ticker=ticker,
                 theme=_theme_of(ticker, themes),
-                cost_clp=trade.entry_price * trade.volume * snapshot.fx,
+                cost_clp=trade.entry_price * trade.open_volume * snapshot.fx,
                 stop_clp=trade.stop * snapshot.fx,
-                volume=trade.volume,
+                volume=trade.open_volume,
                 rs_percentile=snapshot.rs.get(ticker),
             )
         )
