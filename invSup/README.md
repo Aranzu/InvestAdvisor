@@ -221,6 +221,18 @@ depende de ella y la notificación es opcional. Ver `docs/PROGRAMACION.md`.
   rango se pide la cola, y una vela que el provider corrige gana a la cacheada.
 - **FX implícito, no inventado.** El CLP/USD sale de la mediana de las últimas
   cotizaciones; con menos de tres datos utilizables no hay número.
+- **Redondeo hacia abajo.** El volumen se calcula en enteros de 1/10.000 para que la
+  suma de los tramos sea exacta y el riesgo nunca crezca por redondeo.
+- **El tope de pérdida se evalúa después de acotar el stop**, y no se estrecha el stop
+  para esquivarlo.
+- **Todas las razones de rechazo se reportan**, no solo la primera: el informe tiene que
+  decir por qué un ticker no entra.
+- **Sin tope de precio.** El umbral que garantiza `n >= 2` depende del equity y de la R
+  (D10); congelarlo con un número lo deja obsoleto en silencio.
+- **Un stop nunca baja**, ni por trailing, ni por una transición, ni porque el del broker
+  esté más alto. Cuando el del broker gana, el motor informa y no edita.
+- **Una sola acción por posición y noche** (D14): las reglas que también se cumplen
+  quedan en el informe con el motivo que las tapó.
 
 ## Decisiones y documentos
 
@@ -235,23 +247,9 @@ depende de ella y la notificación es opcional. Ver `docs/PROGRAMACION.md`.
 - `docs/VERIFICACION_BROKER.md` — checklist pendiente contra la cuenta demo.
 - `plan/spec_v3_1_operacion_nocturna.md` — el spec.
 
-## Reglas que el código sostiene
-
-- **Fail-closed ante datos.** Sin fecha de earnings, sin VIX, sin serie suficiente: el
-  ticker queda en `DATA_GAP` y no se opera. Nunca se completa una vela con la anterior.
-- **Redondeo hacia abajo.** El volumen se calcula en enteros de 1/10.000 para que la
-  suma de los tramos sea exacta y el riesgo nunca crezca por redondeo.
-- **El tope de pérdida se evalúa después de acotar el stop**, y no se estrecha el stop
-  para esquivarlo.
-- **Todas las razones de rechazo se reportan**, no solo la primera: el informe tiene que
-  decir por qué un ticker no entra.
-- **Sin tope de precio.** El umbral que garantiza `n >= 2` depende del equity y de la R
-  (D10); congelarlo con un número lo deja obsoleto en silencio.
-- **Un stop nunca baja**, ni por trailing, ni por una transición, ni porque el del broker
-  esté más alto. Cuando el del broker gana, el motor informa y no edita.
-- **Una sola acción por posición y noche** (D14): las reglas que también se cumplen
-  quedan en el informe con el motivo que las tapó.
-
 ## Git
 
-Sin commits todavía: `C:\repo\invSup` está untracked dentro del repo `C:\repo`.
+El proyecto está versionado dentro del repo `C:\repo` (commit inicial del motor en
+`bda004d`). `posiciones/`, `state/`, `cache/` y `.secrets/` están ignorados por git
+(contienen datos de la cuenta); los artefactos compilados (`__pycache__/`, `*.pyc`)
+también.
