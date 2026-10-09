@@ -127,7 +127,9 @@ def parse_review(payload: Mapping[str, object], today: dt.date) -> LLMReview:
     """Valida la salida JSON del LLM contra el esquema de la seccion 12.
 
     Un ``BROKEN`` sin evidencia suficiente se degrada a ``WEAKENED``: no se sale
-    de una posicion por una opinion sin hechos fechados y con fuente.
+    de una posicion por una opinion sin hechos fechados y con fuente. Un hecho con
+    fecha posterior a ``today`` es una alucinacion y se descarta antes de contar
+    la evidencia.
     """
     review = LLMReview(
         ticker=_text(payload, "ticker"),
@@ -135,7 +137,7 @@ def parse_review(payload: Mapping[str, object], today: dt.date) -> LLMReview:
         thesis_status=_enum(payload, "thesis_status", ThesisStatus),
         veto=_boolean(payload, "veto"),
         veto_reason=_optional_text(payload, "veto_reason"),
-        key_facts=_facts(payload.get("key_facts")),
+        key_facts=tuple(fact for fact in _facts(payload.get("key_facts")) if fact.date <= today),
         search_conclusive=_boolean(payload, "search_conclusive"),
         confidence=_enum(payload, "confidence", Confidence),
         requested_info=_text_list(payload.get("requested_info")),

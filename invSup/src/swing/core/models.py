@@ -434,6 +434,10 @@ class ScoreAnchors(StrictModel):
     eps_growth_bad: float
     upside_good: float
     upside_bad: float
+    # Consenso de analistas (``recommendationMean`` de Yahoo: 1 = compra fuerte,
+    # 5 = venta). Menor es mejor. Con defaults para no romper configs viejas.
+    rec_good: float = Field(default=1.5, ge=1.0, le=5.0)
+    rec_bad: float = Field(default=3.5, ge=1.0, le=5.0)
 
     @model_validator(mode="after")
     def _check(self) -> ScoreAnchors:
@@ -441,6 +445,7 @@ class ScoreAnchors(StrictModel):
             ("forward_pe", self.forward_pe_good, self.forward_pe_bad),
             ("pb", self.pb_good, self.pb_bad),
             ("debt", self.debt_good, self.debt_bad),
+            ("rec", self.rec_good, self.rec_bad),
         )
         for name, good, bad in lower_better:
             if good >= bad:
@@ -497,11 +502,22 @@ class FundamentalsConfig(StrictModel):
 
 
 class ScreenerConfig(StrictModel):
-    """Ajustes del screener de compra."""
+    """Ajustes del screener de compra.
+
+    ``momentum_weight`` es la fraccion del score final que aporta la fuerza
+    relativa (percentil del universo); el resto es el score fundamental. En 0 el
+    momentum solo desempata, como antes. ``min_rs_percentile`` (``None`` = sin
+    piso) descarta lo que va peor que ese percentil del universo.
+    """
 
     top: int = Field(ge=1, le=500)
     min_composite_score: float = Field(ge=0.0, le=100.0)
     require_fundamentals: bool
+    momentum_weight: float = Field(default=0.0, ge=0.0, le=1.0)
+    min_rs_percentile: float | None = Field(default=None, ge=0.0, le=100.0)
+    exclude_earnings_blackout: bool = False
+    """Saca del recorte a quien reporta dentro de ``gates.earnings_entry_blackout_sessions``
+    (la misma puerta G6 que el motor aplica a una entrada) y rellena con los siguientes."""
 
 
 class StrategyConfig(StrictModel):

@@ -175,3 +175,95 @@ def test_screener_exige_fundamentales_si_la_config_lo_pide() -> None:
     result = rank_candidates(frames, themes, strict, top=10, fundamentals={})
     assert result.candidates == ()
     assert {r.ticker for r in result.rejected} == {"GOOD", "BAD"}
+
+
+def test_rs_es_del_universo_y_no_de_los_sobrevivientes() -> None:
+    # DOWN no pasa el prefiltro pero si cuenta para el percentil: UP le gana.
+    result = rank_candidates(_frames(), {}, STRATEGY, top=10)
+    assert result.candidates[0].rs_percentile == 100.0
+    solo = rank_candidates({"UP": _frames()["UP"]}, {}, STRATEGY, top=10)
+    assert solo.candidates[0].rs_percentile == 100.0
+
+
+def test_piso_de_rs_descarta_al_rezagado() -> None:
+    frames: dict[str, IndicatorFrame] = {}
+    for ticker, drift in (("FAST", 0.004), ("SLOW", 0.0025)):
+        frame = IndicatorFrame.build(_series(ticker, drift), STRATEGY)
+        assert frame is not None
+        frames[ticker] = frame
+    strict = STRATEGY.model_copy(
+        update={"screener": STRATEGY.screener.model_copy(update={"min_rs_percentile": 75.0})}
+    )
+    result = rank_candidates(frames, {}, strict, top=10)
+    assert [c.ticker for c in result.candidates] == ["FAST"]
+
+
+def test_momentum_weight_mezcla_rs_en_el_score() -> None:
+    frames, themes = _two_in_trend()
+    funds = {t: _fund(t, target_mean=_close(frames[t]) * 1.2) for t in frames}
+    sin = STRATEGY.model_copy(update={"screener": STRATEGY.screener.model_copy(update={"momentum_weight": 0.0})})
+    con = STRATEGY.model_copy(update={"screener": STRATEGY.screener.model_copy(update={"momentum_weight": 0.5})})
+    a = rank_candidates(frames, themes, sin, top=10, fundamentals=funds).candidates[0]
+    b = rank_candidates(frames, themes, con, top=10, fundamentals=funds).candidates[0]
+    assert a.composite == a.fundamental
+    assert b.composite is not None and b.fundamental is not None
+    assert b.composite == 0.5 * b.fundamental + 0.5 * b.rs_percentile
+
+
+def test_min_score_se_aplica_antes_del_top() -> None:
+    frames, themes = _two_in_trend()
+    good = _fund("GOOD", target_mean=_close(frames["GOOD"]) * 1.2)
+    bad = _weak("BAD", _close(frames["BAD"]))
+    result = rank_candidates(
+        frames, themes, STRATEGY, top=10, fundamentals={"GOOD": good, "BAD": bad}, min_score=60.0
+    )
+    assert [c.ticker for c in result.candidates] == ["GOOD"]
+
+
+def test_facts_tecnicos_y_de_earnings_para_la_ia() -> None:
+    frame = _frames()["UP"]
+    facts = cli._technical_facts(frame)
+    assert {"rsi", "pct_sobre_sma50", "pct_sobre_sma200", "pct_vs_max_52s", "atr_pct"} <= set(facts)
+    assert cli._earnings_facts(None, None, 20) == {"earnings_fecha": "desconocida"}
+    near = cli._earnings_facts(dt.date(2026, 10, 20), 5, 20)
+    assert near["earnings_en_sesiones"] == 5 and near["blackout_earnings_sesiones"] == 20
+
+
+def test_review_candidates_inyecta_tecnico_macro_y_momentum_en_pct() -> None:
+    from swing.core.llm import Confidence, LLMReview, ReviewContext, ThesisStatus
+
+    seen: dict[str, object] = {}
+
+    class _Spy:
+        def review(self, ticker, context, facts, today):  # type: ignore[no-untyped-def]
+            seen.update(facts)
+            return LLMReview(
+                ticker=ticker,
+                context=ReviewContext.SCREEN_REVIEW,
+                thesis_status=ThesisStatus.INTACT,
+                veto=False,
+                veto_reason=None,
+                key_facts=(),
+                search_conclusive=False,
+                confidence=Confidence.LOW,
+                requested_info=(),
+            )
+
+    candidate = rank_candidates(_frames(), {}, STRATEGY, top=1).candidates[0]
+    cli._review_candidates(
+        _Spy(), [candidate], {}, START, technical={"UP": {"rsi": 61.0}}, macro_context="Fed en pausa"
+    )
+    assert seen["rsi"] == 61.0
+    assert seen["contexto_macro"] == "Fed en pausa"
+    # momentum es multiplicativo (1.35 = +35 %); a la IA le llega el retorno, no 135.
+    assert seen["momentum_pct"] == round((candidate.momentum - 1.0) * 100, 1)
+
+
+def test_una_clase_de_accion_por_empresa() -> None:
+    frames, themes = _two_in_trend()
+    resumen = "Alphabet Inc. offers various products and platforms."
+    funds = {
+        t: _fund(t, target_mean=_close(frames[t]) * 1.2, business_summary=resumen) for t in frames
+    }
+    result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals=funds)
+    assert len(result.candidates) == 1

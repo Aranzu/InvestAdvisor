@@ -228,3 +228,98 @@ def test_function_calling_ejecuta_la_busqueda(monkeypatch) -> None:
     assert review.ticker == "AMD"
     assert fake.queries == ["AMD news"]
     assert calls["n"] == 2
+
+
+def test_hecho_con_fecha_futura_se_descarta() -> None:
+    # Un BROKEN sostenido por un hecho "de manana" es una alucinacion: no cuenta.
+    payload = _payload(context="POSITION_REVIEW", thesis_status="BROKEN", key_facts=[_fact(days_ago=-3)])
+    review = parse_review(payload, TODAY)
+    assert review.key_facts == ()
+    assert review.thesis_status is ThesisStatus.WEAKENED
+
+
+def _client_capturing(monkeypatch, replies):  # type: ignore[no-untyped-def]
+    from swing.adapters.llm import OpenAICompatibleClient
+
+    sent: list[dict[str, object]] = []
+
+    def fake_post(self: object, path: str, body: dict[str, object]) -> dict[str, object]:
+        sent.append(body)
+        return replies(len(sent))
+
+    monkeypatch.setattr(OpenAICompatibleClient, "_post", fake_post)
+    return OpenAICompatibleClient, sent
+
+
+def test_el_prompt_lleva_la_fecha_de_hoy(monkeypatch) -> None:
+    import json
+
+    cls, sent = _client_capturing(
+        monkeypatch, lambda n: {"choices": [{"message": {"content": json.dumps(_payload())}}]}
+    )
+    cls(api_key="k").review("AMD", ReviewContext.ENTRY_REVIEW, {"x": 1}, TODAY)
+    messages = sent[0]["messages"]
+    assert isinstance(messages, list)
+    user = json.loads(messages[1]["content"])
+    assert user["fecha_hoy"] == TODAY.isoformat()
+
+
+def test_tope_de_busquedas_por_consulta(monkeypatch) -> None:
+    import json
+
+    from swing.adapters.search import SearchResult
+
+    class _FakeSearch:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str) -> list[SearchResult]:
+            self.queries.append(query)
+            return [SearchResult("T", "https://x/news", "c", "2026-10-05")]
+
+    def tool_call(i: int) -> dict[str, object]:
+        return {
+            "id": f"c{i}",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": json.dumps({"query": f"q{i}"})},
+        }
+
+    def replies(n: int) -> dict[str, object]:
+        if n <= 2:  # dos busquedas por ronda; la tercera peticion ya es el cierre forzado
+            return {"choices": [{"message": {"role": "assistant", "tool_calls": [tool_call(2 * n), tool_call(2 * n + 1)]}}]}
+        return {"choices": [{"message": {"content": json.dumps(_payload())}}]}
+
+    cls, sent = _client_capturing(monkeypatch, replies)
+    fake = _FakeSearch()
+    client = cls(api_key="k", web_search=True, search=fake, max_searches=3)
+    review = client.review("AMD", ReviewContext.ENTRY_REVIEW, {}, TODAY)
+    assert review.ticker == "AMD"
+    assert len(fake.queries) == 3
+    # El cierre forzado pide JSON sin herramientas.
+    assert "tools" not in sent[-1]
+
+
+def test_anthropic_no_recibe_temperature_ni_response_format() -> None:
+    from swing.adapters.llm import OpenAICompatibleClient
+
+    anthropic = OpenAICompatibleClient(api_key="k", base_url="https://api.anthropic.com/v1")
+    assert anthropic._sampling(json_mode=True) == {}
+    otro = OpenAICompatibleClient(api_key="k", base_url="https://api.deepseek.com")
+    assert otro._sampling(json_mode=True) == {"temperature": 0, "response_format": {"type": "json_object"}}
+    assert otro._sampling(json_mode=False) == {"temperature": 0}
+
+
+def test_http_error_del_proveedor_muestra_el_motivo(monkeypatch) -> None:
+    import io
+    import urllib.error
+
+    import pytest
+
+    from swing.adapters.llm import LLMError, OpenAICompatibleClient
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise urllib.error.HTTPError("u", 400, "Bad", {}, io.BytesIO(b'{"error":"temperature is deprecated"}'))  # type: ignore[arg-type]
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    with pytest.raises(LLMError, match=r"HTTP 400.*temperature is deprecated"):
+        OpenAICompatibleClient(api_key="k")._post("/chat/completions", {})

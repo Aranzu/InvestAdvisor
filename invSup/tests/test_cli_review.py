@@ -60,7 +60,7 @@ def _fake_provider(cache_dir=None, *, offline=False):  # type: ignore[no-untyped
     return _FakeProvider()
 
 
-def _fake_client(*, web_search=False):  # type: ignore[no-untyped-def]
+def _fake_client(*, web_search=False, max_searches=None):  # type: ignore[no-untyped-def]
     return _FakeLLM()
 
 
@@ -102,7 +102,7 @@ def test_review_llm_broken_alimenta_thesis_exit(monkeypatch, tmp_path: Path) -> 
                 requested_info=(),
             )
 
-    monkeypatch.setattr("swing.cli.client_from_env", lambda *, web_search=False: _BrokenLLM())
+    monkeypatch.setattr("swing.cli.client_from_env", lambda **_: _BrokenLLM())
     portfolio = build_positions_workbook(tmp_path / "posiciones.xlsx")
     result = RUNNER.invoke(
         app,

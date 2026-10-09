@@ -66,9 +66,13 @@ swing data-health                # velas, frescura, huecos y earnings por ticker
   (noticias). `WEAKENED` = vigilar; `BROKEN` = revisar salida. Nunca fija niveles.
 - **Contexto macro**: Fed/tasas, dolar, elecciones, geopolitica, petroleo, con fuentes.
 
-En `screen`, lee la tabla por **score compuesto** (valor/calidad/crecimiento/proyecciones
-sobre 100), `upside%` = potencial al objetivo de analistas y `cobert%` = cuántas métricas
-tenía el ticker; un `-` significa "sin dato" (nunca un cero). `--min-score` filtra.
+En `screen`, lee la tabla por **score** (sobre 100): mezcla el score fundamental `fund`
+(valor/calidad/crecimiento/proyecciones) con la fuerza relativa `RS%` segun
+`screener.momentum_weight`. `upside%` = potencial al objetivo de analistas, `cobert%` =
+cuántas métricas tenía el ticker y `earn (ses)` = sesiones hasta el próximo reporte (`!` =
+dentro del blackout de entrada). Con `exclude_earnings_blackout: true` esos quedan fuera
+del recorte y entra el siguiente. Un `-` significa "sin dato" (nunca un cero).
+`--min-score` filtra antes del recorte y `--top` (por defecto `screener.top`) lo fija.
 
 ## Codigos de salida
 

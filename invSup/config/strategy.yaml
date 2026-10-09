@@ -91,6 +91,9 @@ fundamentals:
     eps_growth_bad: -0.10
     upside_good: 0.20
     upside_bad: 0.0
+    # Consenso de analistas (recommendationMean: 1 = compra fuerte, 5 = venta).
+    rec_good: 1.5
+    rec_bad: 3.5
   weights:
     value: 0.30
     quality: 0.30
@@ -101,6 +104,16 @@ screener:
   top: 25
   min_composite_score: 0.0
   require_fundamentals: false
+  # Fraccion del score final que aporta la fuerza relativa (percentil en todo el
+  # universo); el resto es el score fundamental. Momentum de 6 meses es el factor
+  # con mas evidencia en horizontes de swing; 0 = solo desempata.
+  momentum_weight: 0.30
+  # Piso de fuerza relativa: fuera lo que rinde peor que la mitad del universo.
+  # null desactiva el piso.
+  min_rs_percentile: 50
+  # Misma puerta G6 que el motor aplica a una entrada: quien reporta dentro de
+  # gates.earnings_entry_blackout_sessions sale del recorte y entra el siguiente.
+  exclude_earnings_blackout: true
 
 
 setups:

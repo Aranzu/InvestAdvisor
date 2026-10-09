@@ -48,7 +48,7 @@ from swing.core.dataquality import (
     find_unadjusted_jumps,
     sessions_to_earnings,
 )
-from swing.core.discovery import DiscoveredCandidate, rank_candidates
+from swing.core.discovery import DiscoveredCandidate, rank_candidates, technical_survivors
 from swing.core.engine import (
     IndicatorFrame,
     MarketSnapshot,
@@ -808,7 +808,9 @@ def review(
     macro: LLMReview | None = None
     llm_failed = False
     if llm:
-        client = client_from_env(web_search=web_search)
+        client = client_from_env(
+            web_search=web_search, max_searches=market.strategy.llm.max_searches_per_ticker
+        )
         if web_search and search_from_env() is None:
             typer.secho(
                 "  aviso: sin TAVILY_API_KEY; la IA corre sin busqueda web",
@@ -824,7 +826,16 @@ def review(
             macro = _macro_brief(client, market.today, out_dir, refresh=refresh_contexto)
             contexto = macro.fundamento if macro is not None and macro.fundamento else ""
             reviews, failed = _review_positions(
-                client, plan, themes, market.today, model.local, contexto, fundamentals
+                client,
+                plan,
+                themes,
+                market.today,
+                model.local,
+                contexto,
+                fundamentals,
+                snapshot=market.snapshot,
+                calendar=market.calendar,
+                blackout=market.strategy.gates.earnings_entry_blackout_sessions,
             )
             if failed:
                 llm_failed = True
@@ -905,15 +916,20 @@ def _review_positions(
     local: Sequence[LocalPosition] = (),
     macro_context: str = "",
     fundamentals: Mapping[str, Fundamentals] | None = None,
+    *,
+    snapshot: MarketSnapshot | None = None,
+    calendar: SessionCalendar | None = None,
+    blackout: int = 0,
 ) -> tuple[list[LLMReview], list[str]]:
     """Segunda opinion de la IA por posicion; la IA decide mantener o vender.
 
     Incluye las posiciones locales (p. ej. SQM-B), que no pasan por el motor pero si
     se buscan con noticias. ``macro_context`` (el resumen macro de la corrida) y los
     ``fundamentals`` (valoracion, proyecciones) se inyectan en cada consulta para que
-    el fundamento pondere todo. Un fallo puntual de la IA en un ticker no tira la
-    revision de los demas: se reintenta una vez y, si vuelve a fallar, ese ticker
-    queda sin opinion.
+    el fundamento pondere todo. Con ``snapshot`` se agregan el tecnico (RSI,
+    distancia a medias y al maximo de 52 semanas) y el proximo reporte de
+    resultados. Un fallo puntual de la IA en un ticker no tira la revision de los
+    demas: se reintenta una vez y, si vuelve a fallar, ese ticker queda sin opinion.
     """
     reviews: list[LLMReview] = []
     failed: list[str] = []
@@ -935,6 +951,14 @@ def _review_positions(
 
     for judgment in sorted(plan.exits, key=lambda j: j.ticker):
         trade = judgment.trade
+        context: dict[str, object] = {}
+        if snapshot is not None:
+            frame = snapshot.frames.get(trade.ticker)
+            if frame is not None:
+                context.update(_technical_facts(frame))
+            day = snapshot.earnings.get(trade.ticker)
+            sessions = sessions_to_earnings(calendar, snapshot.today, day) if calendar is not None else None
+            context.update(_earnings_facts(day, sessions, blackout))
         _consult(
             trade.ticker,
             trade.close,
@@ -942,9 +966,12 @@ def _review_positions(
                 "theme": themes.themes.get(trade.ticker, "sin_tema"),
                 "entry": trade.entry_price,
                 "close": trade.close,
+                "retorno_pct": round((trade.close / trade.entry_price - 1.0) * 100.0, 2) if trade.entry_price > 0 else None,
                 "current_r": round(trade.current_r, 2),
                 "days_open": trade.days_open,
                 "stop": trade.stop,
+                "pct_hasta_stop": round((trade.stop / trade.close - 1.0) * 100.0, 2) if trade.close > 0 else None,
+                **context,
             },
         )
     for position in local:
@@ -1049,9 +1076,9 @@ def screen(
         typer.Option("--offline", help="Solo lee cache; no toca la red."),
     ] = False,
     top: Annotated[
-        int,
-        typer.Option("--top", help="Cuantos candidatos guardar."),
-    ] = 25,
+        int | None,
+        typer.Option("--top", help="Cuantos candidatos guardar. Por defecto strategy.screener.top."),
+    ] = None,
     breadth: Annotated[
         str,
         typer.Option("--breadth", help="Conjunto base a rastrear: sp500 (vivo) o watchlist."),
@@ -1118,7 +1145,7 @@ def _run_screener(
     config_dir: Path,
     cache_dir: Path | None,
     offline: bool,
-    top: int,
+    top: int | None,
     breadth: str,
     out: Path | None,
     min_score: float | None,
@@ -1147,29 +1174,65 @@ def _run_screener(
             frames[name] = frame
 
     fprovider = fundamentals_provider_from_project(cache_dir, offline=offline)
-    fundamentals = fprovider.get_many(list(frames), today=today)
-    result = rank_candidates(frames, themes.themes, strategy, top=top, fundamentals=fundamentals)
-    candidates = (
-        [c for c in result.candidates if c.composite is None or c.composite >= threshold]
-        if threshold > 0.0
-        else list(result.candidates)
+    # Solo los que pasan el tecnico usan fundamentales: pedir el resto es ~500
+    # llamadas a Yahoo que no cambian el ranking y exponen al rate-limit.
+    fundamentals = fprovider.get_many(list(technical_survivors(frames, strategy)), today=today)
+    limit = top if top is not None else strategy.screener.top
+    # Se rankea todo lo que pasa y el recorte se hace aca: si el blackout de
+    # earnings saca a alguien, entra el siguiente del ranking.
+    result = rank_candidates(
+        frames, themes.themes, strategy, top=len(frames) or 1, fundamentals=fundamentals, min_score=threshold
     )
+    blackout = strategy.gates.earnings_entry_blackout_sessions
+    candidates: list[DiscoveredCandidate] = []
+    in_blackout: list[str] = []
+    earnings: dict[str, dt.date] = {}
+    to_earnings: dict[str, int | None] = {}
+    for candidate in result.candidates:
+        if len(candidates) >= limit:
+            break
+        earnings.update(_candidate_earnings(provider, [candidate.ticker], offline))
+        day = earnings.get(candidate.ticker)
+        sessions = sessions_to_earnings(calendar, today, day) if day is not None else None
+        to_earnings[candidate.ticker] = sessions
+        if strategy.screener.exclude_earnings_blackout and sessions is not None and sessions <= blackout:
+            in_blackout.append(candidate.ticker)
+            continue
+        candidates.append(candidate)
 
     typer.echo("")
-    typer.echo("| score | valor | calidad | crec | proy | upside% | cobert% | RS% | ADV MUSD | ticker | tema |")
-    typer.echo("|---|---|---|---|---|---|---|---|---|---|---|")
+    typer.echo(
+        "| score | fund | valor | calidad | crec | proy | upside% | cobert% | RS% | earn (ses) | ADV MUSD | ticker | tema |"
+    )
+    typer.echo("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for candidate in candidates:
+        sessions = to_earnings.get(candidate.ticker)
+        earn = "-" if sessions is None else (f"{sessions} !" if sessions <= blackout else str(sessions))
         typer.echo(
-            f"| {_num(candidate.composite)} | {_num(candidate.value)} | {_num(candidate.quality)} | "
-            f"{_num(candidate.growth)} | {_num(candidate.projections)} | {_pct(candidate.target_upside)} | "
-            f"{_pct(candidate.coverage)} | {candidate.rs_percentile:.1f} | "
-            f"{candidate.adv_usd / 1e6:.1f} | {candidate.ticker} | {candidate.theme} |"
+            f"| {_num(candidate.composite)} | {_num(candidate.fundamental)} | {_num(candidate.value)} | "
+            f"{_num(candidate.quality)} | {_num(candidate.growth)} | {_num(candidate.projections)} | "
+            f"{_pct(candidate.target_upside)} | {_num(None if candidate.coverage is None else candidate.coverage * 100)} | "
+            f"{candidate.rs_percentile:.1f} | "
+            f"{earn} | {candidate.adv_usd / 1e6:.1f} | {candidate.ticker} | {candidate.theme} |"
         )
     typer.echo("")
     typer.echo(
-        f"{result.kept} pasan tecnico+fundamentales de {result.evaluated}; "
+        f"{len(result.candidates)} pasan tecnico+fundamentales de {result.evaluated} (una clase por empresa); "
         f"{result.scored} con score; guardo {len(candidates)} (score >= {threshold:.0f})."
     )
+    if in_blackout:
+        typer.secho(
+            f"  fuera por earnings dentro del blackout ({blackout} sesiones): {', '.join(in_blackout)}",
+            fg=typer.colors.YELLOW,
+        )
+    near = sorted(
+        c.ticker for c in candidates if (n := to_earnings.get(c.ticker)) is not None and n <= blackout
+    )
+    if near:
+        typer.secho(
+            f"  aviso: earnings dentro del blackout ({blackout} sesiones): {', '.join(near)}",
+            fg=typer.colors.YELLOW,
+        )
     if result.rejected:
         muestra = ", ".join(f"{r.ticker}({r.reasons[0].reason.value})" for r in result.rejected[:8])
         typer.secho(f"  rechazados por fundamentales: {muestra}", fg=typer.colors.YELLOW)
@@ -1178,13 +1241,28 @@ def _run_screener(
 
     reviews: dict[str, LLMReview] = {}
     if llm and candidates:
-        client = client_from_env(web_search=web_search)
+        client = client_from_env(web_search=web_search, max_searches=strategy.llm.max_searches_per_ticker)
         if client is None:
             typer.secho("  aviso: sin clave del LLM; la tesis de compra se omite", fg=typer.colors.YELLOW)
         else:
             if web_search and search_from_env() is None:
                 typer.secho("  aviso: sin TAVILY_API_KEY; la IA corre sin busqueda web", fg=typer.colors.YELLOW)
-            reviews = _review_candidates(client, candidates, fundamentals, today)
+            macro = _macro_brief(client, today, _output_dir())
+            technical = {
+                c.ticker: {
+                    **_technical_facts(frames[c.ticker]),
+                    **_earnings_facts(earnings.get(c.ticker), to_earnings.get(c.ticker), blackout),
+                }
+                for c in candidates
+            }
+            reviews = _review_candidates(
+                client,
+                candidates,
+                fundamentals,
+                today,
+                technical=technical,
+                macro_context=macro.fundamento if macro is not None else "",
+            )
             typer.echo("")
             for candidate in candidates:
                 review = reviews.get(candidate.ticker)
@@ -1199,8 +1277,18 @@ def _run_screener(
             "rs_percentile": round(c.rs_percentile, 2),
             "momentum": round(c.momentum, 4),
             "composite": None if c.composite is None else round(c.composite, 2),
+            "fundamental": None if c.fundamental is None else round(c.fundamental, 2),
+            "value": None if c.value is None else round(c.value, 1),
+            "quality": None if c.quality is None else round(c.quality, 1),
+            "growth": None if c.growth is None else round(c.growth, 1),
+            "projections": None if c.projections is None else round(c.projections, 1),
+            "coverage": None if c.coverage is None else round(c.coverage, 2),
             "target_upside_pct": None if c.target_upside is None else round(c.target_upside * 100.0, 2),
-            "verdict": reviews[c.ticker].verdict.value if c.ticker in reviews else None,
+            "close": round(c.close, 2),
+            "atr_pct": round(c.atr_pct, 2),
+            "earnings_date": earnings[c.ticker].isoformat() if c.ticker in earnings else None,
+            "earnings_sessions": to_earnings.get(c.ticker),
+            **_review_fields(reviews.get(c.ticker)),
         }
         for c in candidates
     ]
@@ -1262,9 +1350,9 @@ def nightly(
         typer.Option("--offline", help="Solo lee cache; no toca la red."),
     ] = False,
     top: Annotated[
-        int,
-        typer.Option("--top", help="Cuantos candidatos guarda el screener."),
-    ] = 25,
+        int | None,
+        typer.Option("--top", help="Cuantos candidatos guarda el screener. Por defecto strategy.screener.top."),
+    ] = None,
     portfolio: Annotated[
         Path | None,
         typer.Option("--portfolio", help="Export de XTB (xlsx). Por defecto el mas nuevo de posiciones/."),
@@ -1480,22 +1568,101 @@ def _fundamental_fields(f: Fundamentals, price: float) -> dict[str, object]:
     return facts
 
 
+def _pct_vs(value: float | None, reference: float | None) -> float | None:
+    """``value`` relativo a ``reference`` en %, o ``None`` si falta alguno."""
+    if value is None or reference is None or reference <= 0.0:
+        return None
+    return round((value / reference - 1.0) * 100.0, 1)
+
+
+def _technical_facts(frame: IndicatorFrame) -> dict[str, object]:
+    """Foto tecnica de la ultima vela, lista para el prompt (sin ``None``)."""
+    feature = frame.features_at(frame.last_index)
+    if feature is None or feature.close is None:
+        return {}
+    close = feature.close
+    facts: dict[str, object | None] = {
+        "rsi": None if feature.rsi is None else round(feature.rsi, 1),
+        "pct_sobre_sma50": _pct_vs(close, feature.sma50),
+        "pct_sobre_sma200": _pct_vs(close, feature.sma200),
+        "pct_vs_max_52s": _pct_vs(close, feature.high52),
+        "atr_pct": None if feature.atr is None else round(feature.atr / close * 100.0, 2),
+    }
+    return {key: value for key, value in facts.items() if value is not None}
+
+
+def _earnings_facts(day: dt.date | None, sessions: int | None, blackout: int) -> dict[str, object]:
+    """Proximo reporte de resultados y si cae dentro del blackout de entrada."""
+    if day is None:
+        return {"earnings_fecha": "desconocida"}
+    facts: dict[str, object] = {"earnings_fecha": day.isoformat()}
+    if sessions is not None:
+        facts["earnings_en_sesiones"] = sessions
+        facts["blackout_earnings_sesiones"] = blackout
+    return facts
+
+
+def _candidate_earnings(provider: YahooDataProvider, tickers: Sequence[str], offline: bool) -> dict[str, dt.date]:
+    """Fecha del proximo reporte de los candidatos finales (no de todo el universo).
+
+    Es una consulta por ticker, por eso solo se hace sobre el recorte. Sin red no
+    se pide nada: el informe muestra ``-`` y la IA recibe "desconocida".
+    """
+    out: dict[str, dt.date] = {}
+    if offline:
+        return out
+    for ticker in tickers:
+        try:
+            info = provider.earnings(ticker)
+        except Exception:
+            continue
+        if not info.is_missing and info.date is not None:
+            out[ticker] = info.date
+    return out
+
+
+def _review_fields(review: LLMReview | None) -> dict[str, object]:
+    """Lo que la IA dijo de un candidato, para ``candidates.json``."""
+    if review is None:
+        return {"verdict": None}
+    return {
+        "verdict": review.verdict.value,
+        "confidence": review.confidence.value,
+        "accion": review.accion,
+        "fundamento": review.fundamento,
+        "catalizador": review.catalizador,
+        "fuentes": [fact.source_url for fact in review.key_facts if fact.source_url],
+    }
+
+
 def _review_candidates(
     client: LLMClient,
     candidates: Sequence[DiscoveredCandidate],
     fundamentals: Mapping[str, Fundamentals],
     today: dt.date,
+    *,
+    technical: Mapping[str, Mapping[str, object]] | None = None,
+    macro_context: str = "",
 ) -> dict[str, LLMReview]:
-    """Tesis de compra de la IA por candidato; un fallo puntual no tira el resto."""
+    """Tesis de compra de la IA por candidato; un fallo puntual no tira el resto.
+
+    ``technical`` (RSI, extension sobre medias, earnings) y ``macro_context`` se
+    inyectan para que la IA distinga "buena empresa" de "buen momento de entrada".
+    """
     reviews: dict[str, LLMReview] = {}
     for candidate in candidates:
         facts: dict[str, object] = {
             "theme": candidate.theme,
             "close": candidate.close,
             "rs_percentile": round(candidate.rs_percentile, 1),
-            "momentum_pct": round(candidate.momentum * 100, 1),
+            "momentum_pct": round((candidate.momentum - 1.0) * 100, 1),
             "composite_score": None if candidate.composite is None else round(candidate.composite, 1),
+            "fundamental_score": None if candidate.fundamental is None else round(candidate.fundamental, 1),
         }
+        if technical is not None:
+            facts.update(technical.get(candidate.ticker, {}))
+        if macro_context:
+            facts["contexto_macro"] = macro_context
         f = fundamentals.get(candidate.ticker)
         if f is not None and not f.is_empty:
             facts.update(_fundamental_fields(f, candidate.close))

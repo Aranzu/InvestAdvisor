@@ -576,6 +576,51 @@ marzo y septiembre. `schedule` no corrige el horario solo.
 
 ---
 
+## D30. Calidad del screener y de la IA: datos bien leidos, score honesto, entrada coherente con G6
+
+**Que estaba abierto.** La primera corrida real del screener mostro que el ranking se
+distorsionaba por como se leian y puntuaban los datos, no por los parametros.
+
+**Decision.**
+
+- **Unidades de Yahoo.** `debtToEquity` viene **siempre** en % y se divide por 100 (la
+  regla vieja "dividir solo si > 10" leia un D/E de 5 % como 5 veces y rechazaba por
+  deuda a empresas sin deuda: MU, con D/E 0.037, quedaba fuera). `dividendYield` cambio
+  de unidad entre versiones: se usa `dividendRate / precio` o
+  `trailingAnnualDividendYield`. La estimacion de revenue sale de `revenue_estimate`
+  (antes se copiaba la de EPS). La cache de fundamentales lleva `schema`; una version
+  vieja se refresca.
+- **Score honesto.** P/E negativo (perdidas) puntua 0 en valor y no pasa la puerta de
+  P/E (antes "pasaba bajo el tope" y puntuaba como ganga). Con patrimonio negativo
+  (P/B o D/E < 0, tipico de recompras) P/B, D/E y ROE se tratan como ausentes. Un bloque
+  sin datos cuenta **neutro** (50) con su peso completo: antes se ignoraba y un unico
+  bloque perfecto podia dar 100. El consenso de analistas (`recommendationMean`, anclas
+  `rec_good`/`rec_bad`) entra en proyecciones; `earnings_growth` usa las anclas de EPS.
+- **Momentum en el score.** La fuerza relativa es el percentil en **todo el universo**
+  (antes, solo entre los que pasaban el prefiltro) y pesa `screener.momentum_weight`
+  (0.30) del score final; `min_rs_percentile` (50) saca a los rezagados. La columna
+  `fund` muestra el score fundamental puro.
+- **Coherencia con G6.** Con `screener.exclude_earnings_blackout` el recorte saca a quien
+  reporta dentro de `gates.earnings_entry_blackout_sessions` (mismo `<=` que G6) y
+  rellena con los siguientes: el screener no recomienda una compra que el motor
+  rechazaria. `--min-score` se aplica **antes** del recorte. Una sola clase de accion
+  por empresa (GOOG/GOOGL). Fundamentales solo para los que pasan el tecnico (~60 en vez
+  de ~500 llamadas).
+- **IA.** El prompt lleva `fecha_hoy`; un hecho con fecha futura se descarta antes de
+  contar evidencia. `llm.max_searches_per_ticker` acota de verdad las busquedas. El
+  screener le pasa a la IA tecnico (RSI, extension sobre SMA50/200, distancia al maximo
+  de 52 semanas, ATR %), earnings y contexto macro, y reglas explicitas (earnings en
+  blackout o entrada extendida -> `WATCH`); `momentum_pct` ahora es el retorno (antes
+  llegaba `135` por un +35 %). En `review` cada posicion recibe ademas tecnico, earnings,
+  retorno y distancia al stop. `candidates.json` guarda bloques, earnings y la tesis.
+
+**Limite declarado.** Ningun peso ni ancla nuevo esta validado (igual que el resto, ver
+la fase 3); son convenciones razonables, no evidencia. La valoracion sigue siendo
+absoluta y no relativa al sector (un banco y una tecnologica se miden con las mismas
+anclas de P/E y P/B).
+
+---
+
 ## Preguntas que siguen abiertas
 
 - **Puerta de validacion (fase 3): diferida, consciente.** El backtest esta archivado

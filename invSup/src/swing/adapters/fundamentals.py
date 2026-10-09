@@ -34,6 +34,10 @@ DEFAULT_TTL_DAYS = 1
 #: Recorte del resumen del negocio: entra en un prompt, no en una tesis.
 SUMMARY_CHARS = 600
 
+#: Version del formato cacheado. Se sube cuando cambia la normalizacion de un
+#: campo, para que lo guardado con la regla vieja no se lea como vigente.
+CACHE_SCHEMA = 2
+
 
 def yfinance_info(symbol: str) -> Mapping[str, object] | None:
     """``Ticker.info`` mas objetivos de analistas y estimaciones (best effort).
@@ -63,10 +67,13 @@ def yfinance_info(symbol: str) -> Mapping[str, object] | None:
         merged.setdefault("targetLowPrice", targets.get("low"))
 
     try:
-        estimates = ticker.growth_estimates
+        eps_est = _plus_one_year(ticker.growth_estimates, "stockTrend")
     except Exception:
-        estimates = None
-    eps_est, rev_est = _growth_estimates(estimates)
+        eps_est = None
+    try:
+        rev_est = _plus_one_year(ticker.revenue_estimate, "growth")
+    except Exception:
+        rev_est = None
     if eps_est is not None:
         merged["_eps_growth_next_year"] = eps_est
     if rev_est is not None:
@@ -74,25 +81,34 @@ def yfinance_info(symbol: str) -> Mapping[str, object] | None:
     return merged
 
 
-def _growth_estimates(frame: object) -> tuple[float | None, float | None]:
-    """(+1y eps, +1y revenue) desde el DataFrame de ``growth_estimates``.
+def _plus_one_year(frame: object, column: str) -> float | None:
+    """Valor de la fila ``+1y`` en ``column`` (o la primera columna numerica).
 
-    No depende de las columnas exactas: busca la fila del proximo ano y toma la
-    primera columna numerica. Si el formato cambia, devuelve ``(None, None)``.
+    ``growth_estimates`` trae el crecimiento de EPS (``stockTrend``) y
+    ``revenue_estimate`` el de ventas (``growth``). Son fuentes distintas: usar la
+    misma para las dos duplicaria el EPS como si fuera revenue. Si el formato
+    cambia, devuelve ``None``.
     """
     if frame is None or not hasattr(frame, "loc"):
-        return None, None
+        return None
     try:
         row = frame.loc["+1y"]
     except Exception:
-        return None, None
+        return None
+    candidates: list[object] = []
     try:
-        values = [float(v) for v in row if v is not None]
-    except (TypeError, ValueError):
-        return None, None
-    if not values:
-        return None, None
-    return values[0], values[0]
+        if column in row.index:
+            candidates.append(row[column])
+        candidates.extend(row)
+    except Exception:
+        return None
+    for value in candidates:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        number = float(value)
+        if number == number:  # descarta NaN
+            return number
+    return None
 
 
 def _num(info: Mapping[str, object], key: str) -> float | None:
@@ -124,19 +140,32 @@ def _text(info: Mapping[str, object], key: str) -> str | None:
 
 
 def _debt_to_equity(info: Mapping[str, object]) -> float | None:
-    """yfinance reporta el D/E en porcentaje (p. ej. 145.7 = 1.457)."""
+    """yfinance reporta el D/E **siempre** en porcentaje (145.7 = 1.457 veces).
+
+    No se adivina por magnitud: un D/E bajo (p. ej. 5.2 = 5 %) quedaria leido como
+    5.2 veces y la puerta ``max_debt_to_equity`` rechazaria a la empresa menos
+    endeudada.
+    """
     value = _num(info, "debtToEquity")
-    if value is None:
-        return None
-    return value / 100.0 if abs(value) > 10.0 else value
+    return None if value is None else value / 100.0
 
 
 def _dividend_yield(info: Mapping[str, object]) -> float | None:
-    """Normaliza a fraccion: algunas versiones dan 0.0055, otras 0.55 (%)."""
+    """Rendimiento por dividendo como fraccion.
+
+    ``dividendYield`` cambio de unidad entre versiones de yfinance (hoy viene en
+    %: 0.32 = 0.32 %), asi que se prefieren las fuentes sin ambiguedad:
+    ``dividendRate / precio`` y ``trailingAnnualDividendYield`` (fraccion).
+    """
+    rate = _num(info, "dividendRate")
+    price = _num(info, "currentPrice") or _num(info, "regularMarketPrice")
+    if rate is not None and price is not None and price > 0.0:
+        return rate / price
+    trailing = _num(info, "trailingAnnualDividendYield")
+    if trailing is not None:
+        return trailing
     value = _num(info, "dividendYield")
-    if value is None:
-        return None
-    return value / 100.0 if value > 1.0 else value
+    return None if value is None else value / 100.0
 
 
 def fundamentals_from_info(
@@ -186,6 +215,7 @@ def fundamentals_from_info(
 
 def _payload(f: Fundamentals) -> dict[str, object]:
     return {
+        "schema": CACHE_SCHEMA,
         "ticker": f.ticker,
         "as_of": f.as_of.isoformat(),
         "source": f.source,
@@ -270,6 +300,10 @@ class _Cached:
     as_of: dt.date
     payload: Mapping[str, object]
 
+    @property
+    def current_schema(self) -> bool:
+        return self.payload.get("schema") == CACHE_SCHEMA
+
 
 class YahooFundamentalsProvider:
     """Fundamentales con cache JSON por dia.
@@ -322,7 +356,7 @@ class YahooFundamentalsProvider:
         """Fundamentales del ticker, frescos si se puede, cacheados si no."""
         day = today or dt.date.today()
         cached = self._read(ticker)
-        if cached is not None and (day - cached.as_of).days <= self._ttl_days:
+        if cached is not None and cached.current_schema and (day - cached.as_of).days <= self._ttl_days:
             return _from_payload(cached.payload)
         if self._offline:
             if cached is not None:

@@ -35,6 +35,8 @@ def _f(**overrides: object) -> Fundamentals:
         "target_mean": 120.0,
         "analyst_count": 12,
         "eps_growth_estimate": 0.15,
+        "revenue_growth_estimate": 0.15,
+        "recommendation_mean": 1.6,
     }
     base.update(overrides)
     return Fundamentals(**base)  # type: ignore[arg-type]
@@ -71,6 +73,8 @@ def test_score_bajo_para_cara_y_debil() -> None:
         debt_to_equity=3.0,
         target_mean=95.0,
         eps_growth_estimate=-0.15,
+        revenue_growth_estimate=-0.10,
+        recommendation_mean=3.8,
     )
     score = score_fundamentals(weak, 100.0, FUND)
     assert score.composite is not None and score.composite <= 20
@@ -108,3 +112,42 @@ def test_gate_sin_datos_rechaza_si_se_exige() -> None:
     config = FUND.model_copy(update={"require_fundamentals": True})
     result = check_fundamentals(Fundamentals.missing("X", "src", TODAY), 100.0, config)
     assert any(r.reason is Reason.FUNDAMENTALS_MISSING for r in result.rejections)
+
+
+def test_pe_negativo_no_es_barato() -> None:
+    perdidas = score_fundamentals(_f(forward_pe=-12.0), 100.0, FUND)
+    barata = score_fundamentals(_f(), 100.0, FUND)
+    assert perdidas.value is not None and barata.value is not None
+    assert perdidas.value < barata.value
+
+
+def test_gate_rechaza_pe_negativo() -> None:
+    result = check_fundamentals(_f(forward_pe=-12.0), 100.0, FUND)
+    assert any("negativo" in r.detail for r in result.rejections)
+
+
+def test_patrimonio_negativo_no_puntua_pb_ni_deuda_ni_roe() -> None:
+    f = _f(price_to_book=-25.0, debt_to_equity=-4.0, return_on_equity=-3.0)
+    assert f.negative_equity
+    score = score_fundamentals(f, 100.0, FUND)
+    # Sin P/B el valor sale solo del P/E (14 = bueno), sin premio ni castigo extra.
+    assert score.value == pytest.approx(100.0)
+    # Calidad solo con el margen: el ROE de -300 % no la hunde.
+    assert score.quality is not None and score.quality >= 90
+    result = check_fundamentals(f, 100.0, FUND)
+    assert not any(name in r.detail for r in result.rejections for name in ("price_to_book", "debt_to_equity", "return_on_equity"))
+
+
+def test_bloque_faltante_cuenta_neutro() -> None:
+    # Solo valoracion perfecta: antes daba 100; ahora los bloques sin datos pesan 50.
+    solo_valor = Fundamentals(ticker="X", as_of=TODAY, source="t", forward_pe=10.0, price_to_book=1.0)
+    score = score_fundamentals(solo_valor, 100.0, FUND)
+    assert score.value == pytest.approx(100.0)
+    assert score.composite is not None and 55.0 < score.composite < 75.0
+
+
+def test_consenso_de_analistas_entra_en_proyecciones() -> None:
+    compra = score_fundamentals(_f(recommendation_mean=1.5), 100.0, FUND)
+    venta = score_fundamentals(_f(recommendation_mean=4.0), 100.0, FUND)
+    assert compra.projections is not None and venta.projections is not None
+    assert compra.projections > venta.projections

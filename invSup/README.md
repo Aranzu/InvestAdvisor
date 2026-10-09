@@ -109,7 +109,9 @@ fechada y con fuente) entra al motor como la regla `THESIS_EXIT`.
 prefiltro técnico de tendencia/rango/liquidez y las **puertas fundamentales**
 (`fundamentals:` en `strategy.yaml`: valoración, ROE, margen, deuda, crecimiento y
 potencial al objetivo de analistas) y ordena por **score compuesto** (valor/calidad/
-crecimiento/proyecciones). Con `--min-score` filtra por ese score; con `--llm` agrega la
+crecimiento/proyecciones mezclado con la fuerza relativa del universo). Saca a quien
+reporta resultados dentro del blackout de entrada (la misma puerta G6 del motor) y deja
+una sola clase de acción por empresa. Con `--min-score` filtra por ese score; con `--llm` agrega la
 tesis de compra de la IA (veredicto `BUY/WATCH`) y la deja en el JSON. Los candidatos
 quedan en `state/candidates.json`.
 
@@ -240,7 +242,7 @@ depende de ella y la notificación es opcional. Ver `docs/PROGRAMACION.md`.
   `decide()`, la capa de IA y los datos. Empezar por acá.
 - `docs/USO.md` — guía operativa: flujo semanal/noche, formatos, códigos de salida y claves.
 - `docs/PROGRAMACION.md` — fase 8: agendar `nightly` en Windows y notificar (webhook/Telegram).
-- `docs/DECISIONES.md` — D1 a D29. Cada ambigüedad del spec que se resolvió y por qué.
+- `docs/DECISIONES.md` — D1 a D30. Cada ambigüedad del spec que se resolvió y por qué.
   Es lo que hay que leer antes de cuestionar un parámetro.
 - `docs/ESTRATEGIA.md` — linaje de cada componente, evidencia, y sobre todo **lo que no
   es fuente de ventaja** (la salida escalonada sube el win rate por construcción).

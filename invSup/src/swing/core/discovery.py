@@ -5,7 +5,12 @@ metricas tecnicas y fundamentales por ticker y se rankean para quedarse con un
 puñado de candidatos de **compra**. El prefiltro tecnico aplica las puertas que no
 necesitan setup (tendencia, rango de 52 semanas, liquidez y precio); el bloque
 fundamental (`core.fundamentals`) añade valoracion, calidad, crecimiento y
-objetivo de analistas; el orden final es por **score compuesto**.
+objetivo de analistas; el orden final es por **score compuesto**, que mezcla el
+score fundamental con la fuerza relativa segun ``screener.momentum_weight``.
+
+La fuerza relativa es el percentil del retorno **en todo el universo**, no entre
+los que sobrevivieron al prefiltro: medirla solo entre ganadores la infla y la
+vuelve incomparable de una noche a otra.
 
 Todo es puro: recibe los ``IndicatorFrame`` y los ``Fundamentals`` ya calculados y
 devuelve el ranking y los rechazos. Sin datos fundamentales (p. ej. ETFs) el
@@ -17,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from swing.core.engine import IndicatorFrame
+from swing.core.engine import IndicatorFrame, relative_strength_percentiles
 from swing.core.fundamentals import Fundamentals, check_fundamentals, score_fundamentals
 from swing.core.models import Rejected, StrategyConfig
 from swing.core.reasons import Reason
@@ -39,7 +44,9 @@ class DiscoveredCandidate:
     adv_usd: float
     atr_pct: float
     composite: float | None = None
-    """Score fundamental compuesto 0..100 (``None`` sin datos)."""
+    """Score final 0..100: fundamental mezclado con fuerza relativa (``None`` sin datos)."""
+    fundamental: float | None = None
+    """Score fundamental puro 0..100, antes de mezclar el momentum."""
     value: float | None = None
     quality: float | None = None
     growth: float | None = None
@@ -78,17 +85,105 @@ def rank_candidates(
     *,
     top: int,
     fundamentals: Mapping[str, Fundamentals] | None = None,
+    min_score: float = 0.0,
 ) -> DiscoveryResult:
     """Rankea por score compuesto (si hay fundamentales) o por fuerza relativa.
 
     El prefiltro aplica las puertas tecnicas que no requieren setup (G1/G2, G3,
-    G5 y precio). Con ``fundamentals`` se aplican ademas las puertas
-    fundamentales y se ordena por score; sin ellos, por fuerza relativa.
+    G5 y precio) y el piso de fuerza relativa del screener. Con ``fundamentals``
+    se aplican ademas las puertas fundamentales y se ordena por score; sin ellos,
+    por fuerza relativa. ``min_score`` se aplica **antes** de recortar a ``top``:
+    asi el corte no deja afuera candidatos validos que estaban mas abajo.
     """
-    gates = strategy.gates
-    lookback = gates.rs_lookback_days
-    pre: list[tuple[str, float, float, float, float]] = []
+    rs_by_ticker = relative_strength_percentiles(dict(frames), strategy.gates.rs_lookback_days)
+    pre = _prefilter(frames, strategy, rs_by_ticker)
     rejected: list[RejectedCandidate] = []
+    if not pre:
+        return DiscoveryResult(candidates=(), evaluated=len(frames), kept=0, rejected=())
+
+    scored = 0
+    candidates: list[DiscoveredCandidate] = []
+    for ticker, momentum, close, adv_usd, atr_pct in pre:
+        candidate = DiscoveredCandidate(
+            ticker=ticker,
+            theme=themes.get(ticker, DEFAULT_THEME),
+            close=close,
+            momentum=momentum,
+            rs_percentile=rs_by_ticker[ticker],
+            adv_usd=adv_usd,
+            atr_pct=atr_pct,
+        )
+        if fundamentals is not None:
+            candidate, rejections = _apply_fundamentals(candidate, fundamentals.get(ticker), strategy)
+            if rejections:
+                rejected.append(RejectedCandidate(ticker=ticker, reasons=rejections))
+                continue
+            if candidate.composite is not None:
+                scored += 1
+                if candidate.composite < min_score:
+                    continue
+        candidates.append(candidate)
+
+    if fundamentals is not None:
+        candidates.sort(
+            key=lambda c: (
+                -(c.composite if c.composite is not None else -1.0),
+                -c.rs_percentile,
+                c.ticker,
+            )
+        )
+    else:
+        candidates.sort(key=lambda candidate: (-candidate.rs_percentile, -candidate.momentum, candidate.ticker))
+    if fundamentals is not None:
+        candidates = _one_per_company(candidates, fundamentals)
+    return DiscoveryResult(
+        candidates=tuple(candidates[:top]),
+        evaluated=len(frames),
+        kept=len(candidates),
+        rejected=tuple(rejected),
+        scored=scored,
+    )
+
+
+def _one_per_company(
+    ranked: list[DiscoveredCandidate],
+    fundamentals: Mapping[str, Fundamentals],
+) -> list[DiscoveredCandidate]:
+    """Una sola clase de accion por empresa (GOOG/GOOGL, FOX/FOXA, NWS/NWSA).
+
+    Dos clases de la misma empresa comparten fundamentales y descripcion del
+    negocio: dejarlas las dos ocupa dos lugares del recorte con la misma apuesta
+    (y duplica la concentracion). Se queda la mejor rankeada; la identidad sale
+    del resumen del negocio, que Yahoo repite textual entre clases.
+    """
+    seen: set[str] = set()
+    out: list[DiscoveredCandidate] = []
+    for candidate in ranked:
+        f = fundamentals.get(candidate.ticker)
+        key = (f.business_summary or "").strip().lower() if f is not None else ""
+        if key:
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(candidate)
+    return out
+
+
+def technical_survivors(frames: Mapping[str, IndicatorFrame], strategy: StrategyConfig) -> tuple[str, ...]:
+    """Tickers que pasan el prefiltro tecnico (para pedir fundamentales solo de ellos)."""
+    rs_by_ticker = relative_strength_percentiles(dict(frames), strategy.gates.rs_lookback_days)
+    return tuple(ticker for ticker, *_ in _prefilter(frames, strategy, rs_by_ticker))
+
+
+def _prefilter(
+    frames: Mapping[str, IndicatorFrame],
+    strategy: StrategyConfig,
+    rs_by_ticker: Mapping[str, float],
+) -> list[tuple[str, float, float, float, float]]:
+    """``(ticker, momentum, close, adv_usd, atr_pct)`` de lo que pasa el tecnico."""
+    gates = strategy.gates
+    floor = strategy.screener.min_rs_percentile
+    pre: list[tuple[str, float, float, float, float]] = []
     for ticker, frame in frames.items():
         feature = frame.features_at(frame.last_index)
         if feature is None or not feature.usable:
@@ -106,57 +201,15 @@ def rank_candidates(
             continue
         if close / feature.high52 < gates.min_vs_52w_high:
             continue
-        momentum = frame.returns(lookback)
-        if momentum is None:
+        momentum = frame.returns(gates.rs_lookback_days)
+        rs = rs_by_ticker.get(ticker)
+        if momentum is None or rs is None:
+            continue
+        if floor is not None and rs < floor:
             continue
         atr = feature.atr or 0.0
         pre.append((ticker, momentum, close, feature.adv_usd, atr / close * 100.0))
-
-    if not pre:
-        return DiscoveryResult(candidates=(), evaluated=len(frames), kept=0, rejected=())
-
-    ordered = sorted(momentum for _, momentum, *_ in pre)
-    size = len(ordered)
-    scored = 0
-    candidates: list[DiscoveredCandidate] = []
-    for ticker, momentum, close, adv_usd, atr_pct in pre:
-        beaten = sum(1 for other in ordered if other <= momentum)
-        rs = beaten / size * 100.0
-        candidate = DiscoveredCandidate(
-            ticker=ticker,
-            theme=themes.get(ticker, DEFAULT_THEME),
-            close=close,
-            momentum=momentum,
-            rs_percentile=rs,
-            adv_usd=adv_usd,
-            atr_pct=atr_pct,
-        )
-        if fundamentals is not None:
-            candidate, rejections = _apply_fundamentals(candidate, fundamentals.get(ticker), strategy)
-            if rejections:
-                rejected.append(RejectedCandidate(ticker=ticker, reasons=rejections))
-                continue
-            if candidate.composite is not None:
-                scored += 1
-        candidates.append(candidate)
-
-    if fundamentals is not None:
-        candidates.sort(
-            key=lambda c: (
-                -(c.composite if c.composite is not None else -1.0),
-                -c.rs_percentile,
-                c.ticker,
-            )
-        )
-    else:
-        candidates.sort(key=lambda candidate: (-candidate.rs_percentile, -candidate.momentum, candidate.ticker))
-    return DiscoveryResult(
-        candidates=tuple(candidates[:top]),
-        evaluated=len(frames),
-        kept=len(candidates),
-        rejected=tuple(rejected),
-        scored=scored,
-    )
+    return pre
 
 
 def _apply_fundamentals(
@@ -166,14 +219,23 @@ def _apply_fundamentals(
 ) -> tuple[DiscoveredCandidate, tuple[Rejected, ...]]:
     """Puertas + score fundamentales sobre un candidato ya prefiltrado."""
     config = strategy.fundamentals
+    required = config.require_fundamentals or strategy.screener.require_fundamentals
     if f is None:
-        if config.require_fundamentals:
+        if required:
             return candidate, (Rejected(reason=Reason.FUNDAMENTALS_MISSING, detail="sin datos fundamentales"),)
         return candidate, ()
+    if required and f.is_empty:
+        return candidate, (Rejected(reason=Reason.FUNDAMENTALS_MISSING, detail="sin datos fundamentales utilizables"),)
     gate = check_fundamentals(f, candidate.close, config)
     if gate.rejections:
         return candidate, gate.rejections
     score = score_fundamentals(f, candidate.close, config)
+    weight = strategy.screener.momentum_weight
+    composite = (
+        None
+        if score.composite is None
+        else (1.0 - weight) * score.composite + weight * candidate.rs_percentile
+    )
     updated = DiscoveredCandidate(
         ticker=candidate.ticker,
         theme=candidate.theme,
@@ -182,7 +244,8 @@ def _apply_fundamentals(
         rs_percentile=candidate.rs_percentile,
         adv_usd=candidate.adv_usd,
         atr_pct=candidate.atr_pct,
-        composite=score.composite,
+        composite=composite,
+        fundamental=score.composite,
         value=score.value,
         quality=score.quality,
         growth=score.growth,
