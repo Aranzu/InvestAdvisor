@@ -578,6 +578,13 @@ marzo y septiembre. `schedule` no corrige el horario solo.
 
 ## Preguntas que siguen abiertas
 
+- **Puerta de validacion (fase 3): diferida, consciente.** El backtest esta archivado
+  (D25) y **nunca se corrio sobre datos reales**; ningun parametro tiene evidencia a
+  su favor. Resolverla implicaba revivir el backtest, bajar ~10-15 anos del universo
+  y aceptar el sesgo de supervivencia (D12), con veredicto probablemente
+  `NO CONCLUYENTE` para 69 tickers. Se decide **no** hacerlo por ahora: el producto
+  queda **NO VALIDADO** y no debe operarse con dinero real. El camino y los
+  prerequisitos quedan en `docs/PROGRAMACION.md`.
 - **Verificaciones de broker #4, #6 y #10.** Necesitan una cuenta demo real del
   usuario. No bloquean el motor puro: bloquean el cierre de `broker.yaml` y la
   operacion. La #10 en particular (costo de mano por conversion) puede mover el
