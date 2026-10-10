@@ -8,6 +8,16 @@ version = "0.1.0"
 description = "Motor de swing trading para operar solo de noche (Evening Desk). Recomienda; nunca ejecuta ordenes."
 readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+keywords = ["trading", "swing", "evening-desk", "yahoo-finance", "screener"]
+classifiers = [
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     "pydantic>=2.7,<3.0",
     "pandas>=2.2,<4.0",
@@ -42,7 +52,9 @@ line-length = 120
 target-version = "py311"
 # El informe emite texto en espanol con acentos y flechas a proposito; el archivo
 # esta en UTF-8 (mismo criterio que el proyecto hermano).
-exclude = [".venv", "cache", "output", "reports", "legacy"]
+# Herramientas de generacion de reportes fuera del paquete: se corren con el venv,
+# no se instalan ni se tipan (usan internals de swing.cli a proposito).
+exclude = [".venv", "cache", "output", "reports", "legacy", "scripts"]
 
 [tool.ruff.lint]
 select = [
@@ -74,7 +86,7 @@ warn_unused_ignores = true
 # yfinance no publica tipos; se prefiere no ensuciar el codigo con un ignore
 # por llamada.
 ignore_missing_imports = true
-exclude = ["^\\.venv/", "^cache/", "^output/", "^reports/", "^legacy/"]
+exclude = ["^\\.venv/", "^cache/", "^output/", "^reports/", "^legacy/", "^scripts/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

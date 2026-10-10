@@ -211,9 +211,7 @@ def evaluate_entry(
         return EntryDecision(
             ticker=ticker,
             theme=theme,
-            rejections=(
-                Rejected(reason=Reason.DATA_GAP, detail=f"equity no utilizable ({state.equity_clp})"),
-            ),
+            rejections=(Rejected(reason=Reason.DATA_GAP, detail=f"equity no utilizable ({state.equity_clp})"),),
         )
 
     # --- Tope por ticker (10 %) ---
@@ -224,10 +222,7 @@ def evaluate_entry(
             rejections.append(
                 Rejected(
                     reason=Reason.POSITION_LIMIT,
-                    detail=(
-                        f"{ticker} ya pesa {weight:.1f} % del equity; "
-                        f"tope {limits.max_position_pct:.0f} %"
-                    ),
+                    detail=(f"{ticker} ya pesa {weight:.1f} % del equity; tope {limits.max_position_pct:.0f} %"),
                 )
             )
 
@@ -287,8 +282,7 @@ def evaluate_entry(
             Rejected(
                 reason=Reason.CASH_BUFFER,
                 detail=(
-                    f"caja {state.cash_clp:,.0f} CLP sin margen sobre el colchon de "
-                    f"{limits.cash_buffer_pct:.0f} %"
+                    f"caja {state.cash_clp:,.0f} CLP sin margen sobre el colchon de {limits.cash_buffer_pct:.0f} %"
                 ),
             )
         )
@@ -400,11 +394,7 @@ def plan_cap_trims(
                 detail=(
                     f"tema en {pct:.1f} %, se vende hasta {after:.1f} % desde {best.ticker} "
                     f"(fuerza relativa {best.rs_percentile:.0f})"
-                    + (
-                        f"; quedan {deferred:,.0f} CLP de exceso para la noche siguiente"
-                        if deferred > 1.0
-                        else ""
-                    )
+                    + (f"; quedan {deferred:,.0f} CLP de exceso para la noche siguiente" if deferred > 1.0 else "")
                 ),
             )
         )

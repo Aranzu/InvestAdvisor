@@ -39,7 +39,7 @@ No es el orden numerico. Esta es la secuencia que minimiza el trabajo mal hecho:
 | 9 | Sell Stop si la accion abre por debajo del nivel | _pendiente_ | informe |
 | 10 | Moneda base y comision de conversion | _pendiente_ | `costs.fx_fee_model` |
 
-## #1 Vigencia de una orden — PENDIENTE
+## #2 Vigencia de una orden — PENDIENTE
 
 **Pasos.** En xStation, abrir el ticket de una orden pendiente y leer el campo de
 vigencia / expiracion. Anotar las opciones que ofrece el desplegable.
@@ -56,7 +56,7 @@ Observar: _anotar aqui las opciones_
 cada entrada no ejecutada, o sea una accion extra por noche. Si existe "solo el
 dia", el plan se achica solo.
 
-## #2 SL adjunto a una entrada pendiente — PENDIENTE
+## #3 SL adjunto a una entrada pendiente — PENDIENTE
 
 **Pasos.** Colocar un Buy Limit de una accion liquida, con el campo de Stop Loss
 completado en el mismo ticket, y dejar que se ejecute.
@@ -72,7 +72,7 @@ Observar: _anotar_
 `unprotected_buffer_atr` (1.0 ATR). Con un R de 8 %, el colchon agrega ~11 % de
 distancia de riesgo y **reduce el tamano de la posicion cerca de un 27 %**.
 
-## #3 Venta a mercado en cola con un Sell Stop vigente — PENDIENTE (CRITICO)
+## #4 Venta a mercado en cola con un Sell Stop vigente — PENDIENTE (CRITICO)
 
 Este es el caso central de la estrategia: vender el tramo A por el cierre mientras
 el stop cubre el 100 % de las acciones.
@@ -100,7 +100,7 @@ rechaza, el planificador tiene que reducir primero el volumen del stop y colocar
 venta despues (ya previsto en la seccion 4.3), y el **fallback a Sell Limit deja
 esas acciones sin cobertura** durante las sesiones que tarda en llenarse.
 
-## #4 Pendientes sobre acciones fraccionarias — PENDIENTE
+## #5 Pendientes sobre acciones fraccionarias — PENDIENTE
 
 **Pasos.** Con una posicion fraccionada (por ejemplo 0,37 acciones), intentar dejar
 un Sell Stop y un Buy Limit sobre la fraccion.
@@ -116,7 +116,7 @@ Observar: _anotar_
 tickers caros con una sola accion y activa el modo `SINGLE`, que tiene otra
 mecanica de resultado y hay que reportar aparte.
 
-## #5 Alcance del Sell Stop — PENDIENTE
+## #6 Alcance del Sell Stop — PENDIENTE
 
 **Pasos.** Con dos lotes del mismo ticker, colocar un Sell Stop sobre el volumen de
 uno de ellos y ver a que unidad lo imputa el broker. Luego repetir con el total.
@@ -132,7 +132,7 @@ gestionar por lote y la opcion `tranche_mode: separate_positions` queda descarta
 La consecuencia es que cada posicion necesita su propio stop, lo que multiplica los
 tickets y compite con el tope de 8 acciones por noche.
 
-## #6 ID de posicion tras un cierre parcial — PENDIENTE
+## #7 ID de posicion tras un cierre parcial — PENDIENTE
 
 **Pasos.** Con un lote abierto, vender la mitad y exportar el reporte de posiciones.
 
@@ -146,13 +146,13 @@ Observar: _anotar_
 `ticker + precio de apertura + hora de apertura` y, si es ambiguo, emitir
 `NEEDS_CONFIRMATION` en cada cierre parcial.
 
-## #7 Horario y sesion extendida — PENDIENTE
+## #8 Horario y sesion extendida — PENDIENTE
 
 Anotar el horario de negociacion del ticker de referencia y si hay sesion
 extendida enabled en la cuenta. El disenio no depende de ella: ninguna regla
 requiere reaccion intradia.
 
-## #8 Sell Stop con apertura por debajo del nivel — PENDIENTE
+## #9 Sell Stop con apertura por debajo del nivel — PENDIENTE
 
 Dificil de provocar a proposito. Buscar en la ayuda de XTB y confirmar con un caso
 real. En el simulador se modela como: se activa si `Low <= stop` y llena en
@@ -160,7 +160,7 @@ real. En el simulador se modela como: se activa si `Low <= stop` y llena en
 debajo** del stop. Verificar si el broker hace lo mismo o si deja la orden sin
 ejecutar.
 
-## #9 Moneda base y comision de conversion — PENDIENTE (CRITICO)
+## #10 Moneda base y comision de conversion — PENDIENTE (CRITICO)
 
 **Pasos.**
 

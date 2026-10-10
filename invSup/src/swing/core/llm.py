@@ -183,17 +183,15 @@ def apply_reviews(
     devuelve para que el llamador rehaga la decision con el motor (que si sabe
     salir por tesis rota).
     """
-    vetoed = {
-        review.ticker
-        for review in reviews
-        if review.veto and review.context is ReviewContext.ENTRY_REVIEW
-    }
+    vetoed = {review.ticker for review in reviews if review.veto and review.context is ReviewContext.ENTRY_REVIEW}
     allowed = tuple(ticker for ticker in entry_tickers if ticker not in vetoed)
     deferred = tuple(ticker for ticker in entry_tickers if ticker in vetoed)
     broken = {
         review.ticker: True
         for review in reviews
-        if review.thesis_status is ThesisStatus.BROKEN and review.broken_is_confirmed(today) and review.context is ReviewContext.POSITION_REVIEW
+        if review.thesis_status is ThesisStatus.BROKEN
+        and review.broken_is_confirmed(today)
+        and review.context is ReviewContext.POSITION_REVIEW
     }
     return VetoOutcome(
         allowed_entries=allowed,

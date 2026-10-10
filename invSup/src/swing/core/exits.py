@@ -38,6 +38,10 @@ from swing.core.stops import breakeven_price, chandelier_stop, should_raise_stop
 #: las noches sin motivo.
 STOP_MATCH_EPSILON_PCT = 0.01
 
+#: En modo ``SINGLE`` un cierre a +1 R asegura el trade (seccion 5.6): no hay
+#: venta parcial posible, asi que el +1 R no vende, sube el stop a breakeven.
+SINGLE_LOCK_R = 1.0
+
 
 @dataclass(frozen=True, slots=True)
 class ExitSignal:
@@ -246,6 +250,10 @@ def _stop_protection(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
             detail=f"sin Sell Stop en el broker; se coloca en {trade.stop:.2f} sobre {trade.open_volume:.4f}",
         )
 
+    if trade.stop <= 0.0:
+        # Un objetivo no positivo es un dato invalido: no hay deriva que medir ni stop
+        # que proponer. No se toca el del broker por un numero que no es un precio.
+        return None
     drift_pct = abs(trade.broker_stop - trade.stop) / trade.stop * 100.0
     if drift_pct <= STOP_MATCH_EPSILON_PCT:
         return None
@@ -340,10 +348,7 @@ def _stall_exit(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
         trade,
         trade.open_volume,
         ctx,
-        (
-            f"{trade.days_open} ruedas sin superar +{stall.min_progress_r:g} R "
-            f"(maximo {trade.max_progress_r:+.2f} R)"
-        ),
+        (f"{trade.days_open} ruedas sin superar +{stall.min_progress_r:g} R (maximo {trade.max_progress_r:+.2f} R)"),
     )
 
 
@@ -360,7 +365,7 @@ def _raise_stop(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
 
     candidate: float | None = None
     detail = ""
-    if trade.single and not trade.locked and trade.current_r >= 1.0:
+    if trade.single and not trade.locked and trade.current_r >= SINGLE_LOCK_R:
         candidate = breakeven_price(trade.entry_price, ctx.stops.breakeven_buffer_pct)
         detail = f"SINGLE: cierre en {trade.current_r:+.2f} R, sin venta parcial"
     elif trade.locked:
@@ -471,6 +476,10 @@ def _cap_trim(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
     if trim is None or trim.ticker != trade.ticker or trade.open_volume <= 0.0:
         return None
     volume = min(trim.volume, trade.open_volume)
+    if volume <= 0.0:
+        # Trim "ciego" (sin percentil de fuerza relativa): ``portfolio`` lo deja con
+        # volumen 0 para pedir el dato. No es una venta: no se emite una SELL de 0.
+        return None
     return _sell(
         Reason.CAP_TRIM,
         ExitCause.CAP_TRIM,

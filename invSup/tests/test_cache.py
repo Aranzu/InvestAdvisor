@@ -120,9 +120,7 @@ def test_un_csv_sin_columnas_es_un_error_explicito(cache: BarsCache) -> None:
 def test_un_csv_con_fecha_invalida_dice_el_archivo(cache: BarsCache) -> None:
     ruta = cache.path_for("AMD")
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    ruta.write_text(
-        "date,open,high,low,close,volume\nayer,100,101,99,100,1000\n", encoding="utf-8"
-    )
+    ruta.write_text("date,open,high,low,close,volume\nayer,100,101,99,100,1000\n", encoding="utf-8")
     with pytest.raises(CacheError, match="fecha invalida"):
         cache.read("AMD")
 

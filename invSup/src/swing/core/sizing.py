@@ -215,6 +215,11 @@ def _split_shares(
 
     first = math.floor(shares * specs[0][1])
     tranches = [Tranche(name=specs[0][0], volume=float(first), tp_r=specs[0][2])]
-    for name, _, tp_r in specs[1:]:
-        tranches.append(Tranche(name=name, volume=float(shares - first), tp_r=tp_r))
+    remaining = shares - first
+    for name, fraction, tp_r in specs[1:-1]:
+        t_shares = math.floor(shares * fraction)
+        tranches.append(Tranche(name=name, volume=float(t_shares), tp_r=tp_r))
+        remaining -= t_shares
+    last_name, _, last_tp_r = specs[-1]
+    tranches.append(Tranche(name=last_name, volume=float(remaining), tp_r=last_tp_r))
     return tuple(tranches), False

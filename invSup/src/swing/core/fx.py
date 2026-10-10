@@ -88,7 +88,9 @@ def implicit_usd_clp(
     rates = [r.value_clp / (r.volume * r.price_usd) for r in usable]
     median = statistics.median(rates)
     if median <= 0.0:
-        return FxEstimate(usd_clp=None, source="mediana_no_positiva", rows_total=len(rows), rows_used=0, rows_dropped=len(rows))
+        return FxEstimate(
+            usd_clp=None, source="mediana_no_positiva", rows_total=len(rows), rows_used=0, rows_dropped=len(rows)
+        )
 
     limit = outlier_pct / 100.0
     kept = [rate for rate in rates if abs(rate / median - 1.0) <= limit]

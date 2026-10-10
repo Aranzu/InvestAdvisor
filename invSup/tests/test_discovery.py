@@ -191,9 +191,7 @@ def test_piso_de_rs_descarta_al_rezagado() -> None:
         frame = IndicatorFrame.build(_series(ticker, drift), STRATEGY)
         assert frame is not None
         frames[ticker] = frame
-    strict = STRATEGY.model_copy(
-        update={"screener": STRATEGY.screener.model_copy(update={"min_rs_percentile": 75.0})}
-    )
+    strict = STRATEGY.model_copy(update={"screener": STRATEGY.screener.model_copy(update={"min_rs_percentile": 75.0})})
     result = rank_candidates(frames, {}, strict, top=10)
     assert [c.ticker for c in result.candidates] == ["FAST"]
 
@@ -214,9 +212,7 @@ def test_min_score_se_aplica_antes_del_top() -> None:
     frames, themes = _two_in_trend()
     good = _fund("GOOD", target_mean=_close(frames["GOOD"]) * 1.2)
     bad = _weak("BAD", _close(frames["BAD"]))
-    result = rank_candidates(
-        frames, themes, STRATEGY, top=10, fundamentals={"GOOD": good, "BAD": bad}, min_score=60.0
-    )
+    result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals={"GOOD": good, "BAD": bad}, min_score=60.0)
     assert [c.ticker for c in result.candidates] == ["GOOD"]
 
 
@@ -262,8 +258,6 @@ def test_review_candidates_inyecta_tecnico_macro_y_momentum_en_pct() -> None:
 def test_una_clase_de_accion_por_empresa() -> None:
     frames, themes = _two_in_trend()
     resumen = "Alphabet Inc. offers various products and platforms."
-    funds = {
-        t: _fund(t, target_mean=_close(frames[t]) * 1.2, business_summary=resumen) for t in frames
-    }
+    funds = {t: _fund(t, target_mean=_close(frames[t]) * 1.2, business_summary=resumen) for t in frames}
     result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals=funds)
     assert len(result.candidates) == 1

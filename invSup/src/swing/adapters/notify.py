@@ -18,7 +18,7 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -84,7 +84,7 @@ def _secret(env_name: str, path: Path) -> str | None:
 class WebhookNotifier:
     """POST JSON generico; sirve para Slack/Discord/n8n y similares."""
 
-    url: str
+    url: str = field(repr=False)
     transport: Transport = _post_json
 
     def send(self, notification: Notification) -> None:
@@ -95,7 +95,7 @@ class WebhookNotifier:
 class TelegramNotifier:
     """Mensaje a un chat de Telegram via bot."""
 
-    token: str
+    token: str = field(repr=False)
     chat_id: str
     transport: Transport = _post_json
 

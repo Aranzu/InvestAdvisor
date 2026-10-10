@@ -66,6 +66,7 @@ class OrderExpiry(StrEnum):
 #: orden no se ejecuta.
 NoFill = None
 
+
 @dataclass(frozen=True, slots=True)
 class Ticket:
     """Una accion que el usuario debe colocar. Es lo que produce el planner.

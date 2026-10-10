@@ -198,7 +198,9 @@ def detect_split_ratio(
     return previous_close / close
 
 
-def find_unadjusted_jumps(series: PriceSeries, *, suspicious_gap_pct: float = SUSPICIOUS_GAP_PCT) -> tuple[tuple[dt.date, float], ...]:
+def find_unadjusted_jumps(
+    series: PriceSeries, *, suspicious_gap_pct: float = SUSPICIOUS_GAP_PCT
+) -> tuple[tuple[dt.date, float], ...]:
     """Fechas y ratios donde la serie sin ajustar salta (splits, D6).
 
     Se informa en vez de corregir en silencio. Un informe con la lista permite que el

@@ -186,8 +186,7 @@ def reconcile_positions(
                         ticker=ticker,
                         volume=lot.volume,
                         detail=(
-                            f"lote {lot.id} por {lot.volume:.4f} sin trade del motor; "
-                            f"revisar si fue una entrada manual"
+                            f"lote {lot.id} por {lot.volume:.4f} sin trade del motor; revisar si fue una entrada manual"
                         ),
                     )
                 )

@@ -37,10 +37,7 @@ FRIDAY = dt.date(2026, 11, 6)
 def flat_series(ticker: str = "AMD", days: int = 60, last: dt.date = WEDNESDAY) -> PriceSeries:
     """Serie de ``days`` sesiones que termina en ``last``, con alto 101 y bajo 99."""
     sessions = CAL.sessions_in_range(CAL.subtract_sessions(last, days), last)
-    bars = tuple(
-        Bar(date=day, open=100.0, high=101.0, low=99.0, close=100.5, volume=5_000_000.0)
-        for day in sessions
-    )
+    bars = tuple(Bar(date=day, open=100.0, high=101.0, low=99.0, close=100.5, volume=5_000_000.0) for day in sessions)
     return PriceSeries(ticker, bars)
 
 
@@ -116,9 +113,7 @@ def test_en_feriado_la_ultima_vela_no_es_obsoleta() -> None:
 
 def test_una_serie_con_sesiones_faltantes_es_data_gap() -> None:
     completa = flat_series(days=40)
-    sin_la_sesion_del_miercoles = PriceSeries(
-        "AMD", tuple(b for b in completa.bars if b.date != WEDNESDAY)
-    )
+    sin_la_sesion_del_miercoles = PriceSeries("AMD", tuple(b for b in completa.bars if b.date != WEDNESDAY))
     reporte = check_series(sin_la_sesion_del_miercoles, CAL, WEDNESDAY)
     assert Reason.DATA_GAP in reporte.reasons
     detalle = next(r.detail for r in reporte.rejections if r.reason is Reason.DATA_GAP)

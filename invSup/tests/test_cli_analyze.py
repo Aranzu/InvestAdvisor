@@ -22,11 +22,47 @@ RUNNER = CliRunner()
 
 def _open_with_stop() -> list[tuple[object, ...]]:
     return [
-        ("My Trades", "Test Company", "TEST.US", "STOCK", "", 10, 990_000.0, "", 100.0, "", "", "", 10.0, 90_000.0, 90_000.0, "", "", "", ""),
         (
-            "My Trades", "pos-2", "TEST.US", "", "BUY", 10, 990_000.0, 110.0, 100.0,
-            dt.datetime(2026, 9, 15, 13, 30, tzinfo=dt.UTC), 97.0, "", 10.0, 90_000.0, 90_000.0,
-            "", "", "", "",
+            "My Trades",
+            "Test Company",
+            "TEST.US",
+            "STOCK",
+            "",
+            10,
+            990_000.0,
+            "",
+            100.0,
+            "",
+            "",
+            "",
+            10.0,
+            90_000.0,
+            90_000.0,
+            "",
+            "",
+            "",
+            "",
+        ),
+        (
+            "My Trades",
+            "pos-2",
+            "TEST.US",
+            "",
+            "BUY",
+            10,
+            990_000.0,
+            110.0,
+            100.0,
+            dt.datetime(2026, 9, 15, 13, 30, tzinfo=dt.UTC),
+            97.0,
+            "",
+            10.0,
+            90_000.0,
+            90_000.0,
+            "",
+            "",
+            "",
+            "",
         ),
     ]
 
@@ -37,7 +73,9 @@ def test_reporte_limpio_sin_hallazgos_sale_0(tmp_path: Path) -> None:
         open_rows=_open_with_stop(),
         cash_balance=50_000_000.0,
     )
-    result = RUNNER.invoke(app, ["analyze-positions", "--report", str(report), "--config-dir", str(CONFIG_DIR), "--offline"])
+    result = RUNNER.invoke(
+        app, ["analyze-positions", "--report", str(report), "--config-dir", str(CONFIG_DIR), "--offline"]
+    )
     assert result.exit_code == 0, result.output
     assert "# Analisis de posiciones" in result.output
     assert "Sin hallazgos" in result.output
@@ -45,7 +83,9 @@ def test_reporte_limpio_sin_hallazgos_sale_0(tmp_path: Path) -> None:
 
 def test_reporte_sin_stop_sale_2_y_acusa_stop_missing(tmp_path: Path) -> None:
     report = build_positions_workbook(tmp_path / "riesgo.xlsx")
-    result = RUNNER.invoke(app, ["analyze-positions", "--report", str(report), "--config-dir", str(CONFIG_DIR), "--offline"])
+    result = RUNNER.invoke(
+        app, ["analyze-positions", "--report", str(report), "--config-dir", str(CONFIG_DIR), "--offline"]
+    )
     assert result.exit_code == 2
     assert "STOP_MISSING" in result.output
     assert "colocar Sell Stop" in result.output
@@ -54,7 +94,9 @@ def test_reporte_sin_stop_sale_2_y_acusa_stop_missing(tmp_path: Path) -> None:
 def test_archivo_invalido_sale_1(tmp_path: Path) -> None:
     report = tmp_path / "basura.xlsx"
     report.write_bytes(b"no soy un excel")
-    result = RUNNER.invoke(app, ["analyze-positions", "--report", str(report), "--config-dir", str(CONFIG_DIR), "--offline"])
+    result = RUNNER.invoke(
+        app, ["analyze-positions", "--report", str(report), "--config-dir", str(CONFIG_DIR), "--offline"]
+    )
     assert result.exit_code == 1
     assert "FALLA" in result.output
 
@@ -62,7 +104,14 @@ def test_archivo_invalido_sale_1(tmp_path: Path) -> None:
 def test_reporte_inexistente_sale_1(tmp_path: Path) -> None:
     result = RUNNER.invoke(
         app,
-        ["analyze-positions", "--report", str(tmp_path / "no-existe.xlsx"), "--config-dir", str(CONFIG_DIR), "--offline"],
+        [
+            "analyze-positions",
+            "--report",
+            str(tmp_path / "no-existe.xlsx"),
+            "--config-dir",
+            str(CONFIG_DIR),
+            "--offline",
+        ],
     )
     assert result.exit_code == 1
 

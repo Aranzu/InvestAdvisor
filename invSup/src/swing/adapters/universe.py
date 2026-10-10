@@ -13,6 +13,8 @@ El fetcher es inyectable para que los tests corran offline y deterministas.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -101,9 +103,7 @@ def sp500_universe(
     raise UniverseUnavailable("sin S&P 500: fallo la red y no hay copia en cache/universe")
 
 
-def _from_rows(
-    rows: Sequence[tuple[str, str]], origin: str, excluded: Sequence[str]
-) -> Universe:
+def _from_rows(rows: Sequence[tuple[str, str]], origin: str, excluded: Sequence[str]) -> Universe:
     drop = {_normalize_symbol(ticker) for ticker in excluded}
     themes: dict[str, str] = {}
     for symbol, sector in rows:
@@ -123,8 +123,22 @@ def _cache_path(cache_dir: Path | None) -> Path:
 
 
 def _write_cache(path: Path, rows: Sequence[tuple[str, str]]) -> None:
+    """Escribe el universo cacheado de forma atomica.
+
+    Una corrida interrumpida a mitad de ``write_text`` dejaba un JSON truncado que la
+    siguiente corrida offline leia como "sin universo", perdiendo el respaldo justo
+    cuando mas se necesita.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps([list(row) for row in rows]), encoding="utf-8")
+    handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps([list(row) for row in rows]))
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _read_cache(path: Path) -> list[tuple[str, str]]:

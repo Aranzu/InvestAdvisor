@@ -17,7 +17,6 @@ import datetime as dt
 import json
 import shutil
 import sys
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -35,36 +34,112 @@ from swing.adapters.data_yahoo import (
     sectors_from,
 )
 from swing.adapters.fundamentals import provider_from_project as fundamentals_provider_from_project
-from swing.adapters.llm import LLMClient, LLMError, client_from_env
+from swing.adapters.llm import client_from_env
 from swing.adapters.notify import Notification, notifiers_from_env, send_all
 from swing.adapters.search import search_from_env
 from swing.adapters.universe import UniverseUnavailable, sp500_universe
 from swing.adapters.xtb_report import ReportFormatError, load_positions_report
-from swing.core.analysis import Market, Quote, analyze, render_markdown
+from swing.core.analysis import Market, analyze, render_markdown
 from swing.core.calendar import SessionCalendar
 from swing.core.dataquality import (
     check_freshness,
     check_series,
-    find_unadjusted_jumps,
     sessions_to_earnings,
 )
 from swing.core.discovery import DiscoveredCandidate, rank_candidates, technical_survivors
 from swing.core.engine import (
     IndicatorFrame,
     MarketSnapshot,
-    NightPlan,
     decide,
     position_exposures,
     relative_strength_percentiles,
 )
-from swing.core.fundamentals import Fundamentals
-from swing.core.llm import LLMReview, ReviewContext, ReviewSchemaError, ThesisStatus, parse_review
-from swing.core.market import PriceSeries
+from swing.core.llm import LLMReview, ThesisStatus
 from swing.core.models import BrokerConfig, StrategyConfig, ThemesConfig, WatchlistConfig
-from swing.core.planner import adopt_positions, render_review, render_table
+from swing.core.planner import adopt_positions, plan_tickets, render_review, render_table, render_tickets
 from swing.core.portfolio import PortfolioState
-from swing.core.reconcile import BrokerLot, reconcile_positions
-from swing.core.report import LocalPosition, PositionReport
+from swing.core.reconcile import reconcile_positions
+from swing.services.market_data import (
+    MARKET_CLOSE_NY,
+)
+from swing.services.market_data import (
+    broker_lots as _broker_lots,
+)
+from swing.services.market_data import (
+    collect_series as _collect_series,
+)
+from swing.services.market_data import (
+    implied_fx as _implied_fx,
+)
+from swing.services.market_data import (
+    last_closed_session as _last_closed_session,
+)
+from swing.services.market_data import (
+    live_fx as _live_fx,
+)
+from swing.services.market_data import (
+    live_quotes as _live_quotes,
+)
+from swing.services.market_data import (
+    relative_strength as _relative_strength,
+)
+from swing.services.market_data import (
+    warn_jumps as _warn_jumps,
+)
+from swing.services.paths import (
+    candidate_path as _candidate_path,
+)
+from swing.services.paths import (
+    newest_report as _newest_report,
+)
+from swing.services.paths import (
+    newest_report_or_none as _newest_report_or_none,
+)
+from swing.services.paths import (
+    output_dir as _output_dir,
+)
+from swing.services.paths import (
+    report_dir as _report_dir,
+)
+from swing.services.reporting import (
+    read_candidate_tickers as _read_candidate_tickers,
+)
+from swing.services.reporting import (
+    render_nightly as _render_nightly,
+)
+from swing.services.reporting import (
+    worst_exit as _worst_exit,
+)
+from swing.services.research import (
+    candidate_earnings as _candidate_earnings,
+)
+from swing.services.research import (
+    earnings_facts as _earnings_facts,
+)
+from swing.services.research import (
+    macro_brief as _macro_brief,
+)
+from swing.services.research import (
+    macro_data as _macro_data,
+)
+from swing.services.research import (
+    num as _num,
+)
+from swing.services.research import (
+    pct as _pct,
+)
+from swing.services.research import (
+    review_candidates as _review_candidates,
+)
+from swing.services.research import (
+    review_fields as _review_fields,
+)
+from swing.services.research import (
+    review_positions as _review_positions,
+)
+from swing.services.research import (
+    technical_facts as _technical_facts,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -76,10 +151,6 @@ app = typer.Typer(
 #: donde vive ``config/``. Con la instalacion editable ese es el unico lugar
 #: razonable; con una instalacion normal hay que pasar ``--config-dir``.
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
-
-#: Cierre de NYSE en hora local del mercado. Vive aqui y no en ``core/`` porque solo
-#: el diagnostico lo necesita; el nucleo razona en sesiones, no en horas de reloj.
-MARKET_CLOSE_NY = dt.time(hour=16)
 
 #: Zona de la operacion nocturna del usuario (spec seccion 14). El horario del
 #: Programador de tareas se calcula en esta zona a partir del cierre de EE. UU.
@@ -388,8 +459,7 @@ def analyze_positions(
         rs_percentiles = _relative_strength(model, watchlist.universe, provider, strategy, today)
         if not rs_percentiles:
             typer.secho(
-                "Sin datos suficientes para el percentil de fuerza relativa: "
-                "un CAP_TRIM pedira el dato.",
+                "Sin datos suficientes para el percentil de fuerza relativa: un CAP_TRIM pedira el dato.",
                 fg=typer.colors.YELLOW,
             )
 
@@ -403,172 +473,12 @@ def analyze_positions(
         raise typer.Exit(code=2)
 
 
-def _report_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "posiciones"
-
-
-def _newest_report(report_dir: Path) -> Path:
-    found = _newest_report_or_none(report_dir)
-    if found is None:
-        typer.secho(f"FALLA  no hay exports de XTB en {report_dir}; pase --report", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-    return found
-
-
-def _newest_report_or_none(report_dir: Path) -> Path | None:
-    """El export mas nuevo de ``posiciones/`` o ``None`` si no hay ninguno."""
-    candidates = sorted(report_dir.glob("*.xlsx"))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
-
-
-def _live_fx(provider: YahooDataProvider, today: dt.date) -> float | None:
-    try:
-        return provider.fx_usdclp(today)
-    except (CacheError, DataUnavailable):
-        return None
-
-
-def _live_quotes(model: PositionReport, provider: YahooDataProvider, today: dt.date) -> dict[str, Quote]:
-    """Precio de cierre y earnings por ticker de hoy. Lo que falte queda sin cotizar:
-    el analisis cae al precio del reporte y lo declara (fail-closed, no inventa)."""
-    quotes: dict[str, Quote] = {}
-    start = today - dt.timedelta(days=45)
-    for ticker in sorted({lot.ticker for lot in model.lots}):
-        try:
-            series = provider.daily_bars(ticker, start=start, end=today)
-            price = series.last_close
-            earnings = provider.earnings(ticker)
-        except (CacheError, DataUnavailable):
-            continue
-        if price is None:
-            continue
-        quotes[ticker] = Quote(
-            price_usd=price,
-            price_source="provider",
-            earnings_date=earnings.date if not earnings.is_missing else None,
-            earnings_known=not earnings.is_missing,
-        )
-    return quotes
-
-
-def _relative_strength(
-    model: PositionReport,
-    universe: tuple[str, ...],
-    provider: YahooDataProvider,
-    strategy: StrategyConfig,
-    today: dt.date,
-) -> dict[str, float] | None:
-    """Percentil de fuerza relativa de las mantenidas dentro del universo (puerta G4).
-
-    El percentil se calcula sobre el mismo universo que corre el motor (D2), mas
-    las posiciones abiertas: el ``CAP_TRIM`` ordena por fuerza relativa y un ticker
-    sin percentil no se vende a ciegas, se pide el dato.
-    """
-    held = sorted({lot.ticker for lot in model.lots})
-    lookback = strategy.gates.rs_lookback_days
-    start = today - dt.timedelta(days=lookback * 2)
-    frames: dict[str, IndicatorFrame] = {}
-    for ticker in dict.fromkeys((*universe, *held)):
-        try:
-            series = provider.daily_bars(ticker, start=start, end=today)
-        except (CacheError, DataUnavailable):
-            continue
-        frame = IndicatorFrame.build(series, strategy)
-        if frame is not None:
-            frames[ticker] = frame
-    percentiles = relative_strength_percentiles(frames, lookback)
-    return percentiles or None
-
-
 #: Simbolo del indice de volatilidad en Yahoo.
 VIX_SYMBOL = "^VIX"
 
 #: Historia de calentamiento que se pide antes de ``--start``: la SMA200 mas el
 #: slope de 20 barras necesita ~220 sesiones; se piden dos anos por margen.
 BACKTEST_WARMUP_DAYS = 730
-
-
-def _warn_jumps(series: dict[str, PriceSeries]) -> None:
-    """Avisa de saltos no ajustados (posibles splits) sin reescalar en vivo (D6).
-
-    En vivo el motor **no puede decidir solo** si un salto grande es un split o una
-    caida real, asi que no reescala en silencio: lo declara para que el usuario revise.
-    """
-    jumped = sorted(name for name, bars in series.items() if find_unadjusted_jumps(bars))
-    if jumped:
-        typer.secho(
-            f"  aviso: salto no ajustado (posible split) en {', '.join(jumped)}; "
-            "en vivo no se reescala, revisar antes de operar (DATA_GAP)",
-            fg=typer.colors.YELLOW,
-        )
-
-
-def _collect_series(
-    provider: YahooDataProvider,
-    tickers: list[str],
-    start: dt.date,
-    end: dt.date,
-) -> tuple[dict[str, PriceSeries], list[str]]:
-    """Velas de ``[start, end]`` por ticker; los que no llegan se declaran, no se inventan.
-
-    Una vela contraditoria (p. ej. ``open > high``) de un ticker no puede tumbar el
-    barrido de todo el universo: ese ticker queda sin datos y se declara.
-    """
-    series: dict[str, PriceSeries] = {}
-    missing: list[str] = []
-    for ticker in tickers:
-        try:
-            bars = provider.daily_bars(ticker, start=start, end=end)
-        except (CacheError, DataUnavailable, ValueError):
-            missing.append(ticker)
-            continue
-        if bars.is_empty:
-            missing.append(ticker)
-            continue
-        series[ticker] = bars
-    return series, missing
-
-
-def _last_closed_session(calendar: SessionCalendar, min_minutes_after_close: int) -> dt.date:
-    """Ultima sesion con vela cerrada (D3): la de hoy solo cuenta tras el margen.
-
-    Antes del cierre, la fila de hoy que entrega el proveedor es una vela en curso
-    (a veces incoherente); usarla seria operar con datos incompletos.
-    """
-    now_ny = dt.datetime.now(tz=MARKET_TZ)
-    last = calendar.last_session_on_or_before(now_ny.date())
-    closed = dt.datetime.combine(last, MARKET_CLOSE_NY, tzinfo=MARKET_TZ) + dt.timedelta(
-        minutes=min_minutes_after_close
-    )
-    return last if now_ny >= closed else calendar.previous_session(last)
-
-
-def _output_dir() -> Path:
-    return _report_dir().parent / "output"
-
-
-def _implied_fx(model: PositionReport) -> float:
-    """FX implicito del reporte: valor CLP / (volumen x precio USD), o 1.0 sin dato."""
-    numerator = sum(lot.value_clp for lot in model.lots if lot.price_usd)
-    denominator = sum(lot.volume * lot.price_usd for lot in model.lots if lot.price_usd)
-    return numerator / denominator if denominator > 0.0 else 1.0
-
-
-def _broker_lots(model: PositionReport) -> list[BrokerLot]:
-    """Lotes del reporte en la forma que consume ``reconcile_positions``."""
-    return [
-        BrokerLot(
-            id=lot.position_id,
-            ticker=lot.ticker,
-            volume=lot.volume,
-            open_price=lot.open_price_usd,
-            open_time=dt.datetime.combine(lot.open_date, dt.time.min),
-            stop_loss=lot.stop_usd,
-        )
-        for lot in model.lots
-    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -630,10 +540,6 @@ def _resolve_universe(
         typer.secho(f"  aviso: {exc}; uso watchlist.yaml", fg=typer.colors.YELLOW)
         return watchlist.universe, themes_file, "watchlist"
     return universe.tickers, universe.themes, universe.origin
-
-
-def _candidate_path() -> Path:
-    return _report_dir().parent / "state" / "candidates.json"
 
 
 def _build_market(
@@ -808,9 +714,7 @@ def review(
     macro: LLMReview | None = None
     llm_failed = False
     if llm:
-        client = client_from_env(
-            web_search=web_search, max_searches=market.strategy.llm.max_searches_per_ticker
-        )
+        client = client_from_env(web_search=web_search, max_searches=market.strategy.llm.max_searches_per_ticker)
         if web_search and search_from_env() is None:
             typer.secho(
                 "  aviso: sin TAVILY_API_KEY; la IA corre sin busqueda web",
@@ -894,6 +798,8 @@ def review(
             macro=macro,
             macro_data=macro_data,
         )
+    ticket_plan = plan_tickets(plan, market.broker, market.strategy)
+    informe = informe.rstrip() + "\n\n" + "\n".join(render_tickets(ticket_plan))
     for issue in recon.issues:
         typer.secho(f"  {issue.kind.value}: {issue.detail}", fg=typer.colors.YELLOW)
 
@@ -906,159 +812,6 @@ def review(
         raise typer.Exit(code=3)
     if any(judgment.has_action for judgment in plan.exits) or plan.cap_trims:
         raise typer.Exit(code=2)
-
-
-def _review_positions(
-    client: LLMClient,
-    plan: NightPlan,
-    themes: ThemesConfig,
-    today: dt.date,
-    local: Sequence[LocalPosition] = (),
-    macro_context: str = "",
-    fundamentals: Mapping[str, Fundamentals] | None = None,
-    *,
-    snapshot: MarketSnapshot | None = None,
-    calendar: SessionCalendar | None = None,
-    blackout: int = 0,
-) -> tuple[list[LLMReview], list[str]]:
-    """Segunda opinion de la IA por posicion; la IA decide mantener o vender.
-
-    Incluye las posiciones locales (p. ej. SQM-B), que no pasan por el motor pero si
-    se buscan con noticias. ``macro_context`` (el resumen macro de la corrida) y los
-    ``fundamentals`` (valoracion, proyecciones) se inyectan en cada consulta para que
-    el fundamento pondere todo. Con ``snapshot`` se agregan el tecnico (RSI,
-    distancia a medias y al maximo de 52 semanas) y el proximo reporte de
-    resultados. Un fallo puntual de la IA en un ticker no tira la revision de los
-    demas: se reintenta una vez y, si vuelve a fallar, ese ticker queda sin opinion.
-    """
-    reviews: list[LLMReview] = []
-    failed: list[str] = []
-
-    def _consult(ticker: str, price: float, facts: dict[str, object]) -> None:
-        if macro_context:
-            facts = {**facts, "contexto_macro": macro_context}
-        if fundamentals is not None:
-            f = fundamentals.get(ticker)
-            if f is not None and not f.is_empty:
-                facts = {**_fundamental_fields(f, price), **facts}
-        for attempt in range(2):
-            try:
-                reviews.append(client.review(ticker, ReviewContext.POSITION_REVIEW, facts, today))
-                return
-            except LLMError:
-                if attempt == 1:
-                    failed.append(ticker)
-
-    for judgment in sorted(plan.exits, key=lambda j: j.ticker):
-        trade = judgment.trade
-        context: dict[str, object] = {}
-        if snapshot is not None:
-            frame = snapshot.frames.get(trade.ticker)
-            if frame is not None:
-                context.update(_technical_facts(frame))
-            day = snapshot.earnings.get(trade.ticker)
-            sessions = sessions_to_earnings(calendar, snapshot.today, day) if calendar is not None else None
-            context.update(_earnings_facts(day, sessions, blackout))
-        _consult(
-            trade.ticker,
-            trade.close,
-            {
-                "theme": themes.themes.get(trade.ticker, "sin_tema"),
-                "entry": trade.entry_price,
-                "close": trade.close,
-                "retorno_pct": round((trade.close / trade.entry_price - 1.0) * 100.0, 2) if trade.entry_price > 0 else None,
-                "current_r": round(trade.current_r, 2),
-                "days_open": trade.days_open,
-                "stop": trade.stop,
-                "pct_hasta_stop": round((trade.stop / trade.close - 1.0) * 100.0, 2) if trade.close > 0 else None,
-                **context,
-            },
-        )
-    for position in local:
-        retorno = (
-            (position.last_price_clp / position.avg_price_clp - 1.0) * 100.0
-            if position.avg_price_clp > 0
-            else 0.0
-        )
-        _consult(
-            position.ticker,
-            position.last_price_clp,
-            {
-                "name": position.name,
-                "ticker": position.ticker,
-                "moneda": "CLP",
-                "promedio": round(position.avg_price_clp, 2),
-                "ultimo": round(position.last_price_clp, 2),
-                "retorno_pct": round(retorno, 2),
-                "nota": "posicion local (bolsa de Santiago); busca noticias recientes de la empresa y del litio",
-            },
-        )
-    return reviews, failed
-
-
-def _macro_brief(client: LLMClient, today: dt.date, out_dir: Path, *, refresh: bool = False) -> LLMReview | None:
-    """Resumen macro (EE.UU. y mundo) de la corrida; ``None`` si la IA falla.
-
-    Se guarda en ``contexto_<fecha>.json`` (para reusar) y ``.md`` (para leer). Si ya
-    existe el de hoy y no se pide ``refresh``, se reutiliza sin volver a consultar.
-    """
-    json_path = out_dir / f"contexto_{today.isoformat()}.json"
-    md_path = out_dir / f"contexto_{today.isoformat()}.md"
-    if not refresh and json_path.is_file():
-        try:
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                return parse_review(payload, today)
-        except (OSError, ValueError, ReviewSchemaError):
-            pass
-    try:
-        review = client.review("MERCADO", ReviewContext.MACRO, {}, today)
-    except LLMError:
-        return None
-    _save_macro(json_path, md_path, review)
-    return review
-
-
-def _save_macro(json_path: Path, md_path: Path, review: LLMReview) -> None:
-    payload = {
-        "ticker": review.ticker,
-        "context": review.context.value,
-        "thesis_status": review.thesis_status.value,
-        "veto": review.veto,
-        "veto_reason": review.veto_reason,
-        "accion": review.accion,
-        "fundamento": review.fundamento,
-        "catalizador": review.catalizador,
-        "confidence": review.confidence.value,
-        "key_facts": [
-            {"fact": fact.fact, "date": fact.date.isoformat(), "source_url": fact.source_url}
-            for fact in review.key_facts
-        ],
-        "search_conclusive": review.search_conclusive,
-        "requested_info": list(review.requested_info),
-    }
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    lines = ["# Contexto macro (EE.UU. y mundo)", "", review.fundamento]
-    if review.catalizador:
-        lines += ["", f"Proximo evento macro: {review.catalizador}"]
-    if review.key_facts:
-        lines += ["", "Fuentes:"]
-        lines += [f"- {fact.date.isoformat()}: {fact.fact} ({fact.source_url})" for fact in review.key_facts]
-    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _macro_data(provider: YahooDataProvider, today: dt.date) -> dict[str, str]:
-    """Benchmarks deterministas del contexto: tasa 10Y y dolar (DXY)."""
-    out: dict[str, str] = {}
-    for name, symbol in (("10Y", "^TNX"), ("DXY", "DX-Y.NYB")):
-        try:
-            series = provider.daily_bars(symbol, start=today - dt.timedelta(days=30), end=today)
-        except (CacheError, DataUnavailable):
-            continue
-        if not series.is_empty:
-            out[name] = f"{series.last_close:.2f}"
-    return out
 
 
 @app.command("screen")
@@ -1105,7 +858,9 @@ def screen(
     Rastrea un conjunto amplio (S&P 500 vivo por defecto), aplica el prefiltro
     tecnico y las puertas fundamentales y ordena por score compuesto. Deja los
     candidatos en ``state/candidates.json``. Con ``--llm`` agrega la tesis de compra
-    de la IA (veredicto BUY/WATCH). Sale con 0 si hay candidatos y 2 si no.
+    de la IA (veredicto BUY/WATCH). Sale con 0 si la corrida termino bien (haya o no
+    candidatos; el conteo queda en el archivo) y con un codigo distinto solo ante un
+    fallo de configuracion o de datos.
     """
     _run_screener(config_dir, cache_dir, offline, top, breadth, out, min_score, llm, web_search)
 
@@ -1225,9 +980,7 @@ def _run_screener(
             f"  fuera por earnings dentro del blackout ({blackout} sesiones): {', '.join(in_blackout)}",
             fg=typer.colors.YELLOW,
         )
-    near = sorted(
-        c.ticker for c in candidates if (n := to_earnings.get(c.ticker)) is not None and n <= blackout
-    )
+    near = sorted(c.ticker for c in candidates if (n := to_earnings.get(c.ticker)) is not None and n <= blackout)
     if near:
         typer.secho(
             f"  aviso: earnings dentro del blackout ({blackout} sesiones): {', '.join(near)}",
@@ -1267,7 +1020,9 @@ def _run_screener(
             for candidate in candidates:
                 review = reviews.get(candidate.ticker)
                 if review is not None:
-                    typer.echo(f"**{candidate.ticker}** -> {review.verdict.value} ({review.confidence.value}): {review.fundamento}")
+                    typer.echo(
+                        f"**{candidate.ticker}** -> {review.verdict.value} ({review.confidence.value}): {review.fundamento}"
+                    )
 
     path = out if out is not None else _candidate_path()
     payload = [
@@ -1295,44 +1050,6 @@ def _run_screener(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     typer.echo(f"Candidatos escritos en {path}")
-    if not candidates:
-        raise typer.Exit(code=2)
-
-
-def _worst_exit(codes: Sequence[int]) -> int:
-    """Codigo combinado de la noche: config/datos manda sobre IA, y esta sobre hallazgos."""
-    severity = {0: 0, 2: 1, 3: 2, 1: 3}
-    if not codes:
-        return 0
-    return max(codes, key=lambda code: severity.get(code, 1))
-
-
-def _read_candidate_tickers(path: Path) -> list[str]:
-    """Tickers del ``state/candidates.json`` mas reciente; lista vacia si no hay."""
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(data, list):
-        return []
-    return [str(item["ticker"]) for item in data if isinstance(item, dict) and "ticker" in item]
-
-
-def _render_nightly(
-    today: dt.date,
-    lines: Sequence[str],
-    candidates: Sequence[str],
-    review_path: Path | None,
-) -> str:
-    out = [f"# Corrida nocturna {today.isoformat()}", "", "## Que paso", "", *lines, ""]
-    if candidates:
-        out += ["## Candidatos de compra", "", ", ".join(candidates[:15]), ""]
-    if review_path is not None:
-        out += ["## Revision de posiciones", "", f"Informe completo: {review_path}", ""]
-    out += ["_El motor recomienda, nunca ejecuta ordenes._", ""]
-    return "\n".join(out)
 
 
 @app.command("nightly")
@@ -1513,167 +1230,11 @@ def schedule(
     if weekly:
         typer.echo("")
         typer.echo("Variante semanal (domingos), si preferis correr una sola vez por semana:")
-        typer.echo(f'  schtasks /Create /TN "{task} (semanal)" /SC WEEKLY /D SUN /ST {hhmm} /TR "\\"{exe}\\" nightly{flags}" /F')
+        typer.echo(
+            f'  schtasks /Create /TN "{task} (semanal)" /SC WEEKLY /D SUN /ST {hhmm} /TR "\\"{exe}\\" nightly{flags}" /F'
+        )
     typer.echo("")
     typer.echo("Ver docs/PROGRAMACION.md para el detalle y la notificacion opcional.")
-
-
-def _num(value: float | None, ndigits: int = 1) -> str:
-    return "-" if value is None else f"{value:.{ndigits}f}"
-
-
-def _pct(value: float | None) -> str:
-    return "-" if value is None else f"{value * 100:+.1f}"
-
-
-#: Campos de ``Fundamentals`` que se inyectan a la IA (los que valen ``None`` se omiten).
-_FUNDAMENTAL_KEYS: tuple[str, ...] = (
-    "sector",
-    "industry",
-    "forward_pe",
-    "trailing_pe",
-    "price_to_book",
-    "peg_ratio",
-    "return_on_equity",
-    "profit_margin",
-    "revenue_growth",
-    "earnings_growth",
-    "debt_to_equity",
-    "dividend_yield",
-    "beta",
-    "target_mean",
-    "target_high",
-    "target_low",
-    "recommendation_mean",
-    "recommendation_key",
-    "analyst_count",
-    "eps_forward",
-    "eps_growth_estimate",
-    "revenue_growth_estimate",
-)
-
-
-def _fundamental_fields(f: Fundamentals, price: float) -> dict[str, object]:
-    """Fundamentales no nulos + potencial, listos para el prompt de la IA."""
-    facts: dict[str, object] = {}
-    for name in _FUNDAMENTAL_KEYS:
-        value = getattr(f, name)
-        if value is not None:
-            facts[name] = value
-    upside = f.target_upside(price)
-    if upside is not None:
-        facts["target_upside_pct"] = round(upside * 100, 1)
-    if f.business_summary:
-        facts["business"] = f.business_summary[:280]
-    return facts
-
-
-def _pct_vs(value: float | None, reference: float | None) -> float | None:
-    """``value`` relativo a ``reference`` en %, o ``None`` si falta alguno."""
-    if value is None or reference is None or reference <= 0.0:
-        return None
-    return round((value / reference - 1.0) * 100.0, 1)
-
-
-def _technical_facts(frame: IndicatorFrame) -> dict[str, object]:
-    """Foto tecnica de la ultima vela, lista para el prompt (sin ``None``)."""
-    feature = frame.features_at(frame.last_index)
-    if feature is None or feature.close is None:
-        return {}
-    close = feature.close
-    facts: dict[str, object | None] = {
-        "rsi": None if feature.rsi is None else round(feature.rsi, 1),
-        "pct_sobre_sma50": _pct_vs(close, feature.sma50),
-        "pct_sobre_sma200": _pct_vs(close, feature.sma200),
-        "pct_vs_max_52s": _pct_vs(close, feature.high52),
-        "atr_pct": None if feature.atr is None else round(feature.atr / close * 100.0, 2),
-    }
-    return {key: value for key, value in facts.items() if value is not None}
-
-
-def _earnings_facts(day: dt.date | None, sessions: int | None, blackout: int) -> dict[str, object]:
-    """Proximo reporte de resultados y si cae dentro del blackout de entrada."""
-    if day is None:
-        return {"earnings_fecha": "desconocida"}
-    facts: dict[str, object] = {"earnings_fecha": day.isoformat()}
-    if sessions is not None:
-        facts["earnings_en_sesiones"] = sessions
-        facts["blackout_earnings_sesiones"] = blackout
-    return facts
-
-
-def _candidate_earnings(provider: YahooDataProvider, tickers: Sequence[str], offline: bool) -> dict[str, dt.date]:
-    """Fecha del proximo reporte de los candidatos finales (no de todo el universo).
-
-    Es una consulta por ticker, por eso solo se hace sobre el recorte. Sin red no
-    se pide nada: el informe muestra ``-`` y la IA recibe "desconocida".
-    """
-    out: dict[str, dt.date] = {}
-    if offline:
-        return out
-    for ticker in tickers:
-        try:
-            info = provider.earnings(ticker)
-        except Exception:
-            continue
-        if not info.is_missing and info.date is not None:
-            out[ticker] = info.date
-    return out
-
-
-def _review_fields(review: LLMReview | None) -> dict[str, object]:
-    """Lo que la IA dijo de un candidato, para ``candidates.json``."""
-    if review is None:
-        return {"verdict": None}
-    return {
-        "verdict": review.verdict.value,
-        "confidence": review.confidence.value,
-        "accion": review.accion,
-        "fundamento": review.fundamento,
-        "catalizador": review.catalizador,
-        "fuentes": [fact.source_url for fact in review.key_facts if fact.source_url],
-    }
-
-
-def _review_candidates(
-    client: LLMClient,
-    candidates: Sequence[DiscoveredCandidate],
-    fundamentals: Mapping[str, Fundamentals],
-    today: dt.date,
-    *,
-    technical: Mapping[str, Mapping[str, object]] | None = None,
-    macro_context: str = "",
-) -> dict[str, LLMReview]:
-    """Tesis de compra de la IA por candidato; un fallo puntual no tira el resto.
-
-    ``technical`` (RSI, extension sobre medias, earnings) y ``macro_context`` se
-    inyectan para que la IA distinga "buena empresa" de "buen momento de entrada".
-    """
-    reviews: dict[str, LLMReview] = {}
-    for candidate in candidates:
-        facts: dict[str, object] = {
-            "theme": candidate.theme,
-            "close": candidate.close,
-            "rs_percentile": round(candidate.rs_percentile, 1),
-            "momentum_pct": round((candidate.momentum - 1.0) * 100, 1),
-            "composite_score": None if candidate.composite is None else round(candidate.composite, 1),
-            "fundamental_score": None if candidate.fundamental is None else round(candidate.fundamental, 1),
-        }
-        if technical is not None:
-            facts.update(technical.get(candidate.ticker, {}))
-        if macro_context:
-            facts["contexto_macro"] = macro_context
-        f = fundamentals.get(candidate.ticker)
-        if f is not None and not f.is_empty:
-            facts.update(_fundamental_fields(f, candidate.close))
-        for attempt in range(2):
-            try:
-                reviews[candidate.ticker] = client.review(candidate.ticker, ReviewContext.SCREEN_REVIEW, facts, today)
-                break
-            except LLMError:
-                if attempt == 1:
-                    typer.secho(f"  aviso LLM: sin tesis para {candidate.ticker}", fg=typer.colors.YELLOW)
-    return reviews
 
 
 def main() -> None:

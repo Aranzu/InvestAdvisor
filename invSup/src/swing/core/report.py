@@ -262,11 +262,7 @@ def deposits_clp(report: PositionReport) -> float:
 
 def dividends_net_clp(report: PositionReport) -> float:
     """Dividendos menos retenciones y tarifas: lo que realmente quedo."""
-    return sum(
-        op.amount_clp
-        for op in report.cash
-        if op.kind in ("Dividend", "Withholding tax", "SEC fee")
-    )
+    return sum(op.amount_clp for op in report.cash if op.kind in ("Dividend", "Withholding tax", "SEC fee"))
 
 
 @dataclass(frozen=True, slots=True)

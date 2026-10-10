@@ -135,7 +135,9 @@ def test_patrimonio_negativo_no_puntua_pb_ni_deuda_ni_roe() -> None:
     # Calidad solo con el margen: el ROE de -300 % no la hunde.
     assert score.quality is not None and score.quality >= 90
     result = check_fundamentals(f, 100.0, FUND)
-    assert not any(name in r.detail for r in result.rejections for name in ("price_to_book", "debt_to_equity", "return_on_equity"))
+    assert not any(
+        name in r.detail for r in result.rejections for name in ("price_to_book", "debt_to_equity", "return_on_equity")
+    )
 
 
 def test_bloque_faltante_cuenta_neutro() -> None:

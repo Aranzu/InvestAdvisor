@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -348,9 +349,15 @@ class YahooFundamentalsProvider:
     def _write(self, f: Fundamentals) -> None:
         path = self._path(f.ticker)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(_payload(f), ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, path)
+        handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(_payload(f), ensure_ascii=False))
+            os.replace(tmp, path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def get(self, ticker: str, *, today: dt.date | None = None) -> Fundamentals:
         """Fundamentales del ticker, frescos si se puede, cacheados si no."""

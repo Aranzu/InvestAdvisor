@@ -231,11 +231,7 @@ def _apply_fundamentals(
         return candidate, gate.rejections
     score = score_fundamentals(f, candidate.close, config)
     weight = strategy.screener.momentum_weight
-    composite = (
-        None
-        if score.composite is None
-        else (1.0 - weight) * score.composite + weight * candidate.rs_percentile
-    )
+    composite = None if score.composite is None else (1.0 - weight) * score.composite + weight * candidate.rs_percentile
     updated = DiscoveredCandidate(
         ticker=candidate.ticker,
         theme=candidate.theme,

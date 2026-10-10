@@ -71,9 +71,7 @@ def _open_workbook(path: Path) -> Iterator[openpyxl.Workbook]:
 def _load(wb: openpyxl.Workbook, path: Path) -> PositionReport:
     missing = [name for name in REQUIRED_SHEETS if name not in wb.sheetnames]
     if missing:
-        raise ReportFormatError(
-            f"{path.name}: faltan hojas {missing}; se esperaba {list(REQUIRED_SHEETS)}"
-        )
+        raise ReportFormatError(f"{path.name}: faltan hojas {missing}; se esperaba {list(REQUIRED_SHEETS)}")
 
     closed, realized = _closed(wb["Closed Positions"])
     cash, cash_balance = _cash_operations(wb["Cash Operations"])
@@ -109,9 +107,7 @@ def _rows(ws: openpyxl.WorkSheet) -> list[tuple[object, ...]]:
     return list(ws.iter_rows(values_only=True))
 
 
-def _find_header(
-    rows: list[tuple[object, ...]], predicate: Callable[[tuple[object, ...]], bool], context: str
-) -> int:
+def _find_header(rows: list[tuple[object, ...]], predicate: Callable[[tuple[object, ...]], bool], context: str) -> int:
     for index, row in enumerate(rows):
         if predicate(row):
             return index
@@ -133,9 +129,7 @@ def _row_dict(header: tuple[object, ...], row: tuple[object, ...]) -> dict[str, 
 
 def _closed(ws: openpyxl.WorkSheet) -> tuple[list[ClosedRow], float]:
     rows = _rows(ws)
-    header_index = _find_header(
-        rows, lambda row: row[0] == "Instrument", _name(ws, "sin encabezado de cierres")
-    )
+    header_index = _find_header(rows, lambda row: row[0] == "Instrument", _name(ws, "sin encabezado de cierres"))
     header = rows[header_index]
     closed: list[ClosedRow] = []
     realized = 0.0
@@ -178,9 +172,7 @@ def _closed(ws: openpyxl.WorkSheet) -> tuple[list[ClosedRow], float]:
 
 def _cash_operations(ws: openpyxl.WorkSheet) -> tuple[list[CashOp], float]:
     rows = _rows(ws)
-    header_index = _find_header(
-        rows, lambda row: row[0] == "Type", _name(ws, "sin encabezado de movimientos")
-    )
+    header_index = _find_header(rows, lambda row: row[0] == "Type", _name(ws, "sin encabezado de movimientos"))
     header = rows[header_index]
     operations: list[CashOp] = []
     balance = 0.0
@@ -246,10 +238,7 @@ def _open_positions(ws: openpyxl.WorkSheet) -> tuple[list[OpenLot], float, float
             if not name.isdigit():
                 names.setdefault(ticker, name)
 
-    lots = [
-        _open_lot(data, names)
-        for data in lot_rows
-    ]
+    lots = [_open_lot(data, names) for data in lot_rows]
     open_value = summary["Open position value"]
     open_profit = summary["Open position profit"]
     if lot_rows and not lots:

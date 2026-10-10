@@ -10,7 +10,8 @@ Es la capa pura entre ``decide()`` (que decide) y la CLI (que lee disco y red):
   que el plan tiene que reparar.
 - ``plan_tickets`` traduce un ``NightPlan`` a tickets de orden (seccion 9). El
   sistema recomienda; nunca envia.
-- ``render_plan`` arma el informe de la noche en Markdown.
+- ``render_tickets`` presenta esos tickets para copiar en el broker.
+- ``render_review`` y ``render_table`` arman los informes de posiciones en Markdown.
 
 Todo es puro: los datos llegan resueltos y ninguna funcion toca disco ni red.
 """
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
 from swing.core.calendar import SessionCalendar
 from swing.core.engine import IndicatorFrame, NightPlan, TradeExitJudgment
@@ -33,6 +35,9 @@ from swing.core.state import TradeState, TrancheState
 
 #: Tolerancia de volumen para no dejar un tramo residual por redondeo.
 VOLUME_EPSILON = 1e-9
+
+#: Confianza (1-10) de la tabla cuando no hay opinion de la IA: neutra.
+DEFAULT_CONFIDENCE_SCORE = 5
 
 
 def adopt_positions(
@@ -83,9 +88,7 @@ def adopt_positions(
     return book
 
 
-def _adopted_tranches(
-    volume: float, entry: float, risk: float, strategy: StrategyConfig
-) -> tuple[TrancheState, ...]:
+def _adopted_tranches(volume: float, entry: float, risk: float, strategy: StrategyConfig) -> tuple[TrancheState, ...]:
     """Tramos de una posicion adoptada: los ``legacy.profit_tiers`` y un runner."""
     tranches: list[TrancheState] = []
     remaining = volume
@@ -103,41 +106,85 @@ def _adopted_tranches(
     return tuple(tranches)
 
 
-def plan_tickets(plan: NightPlan, broker: BrokerConfig) -> tuple[Ticket, ...]:
-    """Traduce el ``NightPlan`` a tickets numerables, en orden de precedencia."""
+@dataclass(frozen=True, slots=True)
+class TicketPlan:
+    """Tickets de la noche, ya acotados al tope de acciones (seccion 4.4).
+
+    ``tickets`` es lo que hay que colocar esta noche; ``deferred`` lo que quedo
+    fuera del tope y pasa a la noche siguiente (marcado ``RECURRING``). Las
+    acciones de seguridad **nunca** se difieren.
+    """
+
+    tickets: tuple[Ticket, ...]
+    deferred: tuple[Ticket, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.tickets and not self.deferred
+
+
+#: Prioridad de precedencia de la noche (seccion 4.4): seguridad > salidas >
+#: subidas de stop > entradas nuevas. Mas chico = antes (y nunca se difiere).
+_PRIORITY_SAFETY = 0
+_PRIORITY_EXIT = 1
+_PRIORITY_STOP = 2
+_PRIORITY_ENTRY = 3
+
+#: Causas que son seguridad y no se difieren aunque se pase del tope.
+_SAFETY_CAUSES = frozenset({Reason.STOP_BREACH, Reason.STOP_MISSING})
+
+
+def plan_tickets(
+    plan: NightPlan,
+    broker: BrokerConfig,
+    strategy: StrategyConfig,
+) -> TicketPlan:
+    """Traduce el ``NightPlan`` a tickets, ya acotados y en orden de precedencia.
+
+    - **Precio de las ventas.** Si ``queued_market_orders`` no esta confirmado
+      (seccion 4.3), la venta sale como Sell Limit de respaldo a
+      ``cierre - exit_limit_atr x ATR`` y lleva ``RIESGO_SIN_COBERTURA``: si no
+      se llena, esas acciones pasan la sesion sin stop.
+    - **Tope de acciones.** Se aplica ``max_actions_per_evening`` salvo para las
+      acciones de seguridad (``STOP_BREACH``/``STOP_MISSING``), que nunca se
+      difieren. Lo que sobra pasa a ``deferred`` para la noche siguiente.
+    """
     expiry = expiry_from_config(broker.order_expiry)
+    market_sells = broker.queued_market_orders is True
+    limit_atr = strategy.exits.exit_limit_atr
+    by_ticker = {judgment.ticker: judgment.trade for judgment in plan.exits}
+
+    def sell(ticker: str, volume: float, cause: Reason) -> Ticket:
+        trade = by_ticker.get(ticker)
+        if market_sells or trade is None:
+            price: float | None = None
+            flag: str | None = None
+        else:
+            price = max(trade.close - limit_atr * trade.atr, 0.0)
+            flag = "RIESGO_SIN_COBERTURA"
+        priority = _PRIORITY_SAFETY if cause in _SAFETY_CAUSES else _PRIORITY_EXIT
+        return Ticket(
+            kind=OrderKind.SELL,
+            ticker=ticker,
+            volume=volume,
+            price=price,
+            reason=cause,
+            expiry=expiry,
+            priority=priority,
+            flag=flag,
+        )
+
     tickets: list[Ticket] = []
 
     for trim in plan.cap_trims:
-        tickets.append(
-            Ticket(
-                kind=OrderKind.SELL,
-                ticker=trim.ticker,
-                volume=trim.volume,
-                price=None,
-                reason=Reason.CAP_TRIM,
-                detail=trim.detail,
-                expiry=expiry,
-                priority=1,
-            )
-        )
+        tickets.append(sell(trim.ticker, trim.volume, Reason.CAP_TRIM))
 
     for judgment in plan.exits:
         primary = judgment.evaluation.primary
         if primary is None or not primary.execute:
             continue
         if primary.action is Action.SELL:
-            tickets.append(
-                Ticket(
-                    kind=OrderKind.SELL,
-                    ticker=judgment.ticker,
-                    volume=primary.volume,
-                    price=None,
-                    reason=primary.cause,
-                    expiry=expiry,
-                    priority=2,
-                )
-            )
+            tickets.append(sell(judgment.ticker, primary.volume, primary.cause))
         elif primary.action is Action.EDIT_STOP and primary.new_stop is not None:
             tickets.append(
                 Ticket(
@@ -147,7 +194,7 @@ def plan_tickets(plan: NightPlan, broker: BrokerConfig) -> tuple[Ticket, ...]:
                     price=primary.new_stop,
                     reason=primary.cause,
                     expiry=expiry,
-                    priority=3,
+                    priority=(_PRIORITY_SAFETY if primary.cause in _SAFETY_CAUSES else _PRIORITY_STOP),
                 )
             )
 
@@ -161,11 +208,22 @@ def plan_tickets(plan: NightPlan, broker: BrokerConfig) -> tuple[Ticket, ...]:
                 reason=Reason.ENTERING,
                 detail=entry.detail,
                 expiry=OrderExpiry.DAY,
-                priority=4,
+                priority=_PRIORITY_ENTRY,
             )
         )
 
-    return tuple(sorted(tickets, key=lambda ticket: (ticket.priority, ticket.ticker)))
+    ordered = sorted(tickets, key=lambda ticket: (ticket.priority, ticket.ticker))
+    max_actions = strategy.operations.max_actions_per_evening
+    kept: list[Ticket] = []
+    deferred: list[Ticket] = []
+    used = 0
+    for ticket in ordered:
+        if ticket.priority == _PRIORITY_SAFETY or used < max_actions:
+            kept.append(ticket)
+            used += 1
+        else:
+            deferred.append(replace(ticket, recurring_count=ticket.recurring_count + 1))
+    return TicketPlan(tickets=tuple(kept), deferred=tuple(deferred))
 
 
 _ACTION_LABEL = {
@@ -189,97 +247,28 @@ _EXPIRY_LABEL = {
 }
 
 
-def render_plan(
-    plan: NightPlan,
-    tickets: Sequence[Ticket],
-    *,
-    account: str,
-    fx: float,
-    broker: BrokerConfig,
-    today: dt.date,
-    next_session: dt.date,
-    reviews: Sequence[LLMReview] = (),
-) -> str:
-    """Informe de la noche (seccion 9): cabecera, tickets, alertas y estado."""
-    lines: list[str] = []
-    lines.append(f"# Plan nocturno - cuenta {account}")
-    lines.append("")
-    lines.append(
-        f"Datos al {today} - proxima apertura {next_session} - "
-        f"regimen {plan.regime.value} - FX {fx:.2f} - equity {plan.equity_clp:,.0f} CLP"
-    )
-    unverified = broker.unverified_assumptions()
-    if unverified:
-        lines.append(f"Supuestos del broker sin verificar: {', '.join(unverified)}")
-    lines.append("")
-
-    lines.append("## Tickets de esta noche")
-    lines.append("")
-    if tickets:
-        lines.append("| # | Accion | Ticker | Orden | Volumen | Precio | Vigencia | Motivo |")
-        lines.append("|---|---|---|---|---|---|---|---|")
-        for index, ticket in enumerate(tickets, start=1):
-            price = f"{ticket.price:.2f}" if ticket.price is not None else "-"
-            vigencia = _EXPIRY_LABEL[ticket.expiry]
+def render_tickets(ticket_plan: TicketPlan) -> list[str]:
+    """Seccion de tickets para copiar en el broker (seccion 9)."""
+    lines: list[str] = ["## Tickets de esta noche", ""]
+    if ticket_plan.tickets:
+        lines.append("| # | Accion | Ticker | Orden | Volumen | Precio | Vigencia | Motivo | Aviso |")
+        lines.append("|---|---|---|---|---|---|---|---|---|")
+        for index, ticket in enumerate(ticket_plan.tickets, start=1):
+            price = f"{ticket.price:.2f}" if ticket.price is not None else "mercado"
             lines.append(
                 f"| {index} | {_ACTION_LABEL[ticket.kind]} | {ticket.ticker} | "
                 f"{_ORDER_LABEL[ticket.kind]} | {ticket.volume:.4f} | {price} | "
-                f"{vigencia} | {ticket.reason.value} |"
+                f"{_EXPIRY_LABEL[ticket.expiry]} | {ticket.reason.value} | {ticket.flag or ''} |"
             )
     else:
-        lines.append("Sin acciones esta noche.")
+        lines.append("Sin acciones que colocar esta noche.")
     lines.append("")
-
-    lines.append("## Alertas")
-    lines.append("")
-    if plan.alerts:
-        for alert in plan.alerts:
-            lines.append(f"- `{alert.reason.value}` - {alert.detail}")
-    else:
-        lines.append("Sin alertas.")
-    if plan.kill.value != "OK":
-        lines.append(f"- `KILL_SWITCH` en {plan.kill.value}")
-
-    lines.append("")
-    lines.append("## Estado de cada posicion")
-    lines.append("")
-    if plan.exits:
-        lines.append("| ticker | R | dias | stop | meta | accion |")
-        lines.append("|---|---|---|---|---|---|")
-        for judgment in plan.exits:
-            trade = judgment.trade
-            primary = judgment.evaluation.primary
-            action = primary.cause.value if primary is not None and primary.execute else "-"
-            target = trade.next_target_r
-            lines.append(
-                f"| {trade.ticker} | {trade.current_r:+.2f} | {trade.days_open} | "
-                f"{trade.stop:.2f} | {target if target is not None else '-'} | {action} |"
-            )
-    else:
-        lines.append("Sin posiciones abiertas.")
-    lines.append("")
-
-    lines.append("## Candidatos diferidos")
-    lines.append("")
-    if plan.deferrals:
-        for entry in plan.deferrals:
-            lines.append(f"- {entry.ticker}: {entry.detail}")
-    else:
-        lines.append("Sin candidatos diferidos.")
-
-    if reviews:
+    if ticket_plan.deferred:
+        lines.append("Diferido a la proxima noche (RECURRING, tope de acciones):")
+        for ticket in ticket_plan.deferred:
+            lines.append(f"- {_ACTION_LABEL[ticket.kind]} {ticket.ticker} ({ticket.reason.value})")
         lines.append("")
-        lines.append("## Revision LLM")
-        lines.append("")
-        for review in reviews:
-            flag = " (VETO)" if review.veto else ""
-            reason = f" - {review.veto_reason}" if review.veto_reason else ""
-            lines.append(
-                f"- {review.ticker} [{review.context.value}]: "
-                f"{review.thesis_status.value}{flag}{reason}"
-            )
-
-    return "\n".join(lines) + "\n"
+    return lines
 
 
 #: Explicacion corta de cada regla, en lenguaje llano.
@@ -396,10 +385,7 @@ def render_review(
     lines: list[str] = []
     lines.append(f"# Recomendacion de posiciones - cuenta {account}")
     lines.append("")
-    lines.append(
-        f"Datos al {today} - regimen {plan.regime.value} - FX {fx:.2f} - "
-        f"equity {plan.equity_clp:,.0f} CLP"
-    )
+    lines.append(f"Datos al {today} - regimen {plan.regime.value} - FX {fx:.2f} - equity {plan.equity_clp:,.0f} CLP")
     lines.append("")
     lines.extend(_macro_lines(macro, macro_data))
 
@@ -430,8 +416,7 @@ def render_review(
         trade = judgment.trade
         primary = judgment.evaluation.primary
         lines.append(
-            f"### {trade.ticker}: va {trade.current_r:+.2f}R en {trade.days_open} sesiones "
-            f"(cierre {trade.close:.2f})"
+            f"### {trade.ticker}: va {trade.current_r:+.2f}R en {trade.days_open} sesiones (cierre {trade.close:.2f})"
         )
         acted = False
         if primary is not None and primary.execute:
@@ -548,21 +533,16 @@ def render_table(
     lines: list[str] = []
     lines.append(f"# Reporte de posiciones - cuenta {account}")
     lines.append("")
-    lines.append(
-        f"Datos al {today} - regimen {plan.regime.value} - FX {fx:.2f} - "
-        f"equity {plan.equity_clp:,.0f} CLP"
-    )
+    lines.append(f"Datos al {today} - regimen {plan.regime.value} - FX {fx:.2f} - equity {plan.equity_clp:,.0f} CLP")
     lines.append("")
     lines.extend(_macro_lines(macro, macro_data))
-    lines.append(
-        "| Activo | Plat. | Retorno % | Accion | Conf. | Fundamento | Stop | TP | Proximo catalizador |"
-    )
+    lines.append("| Activo | Plat. | Retorno % | Accion | Conf. | Fundamento | Stop | TP | Proximo catalizador |")
     lines.append("|---|---|---:|---|---:|---|---:|---:|---|")
     for judgment in sorted(plan.exits, key=lambda j: j.ticker):
         trade = judgment.trade
         review = by_ticker.get(trade.ticker)
         ret = (trade.close / trade.entry_price - 1.0) * 100.0 if trade.entry_price > 0 else 0.0
-        confidence = review.confidence_score if review is not None else 5
+        confidence = review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE
         accion = review.accion if (review is not None and review.accion) else _table_engine_action(judgment, trade)
         fundamento = (
             review.fundamento if (review is not None and review.fundamento) else _engine_fundamento(judgment, trade)
@@ -576,13 +556,9 @@ def render_table(
             f"{stop} | {tp} | {catalyst} |"
         )
     for position in local:
-        ret = (
-            (position.last_price_clp / position.avg_price_clp - 1.0) * 100.0
-            if position.avg_price_clp > 0
-            else 0.0
-        )
+        ret = (position.last_price_clp / position.avg_price_clp - 1.0) * 100.0 if position.avg_price_clp > 0 else 0.0
         review = by_ticker.get(position.ticker)
-        confidence = review.confidence_score if review is not None else 5
+        confidence = review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE
         accion = review.accion if (review is not None and review.accion) else "Revisar (fuera del motor)"
         fundamento = (
             review.fundamento
@@ -591,8 +567,7 @@ def render_table(
         )
         catalyst = _catalyst(review, gains.get(position.ticker))
         lines.append(
-            f"| {position.ticker} | Local | {ret:+.2f}% | {accion} | {confidence} | {fundamento} | "
-            f"- | - | {catalyst} |"
+            f"| {position.ticker} | Local | {ret:+.2f}% | {accion} | {confidence} | {fundamento} | - | - | {catalyst} |"
         )
     lines.append("")
     lines.append(

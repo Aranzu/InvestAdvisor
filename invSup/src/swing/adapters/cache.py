@@ -12,8 +12,10 @@ Tres decisiones que no son obvias:
   como historico completo: el sintoma (velas viejas y un ``DATA_GAP`` rarisimo) no
   apunta a la causa.
 - **La cache no repara huecos.** Si el rango pedido empieza antes de lo que hay en cache,
-  se vuelve a descargar el rango completo. Prefiero volver a bajar 300 filas a servir una
-  serie con un hueco en el medio que nadie va a notar hasta un stop mal calculado.
+  o si hay una descarga incompleta en el medio (un salto mayor a
+  ``MAX_INTERNAL_GAP_DAYS`` dias entre velas contiguas), se vuelve a descargar el rango
+  completo. Prefiero volver a bajar 300 filas a servir una serie con un hueco en el medio
+  que nadie va a notar hasta un stop mal calculado.
 - **La cache no es la verdad, es una copia.** Un CSV editable a mano que queda corrupto
   tiene que producir un error que diga cual archivo esta roto, no una serie vacia que el
   motor toma como "este ticker no cotiza".
@@ -23,7 +25,9 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import itertools
 import os
+import tempfile
 from pathlib import Path
 
 from swing.core.market import Bar, PriceSeries
@@ -36,6 +40,11 @@ PRICE_FIELDS: tuple[str, ...] = ("open", "high", "low", "close")
 #: Formato de los precios en el CSV. Seis decimales mas sobran para una accion y
 #: redondean por lo bajo el volumen, que es lo que no conviene inventar.
 PRICE_FORMAT = "{:.6f}"
+
+#: Hueco interno maximo tolerado antes de rehacer el rango pedido. Un fin de semana
+#: largo o un feriado dejan 3-4 dias de calendario; una semana sin ninguna vela en el
+#: medio del historico es una descarga incompleta que no se debe servir en silencio.
+MAX_INTERNAL_GAP_DAYS = 7
 
 
 class CacheError(RuntimeError):
@@ -80,9 +89,13 @@ class BarsCache:
         """Escribe la serie completa de forma atomica y devuelve la ruta."""
         path = self.path_for(symbol)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".csv.tmp")
+        # Temporal unico por escritura en el mismo directorio: dos procesos (o dos
+        # hilos) escribiendo el mismo symbol no pueden pisarse el archivo temporal
+        # entre si antes del ``os.replace``, que si es atomico.
+        handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        tmp = Path(tmp_name)
         try:
-            with tmp.open("w", newline="", encoding="utf-8") as handle:
+            with os.fdopen(handle_fd, "w", newline="", encoding="utf-8") as handle:
                 writer = csv.DictWriter(handle, fieldnames=COLUMNS)
                 writer.writeheader()
                 for bar in series.bars:
@@ -125,9 +138,17 @@ class BarsCache:
         assert first is not None and last is not None
         if first > start:
             return start, end  # hueco al inicio: se rehace el rango pedido
+        if _has_internal_gap(cached):
+            return start, end  # descarga incompleta en el medio: idem
         if last >= end:
             return None
         return last + dt.timedelta(days=1), end
+
+
+def _has_internal_gap(series: PriceSeries) -> bool:
+    """¿Hay un hueco de mas de ``MAX_INTERNAL_GAP_DAYS`` dias entre velas contiguas?"""
+    dates = [bar.date for bar in series.bars]
+    return any((later - earlier).days > MAX_INTERNAL_GAP_DAYS for earlier, later in itertools.pairwise(dates))
 
 
 def safe_name(symbol: str) -> str:

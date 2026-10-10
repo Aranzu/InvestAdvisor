@@ -29,11 +29,10 @@ import datetime as dt
 import math
 import statistics
 from dataclasses import dataclass
-from enum import StrEnum
 
 import numpy as np
 
-from swing.core.models import SafetyConfig, ValidationConfig
+from swing.core.models import KillState, SafetyConfig, ValidationConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,10 +102,21 @@ def compute_metrics(records: tuple[TradeRecord, ...]) -> Metrics:
     n = len(normal)
     if n == 0:
         return Metrics(
-            n=0, win_rate=0.0, expectancy_r=0.0, gross_expectancy_r=0.0,
-            avg_win_r=0.0, avg_loss_r=0.0, profit_factor=0.0, sqn=0.0, total_r=0.0,
-            avg_days=0.0, earnings_derisk_share_pct=0.0, by_cause=(), by_theme=(),
-            single_n=len(single), single_win_rate=_win_rate(single_rs),
+            n=0,
+            win_rate=0.0,
+            expectancy_r=0.0,
+            gross_expectancy_r=0.0,
+            avg_win_r=0.0,
+            avg_loss_r=0.0,
+            profit_factor=0.0,
+            sqn=0.0,
+            total_r=0.0,
+            avg_days=0.0,
+            earnings_derisk_share_pct=0.0,
+            by_cause=(),
+            by_theme=(),
+            single_n=len(single),
+            single_win_rate=_win_rate(single_rs),
             single_expectancy_r=_mean(single_rs),
         )
 
@@ -208,14 +218,6 @@ def bootstrap_expectancy_ci(
 # --------------------------------------------------------------------------- #
 
 
-class KillState(StrEnum):
-    """Estados de la salvaguarda: defensivo (solo salidas), aviso o normal."""
-
-    DEFENSIVE = "DEFENSIVE"
-    WARN = "WARN"
-    OK = "OK"
-
-
 def kill_switch_state(
     n_closed: int,
     expectancy_r: float,
@@ -284,9 +286,7 @@ def check_validation_metrics(
 
     if n_oos < validation.min_oos_trades:
         conclusive = False
-        reasons.append(
-            f"trades fuera de muestra {n_oos} < {validation.min_oos_trades}: no concluyente"
-        )
+        reasons.append(f"trades fuera de muestra {n_oos} < {validation.min_oos_trades}: no concluyente")
 
     required = 0.25 if bias_not_corrected else 0.15
     if oos_expectancy <= required:

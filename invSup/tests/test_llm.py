@@ -286,7 +286,9 @@ def test_tope_de_busquedas_por_consulta(monkeypatch) -> None:
 
     def replies(n: int) -> dict[str, object]:
         if n <= 2:  # dos busquedas por ronda; la tercera peticion ya es el cierre forzado
-            return {"choices": [{"message": {"role": "assistant", "tool_calls": [tool_call(2 * n), tool_call(2 * n + 1)]}}]}
+            return {
+                "choices": [{"message": {"role": "assistant", "tool_calls": [tool_call(2 * n), tool_call(2 * n + 1)]}}]
+            }
         return {"choices": [{"message": {"content": json.dumps(_payload())}}]}
 
     cls, sent = _client_capturing(monkeypatch, replies)

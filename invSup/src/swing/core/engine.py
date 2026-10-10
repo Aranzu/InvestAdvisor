@@ -37,10 +37,10 @@ from swing.core.indicators import (
     sma,
 )
 from swing.core.market import PriceSeries
-from swing.core.metrics import KillState
 from swing.core.models import (
     BrokerConfig,
     HorizonState,
+    KillState,
     RegimeState,
     Rejected,
     StrategyConfig,
@@ -75,6 +75,19 @@ from swing.core.stops import (
 
 #: Ventana de la SMA200 para la pendiente (seccion 5.2, puerta G1).
 SMA200_SLOPE_DAYS = 20
+
+#: Ventanas de los indicadores por ticker (secciones 5.2 y 5.3). Son fijas por
+#: playbook, no parametros de config: si cambian, cambia la estrategia.
+SMA200_PERIOD = 200
+SMA50_PERIOD = 50
+SMA20_PERIOD = 20
+HIGH20_PERIOD = 20
+AVG_VOL20_PERIOD = 20
+ADV_PERIOD = 50
+SESSIONS_52_WEEKS = 252
+
+#: Tolerancia "cerca de la SMA20" del setup pullback (seccion 5.3), en ATR.
+NEAR_SMA20_ATR = 0.5
 
 #: Meseta de confirmacion de volumen del setup pullback (seccion 5.3).
 SETUP_MIN_VOLUME_RATIO = 1.2
@@ -131,17 +144,17 @@ class IndicatorFrame:
             high=highs,
             low=lows,
             volume=volumes,
-            sma200=sma(closes, 200),
-            sma50=sma(closes, 50),
-            sma20=sma(closes, 20),
+            sma200=sma(closes, SMA200_PERIOD),
+            sma50=sma(closes, SMA50_PERIOD),
+            sma20=sma(closes, SMA20_PERIOD),
             atr=atr(highs, lows, closes, stops.atr_period),
             rsi=rsi(closes, stops.atr_period),
             swing_low10=lowest(lows, stops.swing_low_days),
-            high20=highest(highs, 20),
-            low52=lowest(lows, 252),
-            high52=highest(highs, 252),
-            adv_usd=sma(closes * volumes, 50),
-            avg_vol20=sma(volumes, 20),
+            high20=highest(highs, HIGH20_PERIOD),
+            low52=lowest(lows, SESSIONS_52_WEEKS),
+            high52=highest(highs, SESSIONS_52_WEEKS),
+            adv_usd=sma(closes * volumes, ADV_PERIOD),
+            avg_vol20=sma(volumes, AVG_VOL20_PERIOD),
         )
 
     @property
@@ -243,6 +256,7 @@ def relative_strength_percentiles(
     n = len(ordered)
     out: dict[str, float] = {}
     import bisect
+
     for ticker, ret in values.items():
         count = bisect.bisect_right(ordered, ret)
         out[ticker] = count / n * 100.0
@@ -408,7 +422,9 @@ def decide(
     calendar_ctx = calendar
 
     # --- Regime (seccion 5.1) ---
-    regime = evaluate_regime(snapshot.spy_close or 0.0, snapshot.spy_sma200 or 0.0, snapshot.vix or 0.0, strategy.regime.vix_max)
+    regime = evaluate_regime(
+        snapshot.spy_close or 0.0, snapshot.spy_sma200 or 0.0, snapshot.vix or 0.0, strategy.regime.vix_max
+    )
     regime_caution = regime is RegimeState.HALF
     horizon = horizon_state(snapshot.today, strategy.horizon)
     limits = PortfolioLimits.from_config(strategy.risk)
@@ -446,7 +462,9 @@ def decide(
     candidates: list[CandidateOutcome] = []
     deferrals: list[EntrySignal] = []
     gate_rejection = gate_entries(regime)
-    allow_entries = gate_rejection is None and kill is not KillState.DEFENSIVE and horizon is not HorizonState.NO_ENTRIES
+    allow_entries = (
+        gate_rejection is None and kill is not KillState.DEFENSIVE and horizon is not HorizonState.NO_ENTRIES
+    )
     if kill is KillState.DEFENSIVE:
         alerts.append(Alert(reason=Reason.KILL_SWITCH, detail="modo defensivo: sin entradas nuevas"))
     if horizon is HorizonState.NO_ENTRIES:
@@ -499,7 +517,9 @@ def decide(
                 CandidateOutcome(
                     ticker=ticker,
                     theme=_theme_of(ticker, themes),
-                    rejections=(Rejected(reason=Reason.INDICATOR_NOT_READY, detail="cierre de la sesion sin indicadores"),),
+                    rejections=(
+                        Rejected(reason=Reason.INDICATOR_NOT_READY, detail="cierre de la sesion sin indicadores"),
+                    ),
                 )
             )
             continue
@@ -517,7 +537,9 @@ def decide(
                 CandidateOutcome(
                     ticker=ticker,
                     theme=_theme_of(ticker, themes),
-                    rejections=(Rejected(reason=Reason.INDICATOR_NOT_READY, detail="indicadores de tendencia incompletos"),),
+                    rejections=(
+                        Rejected(reason=Reason.INDICATOR_NOT_READY, detail="indicadores de tendencia incompletos"),
+                    ),
                 )
             )
             continue
@@ -530,7 +552,9 @@ def decide(
             high_52w=latest.high52,
             low_52w=latest.low52,
             avg_dollar_volume=None if latest.adv_usd is None else max(latest.adv_usd, 0.0),
-            days_to_earnings=_days_to_earnings(calendar_ctx, snapshot.today, snapshot.earnings.get(ticker)) if snapshot.earnings else None,
+            days_to_earnings=_days_to_earnings(calendar_ctx, snapshot.today, snapshot.earnings.get(ticker))
+            if snapshot.earnings
+            else None,
             earnings_source_available=bool(snapshot.earnings),
         )
         if not earnings_source_available:
@@ -547,7 +571,9 @@ def decide(
             )
         gate_res = check_gates(gate_inputs, gate_thresholds, universe_size)
         if not gate_res.passes:
-            candidates.append(CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=gate_res.rejections))
+            candidates.append(
+                CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=gate_res.rejections)
+            )
             continue
         rejections.extend(gate_res.rejections)
 
@@ -558,7 +584,9 @@ def decide(
             continue
 
         # --- Enfriamiento de re-entrada (seccion 5.7) ---
-        if in_reentry_cooldown(last_exit.get(ticker), snapshot.today, calendar_ctx, strategy.exits.reentry_cooldown_days):
+        if in_reentry_cooldown(
+            last_exit.get(ticker), snapshot.today, calendar_ctx, strategy.exits.reentry_cooldown_days
+        ):
             candidates.append(
                 CandidateOutcome(
                     ticker=ticker,
@@ -573,7 +601,9 @@ def decide(
                 CandidateOutcome(
                     ticker=ticker,
                     theme=_theme_of(ticker, themes),
-                    rejections=(Rejected(reason=_no_entries_reason(regime, kill, horizon), detail="sin entradas esta noche"),),
+                    rejections=(
+                        Rejected(reason=_no_entries_reason(regime, kill, horizon), detail="sin entradas esta noche"),
+                    ),
                 )
             )
             continue
@@ -581,7 +611,17 @@ def decide(
         # --- Stop y R (seccion 5.4) ---
         limit_price = setup.trigger_price
         if signal_features.atr is None or signal_features.swing_low10 is None or limit_price <= 0.0:
-            candidates.append(CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=(Rejected(reason=Reason.INDICATOR_NOT_READY, detail="ATR, swing_low10 o precio limite invalidos"),)))
+            candidates.append(
+                CandidateOutcome(
+                    ticker=ticker,
+                    theme=_theme_of(ticker, themes),
+                    rejections=(
+                        Rejected(
+                            reason=Reason.INDICATOR_NOT_READY, detail="ATR, swing_low10 o precio limite invalidos"
+                        ),
+                    ),
+                )
+            )
             continue
         stop_result = initial_stop(
             limit_price=limit_price,
@@ -592,19 +632,25 @@ def decide(
             max_stop_distance_pct=strategy.risk.max_stop_distance_pct,
         )
         if isinstance(stop_result, Rejected):
-            candidates.append(CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=(stop_result,)))
+            candidates.append(
+                CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=(stop_result,))
+            )
             continue
         assert isinstance(stop_result, InitialStop)
         stop = stop_result
 
         # --- Costo de ida y vuelta (seccion 5.6) ---
         tp1 = next((t for t in strategy.exits.tranches if t.tp_r is not None), None)
-        if tp1 is not None and tp1.tp_r is not None and not tp1_covers_costs(
-            stop.risk_per_share,
-            limit_price,
-            float(tp1.tp_r),
-            strategy.costs.round_trip_fx_cost_pct,
-            strategy.exits.min_tp1_cost_multiple,
+        if (
+            tp1 is not None
+            and tp1.tp_r is not None
+            and not tp1_covers_costs(
+                stop.risk_per_share,
+                limit_price,
+                float(tp1.tp_r),
+                strategy.costs.round_trip_fx_cost_pct,
+                strategy.exits.min_tp1_cost_multiple,
+            )
         ):
             candidates.append(
                 CandidateOutcome(
@@ -626,7 +672,9 @@ def decide(
         # --- Reglas de cartera (secciones 5.5 y 5.8) ---
         decision = evaluate_entry(state, limits, ticker, _theme_of(ticker, themes))
         if not decision.allowed:
-            candidates.append(CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=decision.rejections))
+            candidates.append(
+                CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=decision.rejections)
+            )
             continue
 
         risk_distance = risk_distance_with_buffer(
@@ -656,7 +704,9 @@ def decide(
 
         final = evaluate_entry(state, limits, ticker, _theme_of(ticker, themes), sized.notional_clp)
         if not final.allowed:
-            candidates.append(CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=final.rejections))
+            candidates.append(
+                CandidateOutcome(ticker=ticker, theme=_theme_of(ticker, themes), rejections=final.rejections)
+            )
             continue
 
         entries.append(
@@ -739,11 +789,18 @@ def _detect_setup(
     cfg = strategy.setups.pullback
     if signal.high20 is None or signal.close is None or signal.atr is None:
         return Rejected(reason=Reason.INDICATOR_NOT_READY, detail="indicadores del setup incompletos")
+    if signal.high20 <= 0.0:
+        return Rejected(reason=Reason.INDICATOR_NOT_READY, detail="high20 no positivo")
     drop = (signal.high20 - signal.close) / signal.high20 * 100.0
     in_range = cfg.drop_pct[0] <= drop <= cfg.drop_pct[1]
     between = _between_ma(signal) or _near_sma20(signal)
     rsi_ok = signal.rsi is not None and cfg.rsi[0] <= signal.rsi <= cfg.rsi[1]
-    confirm = latest.close is not None and signal.high is not None and latest.close > signal.high
+    if latest.close is None:
+        confirm = False
+    elif cfg.confirm_prior_high:
+        confirm = signal.high is not None and latest.close > signal.high
+    else:
+        confirm = latest.close > signal.close
     if not (in_range and between and rsi_ok and confirm):
         return Rejected(reason=Reason.NO_SETUP, detail="pullback sin confirmacion en la sesion 2")
 
@@ -776,7 +833,7 @@ def _near_sma20(signal: TickerFeatures) -> bool:
     """O a <= 0,5 ATR de la SMA20, la alternativa que deja entrar retrocesos pequenos."""
     if signal.sma20 is None or signal.close is None or signal.atr is None:
         return False
-    return abs(signal.close - signal.sma20) <= 0.5 * signal.atr
+    return abs(signal.close - signal.sma20) <= NEAR_SMA20_ATR * signal.atr
 
 
 def _regime_detail(regime: RegimeState, risk_pct: float) -> str:
@@ -808,7 +865,9 @@ def _portfolio_alerts(state: PortfolioState, limits: PortfolioLimits) -> tuple[A
     out: list[Alert] = []
     heat = compute_heat(state, limits)
     if heat.heat_pct >= limits.max_heat_pct:
-        out.append(Alert(reason=Reason.HEAT_LIMIT, detail=f"heat {heat.heat_pct:.2f} % al tope {limits.max_heat_pct:.0f} %"))
+        out.append(
+            Alert(reason=Reason.HEAT_LIMIT, detail=f"heat {heat.heat_pct:.2f} % al tope {limits.max_heat_pct:.0f} %")
+        )
     if is_monthly_loss_blocked(state, limits):
         loss = monthly_loss_pct(state) or 0.0
         out.append(Alert(reason=Reason.MONTHLY_LOSS_LIMIT, detail=f"mes en {loss:.2f} %"))
@@ -840,10 +899,7 @@ def trade_after_fill(
     """
     if fill_price <= 0.0 or stop_target >= fill_price:
         raise ValueError(f"{ticker}: relleno {fill_price} invalido contra stop {stop_target}")
-    states = tuple(
-        TrancheState(name=t.name, volume=t.volume, tp_r=t.tp_r)
-        for t in tranches
-    )
+    states = tuple(TrancheState(name=t.name, volume=t.volume, tp_r=t.tp_r) for t in tranches)
     return TradeState(
         ticker=ticker,
         entry_price=fill_price,
@@ -862,12 +918,19 @@ def trade_after_fill(
     )
 
 
-def roll_trade(trade: TradeState, frame: IndicatorFrame, idx: int) -> TradeState:
+def roll_trade(
+    trade: TradeState,
+    frame: IndicatorFrame,
+    idx: int,
+    *,
+    lookback_days: int = 22,
+) -> TradeState:
     """Avanza una posicion una sesion: cierre, ATR, Chandelier y progreso.
 
     El stop no se toca aqui: solo las salidas (regla 6, RAISE_STOP) lo suben.
-    ``highest_n`` es el maximo de ``runner_trail.lookback_days`` (22) ruedas,
-    que es la ventana del Chandelier; el ``days_open`` cuenta de a una sesion.
+    ``highest_n`` es el maximo de ``runner_trail.lookback_days`` ruedas, que es la
+    ventana del Chandelier; el ``days_open`` cuenta de a una sesion. ``lookback_days``
+    lo pasa el llamador desde ``strategy.exits.runner_trail.lookback_days``.
     """
     if not 0 <= idx < frame.n:
         return trade
@@ -875,7 +938,7 @@ def roll_trade(trade: TradeState, frame: IndicatorFrame, idx: int) -> TradeState
     atr_v = _num_or(_num(frame.atr.iloc[idx]), trade.atr)
     highest_v = trade.highest_n
     if trade.days_open >= 0:
-        start = max(0, idx - 22 + 1)
+        start = max(0, idx - lookback_days + 1)
         window = frame.high.iloc[start : idx + 1]
         if len(window) > 0 and window.notna().any():
             highest_v = max(trade.highest_n, float(window.max()))

@@ -10,10 +10,10 @@ resultados sobre datos reales.
 
 | Archivo | Que es |
 |---|---|
-| `src/swing/backtest/simulator.py` | `run_backtest`, `_Simulator`, `BacktestRun`, `NightStub`, `EquityPoint`, `SimOptions`. Simulador diario noche por noche. |
-| `src/swing/backtest/validation.py` | `validate_run`, `random_entrance_percentile`, `ValidationReport.render_markdown`. Puerta de la seccion 11.3. |
-| `src/swing/backtest/__init__.py` | Exports publicos: `run_backtest`, `validate_run`, `BacktestRun`, `SimOptions`, `NightStub`, `ValidationReport`. |
-| `tests/test_backtest.py` | Harness de datos sinteticos deterministas + 5 tests del ciclo completo. |
+| `legacy/backtest/simulator.py` | `run_backtest`, `_Simulator`, `BacktestRun`, `NightStub`, `EquityPoint`, `SimOptions`. Simulador diario noche por noche. |
+| `legacy/backtest/validation.py` | `validate_run`, `random_entrance_percentile`, `ValidationReport.render_markdown`. Puerta de la seccion 11.3. |
+| `legacy/backtest/__init__.py` | Exports publicos: `run_backtest`, `validate_run`, `BacktestRun`, `SimOptions`, `NightStub`, `ValidationReport`. |
+| `legacy/tests/test_backtest.py` | Harness de datos sinteticos deterministas + 5 tests del ciclo completo. |
 
 Punto central: el backtest **no decide por su cuenta**. `_Simulator` construye
 el snapshot de cada noche y llama `decide` de `swing.core.engine`, el mismo
@@ -46,7 +46,7 @@ Veredictos probados en el harness:
 - Corrida fabricada (160 trades, R=0.5) sobre un universo en caida -> percentil
   aleatorio 100, `APROBADO CON SESGO NO CORREGIDO`.
 
-## Harness de datos (tests/test_backtest.py)
+## Harness de datos (legacy/tests/test_backtest.py)
 
 Cada ticker fabrica una serie determinista (solo dias habiles) con la forma que
 la estrategia asume para una entrada:
@@ -100,12 +100,13 @@ una fecha.
 cd C:\repo\invSup
 $env:PYTHONPATH="src"
 
-python -m pytest -q                                      # 279 passed, 1 skipped
+python -m pytest -q                                      # suite del paquete (tests/)
 python -m ruff check src tests                          # All checks passed
-python -m mypy src                                      # Success: 28 source files
+python -m mypy src                                      # Success
 ```
 
-Estado de referencia: **279 passed / 1 skip; ruff y mypy estrictos en verde.**
+Los tests del backtest viven en `legacy/tests/` y no corren en la suite normal
+(``legacy`` esta fuera de ``testpaths``); se corren aparte con `PYTHONPATH`.
 
 ## Limites del harness (leer antes de extrapolar)
 

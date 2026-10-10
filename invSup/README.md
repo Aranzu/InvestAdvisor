@@ -157,7 +157,7 @@ ticker), aplica el prefiltro de tendencia/rango de 52 semanas/liquidez/precio, b
 `fundamentals:` y `screener:` de `strategy.yaml`); deja los mejores en
 `state/candidates.json`.
 
-`screen` (y su alias `discover`) acepta `--universe sp500|watchlist`:
+`screen` (y su alias `discover`) acepta `--breadth sp500|watchlist`:
 
 - `sp500` (por defecto): el índice vivo, cacheado en `cache/universe/sp500.json`; sin red
   usa la copia.

@@ -250,9 +250,7 @@ def analyze(
             no_price.append(position.ticker)
         sessions_open = calendar.sessions_between(position.open_date, market.today)
         earnings_sessions = (
-            sessions_to_earnings(calendar, market.today, quote.earnings_date)
-            if quote.earnings_known
-            else None
+            sessions_to_earnings(calendar, market.today, quote.earnings_date) if quote.earnings_known else None
         )
         views.append(
             PositionView(
@@ -302,7 +300,7 @@ def analyze(
         PositionExposure(
             ticker=view.ticker,
             theme=view.theme,
-            cost_clp=view.value_clp,
+            cost_clp=view.cost_clp,
             stop_clp=view.stop_usd * fx if (view.stop_usd is not None and fx is not None) else 0.0,
             volume=view.volume,
             rs_percentile=rs.get(view.ticker) if rs else None,
@@ -317,17 +315,14 @@ def analyze(
     actions = _actions(views, findings, trims, strategy, limits, weights)
     limitations = list(_limitations(views, unknown_earnings, no_price, weights, rs, state, limits))
     if fx is None:
-        limitations.insert(
-            0, "sin FX convertible a CLP en el reporte: posiciones valuadas al valor reportado"
-        )
+        limitations.insert(0, "sin FX convertible a CLP en el reporte: posiciones valuadas al valor reportado")
     notes = _notes(weights, fx_effect_sum, pl_sum, cash, equity)
 
     # Veredicto de hoy por posicion (mantener / editar stop / vender): se deriva
     # de las acciones ya ordenadas por precedencia, no se inventa una recomendacion.
     verdict = _verdicts(views, actions)
     positions = tuple(
-        replace(view, verdict=verdict[view.ticker][0], verdict_reason=verdict[view.ticker][1])
-        for view in views
+        replace(view, verdict=verdict[view.ticker][0], verdict_reason=verdict[view.ticker][1]) for view in views
     )
 
     return Analysis(
@@ -389,8 +384,7 @@ def _findings(
                 Rejected(
                     reason=Reason.MAX_HOLD,
                     detail=(
-                        f"{view.ticker}: {view.sessions_open} sesiones abiertas, "
-                        f"tope {strategy.exits.max_hold_days}"
+                        f"{view.ticker}: {view.sessions_open} sesiones abiertas, tope {strategy.exits.max_hold_days}"
                     ),
                 )
             )
@@ -491,9 +485,7 @@ def _actions(
         elif finding.reason is Reason.MAX_HOLD:
             ticker = finding.detail.split(":", 1)[0]
             actions.append(
-                SuggestedAction(
-                    action=Action.SELL, ticker=ticker, detail=f"salir del remanente ({finding.detail})"
-                )
+                SuggestedAction(action=Action.SELL, ticker=ticker, detail=f"salir del remanente ({finding.detail})")
             )
         elif finding.reason is Reason.POSITION_LIMIT:
             ticker = finding.detail.split(":", 1)[0]
@@ -512,9 +504,7 @@ def _actions(
 #: Veredictos posibles de una posicion esta noche. ``VENDER`` gana sobre
 #: ``EDITAR STOP`` (si hay que vender, el stop no es la recomendacion principal),
 #: y ``MANTENER`` es el default honesto: sin accion no se inventa un motivo.
-def _verdicts(
-    views: list[PositionView], actions: list[SuggestedAction]
-) -> dict[str, tuple[str, str]]:
+def _verdicts(views: list[PositionView], actions: list[SuggestedAction]) -> dict[str, tuple[str, str]]:
     """Veredicto por ticker a partir de las acciones ya ordenadas por precedencia."""
     by_ticker: dict[str, list[SuggestedAction]] = {}
     for action in actions:
@@ -559,12 +549,12 @@ def _limitations(
 ) -> list[str]:
     limitations: list[str] = ["perdida mensual no evaluable: no hay equity de inicio de mes en el reporte"]
     if any(view.stop_usd is None for view in views):
-        limitations.append(
-            "heat no medible: hay posicion(es) sin Sell Stop; el tope de heat del spec asume stop"
-        )
+        limitations.append("heat no medible: hay posicion(es) sin Sell Stop; el tope de heat del spec asume stop")
     if unknown_earnings:
         limitations.append(
-            "earnings sin dato para " + ", ".join(sorted(set(unknown_earnings))) + ": EARNINGS_DERISK no evaluable para ellos"
+            "earnings sin dato para "
+            + ", ".join(sorted(set(unknown_earnings)))
+            + ": EARNINGS_DERISK no evaluable para ellos"
         )
     if no_price:
         limitations.append(
@@ -573,7 +563,9 @@ def _limitations(
     if not rs and views:
         limitations.append("sin percentil de fuerza relativa: un CAP_TRIM quedaria a ciegas (pasar --rs)")
     if not weights and views:
-        limitations.append("todos los tickers sin tema declarado o sector conocido: la concentracion por tema esta vacia")
+        limitations.append(
+            "todos los tickers sin tema declarado o sector conocido: la concentracion por tema esta vacia"
+        )
     return limitations
 
 
@@ -601,8 +593,7 @@ def render_markdown(analysis: Analysis) -> str:
     lines.append(f"# Analisis de posiciones - cuenta {analysis.account}")
     lines.append("")
     lines.append(
-        f"Generado {analysis.today} - modalidad {analysis.mode} - "
-        f"FX {_fmt_fx(analysis.fx)} ({analysis.fx_source})"
+        f"Generado {analysis.today} - modalidad {analysis.mode} - FX {_fmt_fx(analysis.fx)} ({analysis.fx_source})"
     )
     lines.append("")
     lines.append("## Cuenta")
@@ -668,13 +659,9 @@ def render_markdown(analysis: Analysis) -> str:
             f"expectancia {closed.expectancy_clp:,.0f} CLP - total {closed.total_clp:,.0f} CLP"
         )
         lines.append("")
-        lines.append(
-            "Mejores: " + "; ".join(f"{ticker} {pl:,.0f}" for ticker, pl in closed.top_winners) + "."
-        )
+        lines.append("Mejores: " + "; ".join(f"{ticker} {pl:,.0f}" for ticker, pl in closed.top_winners) + ".")
         if closed.top_losers:
-            lines.append(
-                "Peores: " + "; ".join(f"{ticker} {pl:,.0f}" for ticker, pl in closed.top_losers) + "."
-            )
+            lines.append("Peores: " + "; ".join(f"{ticker} {pl:,.0f}" for ticker, pl in closed.top_losers) + ".")
         if closed.avg_hold_sessions is not None:
             lines.append(f"Permanencia media: {closed.avg_hold_sessions:.0f} sesiones.")
 

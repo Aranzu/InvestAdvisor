@@ -68,6 +68,18 @@ class HorizonState(StrEnum):
     NO_ENTRIES = "no_entries"
 
 
+class KillState(StrEnum):
+    """Estado del kill switch (spec v3.1 seccion 13): defensivo, aviso o normal.
+
+    Vive en ``models`` y no en ``metrics`` porque el motor lo consume; las metricas
+    que lo calculan son del arnes de backtest.
+    """
+
+    DEFENSIVE = "DEFENSIVE"
+    WARN = "WARN"
+    OK = "OK"
+
+
 class EarningsPolicy(StrEnum):
     EXIT_UNLOCKED = "exit_unlocked"
 

@@ -56,7 +56,9 @@ def test_dictamina_vender_o_mantener_por_regla() -> None:
         evaluation=ExitEvaluation(
             signals=(
                 ExitSignal(cause=Reason.MAX_HOLD, action=Action.SELL, execute=True, volume=10.0, detail="tope"),
-                ExitSignal(cause=Reason.RAISE_STOP, action=Action.EDIT_STOP, suppressed_by=Reason.MAX_HOLD, detail="breakeven"),
+                ExitSignal(
+                    cause=Reason.RAISE_STOP, action=Action.EDIT_STOP, suppressed_by=Reason.MAX_HOLD, detail="breakeven"
+                ),
             ),
             primary_cause=Reason.MAX_HOLD,
             should_exit=True,

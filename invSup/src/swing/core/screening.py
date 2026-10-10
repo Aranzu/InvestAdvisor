@@ -154,7 +154,8 @@ def check_gates(t: GateInputs, th: GateThresholds, universe_size: int) -> GateRe
         )
     elif t.days_to_earnings is None:
         out.add(Rejected(reason=Reason.INDICATOR_NOT_READY, detail="calendario de earnings no disponible"))
-    elif 0 <= t.days_to_earnings <= th.earnings_entry_blackout_sessions:
+    elif t.days_to_earnings <= th.earnings_entry_blackout_sessions:
+        # dias <= 0 (reporte ya pasado o fecha rancia) tambien se rechazan: fail-closed.
         out.add(
             Rejected(
                 reason=Reason.EARNINGS_NEAR,
@@ -163,7 +164,9 @@ def check_gates(t: GateInputs, th: GateThresholds, universe_size: int) -> GateRe
         )
 
     if t.close < th.min_price:
-        out.add(Rejected(reason=Reason.PRICE_BELOW_FLOOR, detail=f"precio {t.close:.2f} bajo el piso {th.min_price:.2f}"))
+        out.add(
+            Rejected(reason=Reason.PRICE_BELOW_FLOOR, detail=f"precio {t.close:.2f} bajo el piso {th.min_price:.2f}")
+        )
 
     return out
 

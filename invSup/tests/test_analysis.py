@@ -198,12 +198,15 @@ def test_tema_sobre_el_tope() -> None:
 
 def test_cap_trim_cuando_el_tema_explota() -> None:
     lots = (
-        lot("AAA", volume=100.0, value_clp=6_000_000.0, profit_clp=0.0, open_price=100.0,
-            price_usd=110.0, stop_usd=95.0),
-        lot("BBB", volume=100.0, value_clp=6_000_000.0, profit_clp=0.0, open_price=100.0,
-            price_usd=110.0, stop_usd=95.0),
-        lot("CCC", volume=100.0, value_clp=6_000_000.0, profit_clp=0.0, open_price=100.0,
-            price_usd=110.0, stop_usd=95.0),
+        lot(
+            "AAA", volume=100.0, value_clp=6_000_000.0, profit_clp=0.0, open_price=100.0, price_usd=110.0, stop_usd=95.0
+        ),
+        lot(
+            "BBB", volume=100.0, value_clp=6_000_000.0, profit_clp=0.0, open_price=100.0, price_usd=110.0, stop_usd=95.0
+        ),
+        lot(
+            "CCC", volume=100.0, value_clp=6_000_000.0, profit_clp=0.0, open_price=100.0, price_usd=110.0, stop_usd=95.0
+        ),
     )
     themes = {**THEMES, "AAA": "tema", "BBB": "tema", "CCC": "tema"}
     escenario = Scenario(lots=lots, balance=10_000_000.0)
@@ -254,17 +257,18 @@ def test_recomendacion_mantener_editar_stop_y_vender() -> None:
 
 
 def test_recomendacion_trim_a_ciegas_es_revisar_no_vender() -> None:
-    # Tema sobre el disparador del trim (35 %) pero cada ticker bajo el 10 % y sin
-    # fuerza relativa: no se vende a ciegas, se pide el dato.
+    # Tema sobre el disparador del trim (35 %, medido sobre el costo como el motor)
+    # pero cada ticker bajo el 10 % y sin fuerza relativa: no se vende a ciegas,
+    # se pide el dato. Costo 4 x 9.000.000 = 36.000.000 sobre equity 100.000.000.
     lots = (
-        lot("AAA", volume=100.0, stop_usd=95.0),
-        lot("BBB", volume=100.0, stop_usd=95.0),
-        lot("CCC", volume=100.0, stop_usd=95.0),
-        lot("DDD", volume=100.0, stop_usd=95.0),
+        lot("AAA", volume=100.0, value_clp=9_900_000.0, profit_clp=900_000.0, stop_usd=95.0),
+        lot("BBB", volume=100.0, value_clp=9_900_000.0, profit_clp=900_000.0, stop_usd=95.0),
+        lot("CCC", volume=100.0, value_clp=9_900_000.0, profit_clp=900_000.0, stop_usd=95.0),
+        lot("DDD", volume=100.0, value_clp=9_900_000.0, profit_clp=900_000.0, stop_usd=95.0),
     )
     themes = {**THEMES, "AAA": "tema", "BBB": "tema", "CCC": "tema", "DDD": "tema"}
     market = Market(today=TODAY, fx=900.0, fx_source="tax")
-    analysis = run(Scenario(lots=lots, balance=65_400_000.0), market, themes=themes)
+    analysis = run(Scenario(lots=lots, balance=60_400_000.0), market, themes=themes)
     verdicts = {view.verdict for view in analysis.positions}
     assert "VENDER" not in verdicts
     assert "REVISAR" in verdicts

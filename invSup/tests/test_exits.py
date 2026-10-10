@@ -173,6 +173,12 @@ def test_stop_distinto_se_corrige_hacia_arriba() -> None:
     assert out.stop_target == 95.0
 
 
+def test_un_stop_objetivo_no_positivo_no_revienta() -> None:
+    # Un stop 0 no es un precio: no se mide deriva ni se corrige a ciegas.
+    out = evaluate_exits(trade(stop=0.0, broker_stop=88.0), ctx())
+    assert Reason.STOP_MISMATCH not in out.reasons
+
+
 def test_un_stop_mas_alto_en_el_broker_no_se_baja() -> None:
     # Regla de oro: un stop nunca baja. El motor informa, no edita.
     out = evaluate_exits(trade(stop=95.0, broker_stop=100.0), ctx())

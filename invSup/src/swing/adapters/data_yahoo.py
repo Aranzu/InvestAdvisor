@@ -23,6 +23,7 @@ devuelve ``EarningsInfo`` con ``confirmed=False`` y el motor marca ``DATA_GAP`` 
 from __future__ import annotations
 
 import datetime as dt
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +51,15 @@ EARNINGS_LIMIT = 12
 #: Dias hacia atras que se piden por defecto. 260 sesiones cubren la SMA200 con
 #: pendiente, la puerta de 52 semanas y el Chandelier de 22 ruedas.
 DEFAULT_LOOKBACK_DAYS = 400
+
+#: Reintentos y backoff de la descarga de precios. Yahoo devuelve fallos transitorios
+#: (429, timeouts) que no deben traducirse en un ``DATA_GAP`` de un ticker sano.
+NETWORK_RETRIES = 3
+NETWORK_BACKOFF_S = 0.5
+
+#: Timeout por peticion a Yahoo. Sin esto, un socket colgado deja la corrida nocturna
+#: esperando indefinidamente.
+YF_TIMEOUT_S = 20.0
 
 
 class DataUnavailable(RuntimeError):
@@ -88,24 +98,35 @@ def to_yahoo_symbol(ticker: str) -> str:
 
 
 def _yfinance_bars(request: FetchRequest) -> pd.DataFrame:
-    """Descarga velas crudas. Es el unico punto del proyecto que toca la red de precios."""
+    """Descarga velas crudas. Es el unico punto del proyecto que toca la red de precios.
+
+    Reintenta con backoff ante fallos transitorios y, si no lo logra, levanta
+    ``DataUnavailable``: un problema de red es "sin dato", no un traceback abierto.
+    """
     import yfinance as yf
 
-    frame = yf.Ticker(request.symbol).history(
-        start=request.start.isoformat(),
-        end=(request.end + dt.timedelta(days=1)).isoformat(),  # yfinance es exclusivo en end
-        auto_adjust=False,
-        actions=False,
-        raise_errors=False,
-    )
-    return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+    last_exc: Exception | None = None
+    for attempt in range(NETWORK_RETRIES):
+        try:
+            frame = yf.Ticker(request.symbol).history(
+                start=request.start.isoformat(),
+                end=(request.end + dt.timedelta(days=1)).isoformat(),  # yfinance es exclusivo en end
+                auto_adjust=False,
+                actions=False,
+                raise_errors=False,
+                timeout=YF_TIMEOUT_S,
+            )
+            return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+        except Exception as exc:  # yfinance/requests no exponen una jerarquia estable
+            last_exc = exc
+            if attempt + 1 < NETWORK_RETRIES:
+                time.sleep(NETWORK_BACKOFF_S * (2**attempt))
+    raise DataUnavailable(f"{request.symbol}: fallo de red tras {NETWORK_RETRIES} intentos: {last_exc}") from last_exc
 
 
 def _offline_bars(request: FetchRequest) -> pd.DataFrame:
     """Fetcher que nunca toca la red: lo que falte en cache es ``DataUnavailable``."""
-    raise DataUnavailable(
-        f"offline: {request.symbol} no esta en cache/bars ({request.start} a {request.end})"
-    )
+    raise DataUnavailable(f"offline: {request.symbol} no esta en cache/bars ({request.start} a {request.end})")
 
 
 def _yfinance_earnings(symbol: str, limit: int) -> pd.DataFrame | None:
@@ -210,7 +231,7 @@ class YahooDataProvider:
         cached = self.cache.read(symbol)
         pending = self.cache.missing_range(cached, start, end)
         if pending is not None:
-            fetched = frame_to_series(symbol, self._bars_fetcher(FetchRequest(symbol, *pending)))
+            fetched = self._fetch(FetchRequest(symbol, *pending))
             self.cache.write(symbol, self.cache.merge(symbol, cached, fetched))
         return self.cache.read(symbol).slice(start, end)
 
@@ -232,10 +253,25 @@ class YahooDataProvider:
         cached = self.cache.read(symbol)
         pending = self.cache.missing_range(cached, on - dt.timedelta(days=10), on)
         if pending is not None:
-            fetched = frame_to_series(symbol, self._bars_fetcher(FetchRequest(symbol, *pending)))
+            fetched = self._fetch(FetchRequest(symbol, *pending))
             self.cache.write(symbol, self.cache.merge(symbol, cached, fetched))
         series = self.cache.read(symbol).slice(end=on)
         return series.last_close
+
+    def _fetch(self, request: FetchRequest) -> PriceSeries:
+        """Descarga y normaliza un rango, declarando el fallo en vez de propagarlo crudo.
+
+        Cualquier error del fetcher (red, formato del proveedor) es un ``DataUnavailable``:
+        el llamador ya lo trata como "ticker sin dato". ``frame_to_series`` puede levantar
+        ``ValueError`` por una vela incoherente, y eso si es un error de dato que sube tal cual.
+        """
+        try:
+            frame = self._bars_fetcher(request)
+        except DataUnavailable:
+            raise
+        except Exception as exc:
+            raise DataUnavailable(f"{request.symbol}: fallo al descargar velas: {exc}") from exc
+        return frame_to_series(request.symbol, frame)
 
 
 def provider_from_project(cache_dir: Path | None = None, *, offline: bool = False) -> YahooDataProvider:

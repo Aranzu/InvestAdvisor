@@ -17,7 +17,7 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -26,6 +26,12 @@ TAVILY_URL = "https://api.tavily.com/search"
 
 #: Archivo local de respaldo para la clave. No se versiona (ver ``.gitignore``).
 SECRETS_FILE = Path(__file__).resolve().parents[3] / ".secrets" / "tavily_api_key.txt"
+
+#: Tope de caracteres por resultado. El contenido de la web es entrada **no confiable**:
+#: recortarlo acota el espacio donde puede venir una inyeccion de prompt y evita inflar
+#: la peticion al modelo con paginas enteras.
+MAX_CONTENT_CHARS = 2000
+MAX_TITLE_CHARS = 300
 
 
 class SearchError(RuntimeError):
@@ -88,7 +94,7 @@ def _default_transport(payload: dict[str, object]) -> dict[str, object]:
 class TavilySearch:
     """Cliente de Tavily. ``topic=news`` prioriza resultados recientes."""
 
-    api_key: str
+    api_key: str = field(repr=False)
     max_results: int = 5
     topic: str = "news"
     days: int = 14
@@ -115,13 +121,25 @@ class TavilySearch:
             published = item.get("published_date")
             out.append(
                 SearchResult(
-                    title=str(item.get("title", "")),
+                    title=_clip(str(item.get("title", "")), MAX_TITLE_CHARS),
                     url=str(item.get("url", "")),
-                    content=str(item.get("content", "")),
+                    content=_clip(str(item.get("content", "")), MAX_CONTENT_CHARS),
                     published=str(published) if published else None,
                 )
             )
         return out
+
+
+def _clip(text: str, limit: int) -> str:
+    """Normaliza espacios y recorta a ``limit`` caracteres, marcando el corte.
+
+    Colapsar los espacios en blanco quita el margen donde suele esconderse una
+    instruccion inyectada (saltos de linea y bloques "de sistema" aparentes).
+    """
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rstrip() + "..."
 
 
 def search_from_env(*, transport: Transport | None = None) -> TavilySearch | None:

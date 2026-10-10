@@ -43,7 +43,9 @@ class Bar:
 
     def __post_init__(self) -> None:
         if self.open <= 0.0 or self.high <= 0.0 or self.low <= 0.0 or self.close <= 0.0:
-            raise ValueError(f"{self.date}: precios no positivos (open={self.open} high={self.high} low={self.low} close={self.close})")
+            raise ValueError(
+                f"{self.date}: precios no positivos (open={self.open} high={self.high} low={self.low} close={self.close})"
+            )
         if self.volume < 0.0:
             raise ValueError(f"{self.date}: volumen negativo ({self.volume})")
         top = max(self.open, self.close)

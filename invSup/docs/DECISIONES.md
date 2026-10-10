@@ -440,7 +440,7 @@ lista fija.
 GICS Sector; de ahi sale tambien el tema), aplica un prefiltro (`core/discovery`: tendencia
 SMA200/stack, rango 52 semanas, liquidez, precio) y ordena por fuerza relativa; deja
 `state/candidates.json`. Hoy `screen` (y su alias `discover`) aceptan
-`--universe sp500|watchlist`; los comandos archivados (`daily`, `scan`, `allocate`,
+`--breadth sp500|watchlist`; los comandos archivados (`daily`, `scan`, `allocate`,
 `backtest`) tambien aceptaban `candidates`.
 
 **Por que Wikipedia y por que cache.** Es enumerable sin key; se cachea en

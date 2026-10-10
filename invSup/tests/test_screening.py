@@ -135,6 +135,12 @@ def test_g6_earnings_justo_fuera_del_blackout_pasa() -> None:
     assert check_gates(ok(days_to_earnings=21), TH, UNIVERSE).passes is True
 
 
+def test_g6_dias_negativos_se_rechazan_por_rancios() -> None:
+    # Un reporte en el pasado es una fecha rancia: fail-closed, no "lejos".
+    res = check_gates(ok(days_to_earnings=-3), TH, UNIVERSE)
+    assert Reason.EARNINGS_NEAR in {r.reason for r in res.rejections}
+
+
 def test_g6_sin_fuente_de_earnings_se_rechaza_en_vez_de_asumir() -> None:
     # Decision D1: fail-closed. Sin fuente no hay entrada, aunque los dias a
     # earnings digan 90.

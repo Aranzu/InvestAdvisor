@@ -348,7 +348,12 @@ class _Simulator:
             j = self.idx_by_ticker[ticker].get(day)
             if j is None:
                 continue
-            live.state = roll_trade(live.state, self.frames[ticker], j)
+            live.state = roll_trade(
+                live.state,
+                self.frames[ticker],
+                j,
+                lookback_days=self.strategy.exits.runner_trail.lookback_days,
+            )
 
         self._mark_to_market(day)
         self._update_peak()

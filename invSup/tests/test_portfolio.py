@@ -151,9 +151,7 @@ def test_tope_por_ticker() -> None:
     cartera = state((pos("AMD", 9_000_000.0),))
     assert position_weight_pct(cartera.positions[0], EQUITY) == pytest.approx(9.0)
     # 9 % + 2 % de nueva entrada = 11 % > 10 %.
-    assert evaluate_entry(cartera, LIMITS, "AMD", THEME, notional_clp=2_000_000.0).reasons == (
-        Reason.POSITION_LIMIT,
-    )
+    assert evaluate_entry(cartera, LIMITS, "AMD", THEME, notional_clp=2_000_000.0).reasons == (Reason.POSITION_LIMIT,)
 
 
 def test_tope_por_tema_sin_entradas() -> None:

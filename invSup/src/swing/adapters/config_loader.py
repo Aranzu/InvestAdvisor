@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from swing.core.models import BrokerConfig, StrategyConfig, ThemesConfig, WatchlistConfig
 
@@ -37,7 +38,9 @@ def _load(path: Path, model: type[Any]) -> Any:
     raw = _read_yaml(path)
     try:
         return model.model_validate(raw)
-    except Exception as exc:  # pydantic.ValidationError y similares
+    except (ValidationError, ValueError, TypeError) as exc:
+        # Un bug de verdad (p. ej. ImportError en un validador) NO debe disfrazarse
+        # de "config invalida": solo la validacion de datos se traduce a ConfigError.
         raise ConfigError(f"{path} no cumple el esquema:\n{exc}") from exc
 
 

@@ -71,7 +71,17 @@ def test_review_llm_anota_la_tesis_sin_cambiar_la_regla(monkeypatch, tmp_path: P
     out = tmp_path / "review.md"
     result = RUNNER.invoke(
         app,
-        ["review", "--config-dir", str(CONFIG_DIR), "--portfolio", str(portfolio), "--offline", "--llm", "--out", str(out)],
+        [
+            "review",
+            "--config-dir",
+            str(CONFIG_DIR),
+            "--portfolio",
+            str(portfolio),
+            "--offline",
+            "--llm",
+            "--out",
+            str(out),
+        ],
     )
     assert result.exit_code == 2, result.output
     informe = out.read_text(encoding="utf-8")
