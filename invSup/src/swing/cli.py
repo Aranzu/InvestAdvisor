@@ -17,7 +17,7 @@ import datetime as dt
 import json
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
@@ -33,6 +33,7 @@ from swing.adapters.data_yahoo import (
     provider_from_project,
     sectors_from,
 )
+from swing.adapters.finviz import provider_from_project as finviz_provider_from_project
 from swing.adapters.fundamentals import provider_from_project as fundamentals_provider_from_project
 from swing.adapters.llm import client_from_env
 from swing.adapters.notify import Notification, notifiers_from_env, send_all
@@ -54,92 +55,89 @@ from swing.core.engine import (
     position_exposures,
     relative_strength_percentiles,
 )
+from swing.core.fundamentals import AxisRatings, Fundamentals, rate_axes, score_fundamentals
 from swing.core.llm import LLMReview, ThesisStatus
 from swing.core.models import BrokerConfig, StrategyConfig, ThemesConfig, WatchlistConfig
-from swing.core.planner import adopt_positions, plan_tickets, render_review, render_table, render_tickets
+from swing.core.planner import (
+    adopt_positions,
+    build_review_report,
+    plan_tickets,
+    render_review,
+    render_review_report,
+    render_table,
+    render_tickets,
+    review_narrative_facts,
+)
 from swing.core.portfolio import PortfolioState
 from swing.core.reconcile import reconcile_positions
-from swing.services.market_data import (
-    MARKET_CLOSE_NY,
-)
-from swing.services.market_data import (
-    broker_lots as _broker_lots,
-)
-from swing.services.market_data import (
-    collect_series as _collect_series,
-)
-from swing.services.market_data import (
-    implied_fx as _implied_fx,
-)
-from swing.services.market_data import (
-    last_closed_session as _last_closed_session,
-)
-from swing.services.market_data import (
-    live_fx as _live_fx,
-)
-from swing.services.market_data import (
-    live_quotes as _live_quotes,
-)
-from swing.services.market_data import (
-    relative_strength as _relative_strength,
-)
-from swing.services.market_data import (
-    warn_jumps as _warn_jumps,
-)
-from swing.services.paths import (
-    candidate_path as _candidate_path,
-)
-from swing.services.paths import (
-    newest_report as _newest_report,
-)
-from swing.services.paths import (
-    newest_report_or_none as _newest_report_or_none,
-)
-from swing.services.paths import (
-    output_dir as _output_dir,
-)
-from swing.services.paths import (
-    report_dir as _report_dir,
-)
-from swing.services.reporting import (
-    read_candidate_tickers as _read_candidate_tickers,
-)
-from swing.services.reporting import (
-    render_nightly as _render_nightly,
-)
-from swing.services.reporting import (
-    worst_exit as _worst_exit,
-)
-from swing.services.research import (
-    candidate_earnings as _candidate_earnings,
-)
-from swing.services.research import (
-    earnings_facts as _earnings_facts,
-)
-from swing.services.research import (
-    macro_brief as _macro_brief,
-)
-from swing.services.research import (
-    macro_data as _macro_data,
-)
-from swing.services.research import (
-    num as _num,
-)
-from swing.services.research import (
-    pct as _pct,
-)
-from swing.services.research import (
-    review_candidates as _review_candidates,
-)
-from swing.services.research import (
-    review_fields as _review_fields,
-)
-from swing.services.research import (
-    review_positions as _review_positions,
-)
-from swing.services.research import (
-    technical_facts as _technical_facts,
-)
+from swing.core.report import PositionReport
+from swing.core.stats import StatsReport
+from swing.core.stats import render_stats as _render_stats
+from swing.services.market_data import MARKET_CLOSE_NY
+from swing.services.market_data import broker_lots as _broker_lots
+from swing.services.market_data import collect_series as _collect_series
+from swing.services.market_data import implied_fx as _implied_fx
+from swing.services.market_data import last_closed_session as _last_closed_session
+from swing.services.market_data import live_fx as _live_fx
+from swing.services.market_data import live_quotes as _live_quotes
+from swing.services.market_data import relative_strength as _relative_strength
+from swing.services.market_data import warn_jumps as _warn_jumps
+from swing.services.paths import candidate_path as _candidate_path
+from swing.services.paths import newest_report as _newest_report
+from swing.services.paths import newest_report_or_none as _newest_report_or_none
+from swing.services.paths import output_dir as _output_dir
+from swing.services.paths import report_dir as _report_dir
+from swing.services.paths import review_path as _review_path
+from swing.services.paths import stats_paths as _stats_paths
+from swing.services.reporting import read_candidate_tickers as _read_candidate_tickers
+from swing.services.reporting import render_nightly as _render_nightly
+from swing.services.reporting import worst_exit as _worst_exit
+from swing.services.research import candidate_earnings as _candidate_earnings
+from swing.services.research import earnings_facts as _earnings_facts
+from swing.services.research import macro_brief as _macro_brief
+from swing.services.research import macro_data as _macro_data
+from swing.services.research import num as _num
+from swing.services.research import pct as _pct
+from swing.services.research import portfolio_narrative as _portfolio_narrative
+from swing.services.research import review_candidates as _review_candidates
+from swing.services.research import review_fields as _review_fields
+from swing.services.research import review_positions as _review_positions
+from swing.services.research import technical_facts as _technical_facts
+from swing.services.stats import collect_stats as _collect_stats
+from swing.services.stats import fundamentals_from_report as _stats_fundamentals
+from swing.services.stats import load_report as _load_stats_report
+from swing.services.stats import quotes_from_report as _stats_quotes
+from swing.services.stats import save_report as _save_stats_report
+
+
+def _load_stats_if_any(path: Path | None) -> StatsReport | None:
+    """Lee un ``stats_*.json`` si existe y es valido; si no, ``None`` (fallback vivo)."""
+    if path is None or not path.is_file():
+        return None
+    try:
+        return _load_stats_report(path)
+    except (OSError, ValueError) as exc:
+        typer.secho(f"  aviso: no se pudo leer {path}: {exc}", fg=typer.colors.YELLOW)
+        return None
+
+
+def _stats_for(account: str) -> StatsReport | None:
+    """El ``stats_*.json`` mas reciente de esa cuenta, o ``None``.
+
+    La cuenta se compara para no alimentar un informe con los datos de otro export.
+    Se ordena por fecha de modificacion: con el nombre reporte+timestamp, el orden
+    alfabetico ya no coincide con el de recencia.
+    """
+    try:
+        candidates = sorted(_output_dir().glob("stats_*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in candidates:
+        report = _load_stats_if_any(path)
+        if report is not None and report.account == account:
+            return report
+    return None
+
 
 app = typer.Typer(
     add_completion=False,
@@ -167,7 +165,7 @@ def root() -> None:
     """
 
 
-@app.command("check-config")
+@app.command("check-config", hidden=True)
 def check_config(
     config_dir: Annotated[
         Path,
@@ -215,7 +213,7 @@ def check_config(
         )
 
 
-@app.command("verify-broker")
+@app.command("verify-broker", hidden=True)
 def verify_broker(
     config_dir: Annotated[
         Path,
@@ -290,7 +288,7 @@ BROKER_CHECKLIST: tuple[tuple[int, str, str], ...] = (
 )
 
 
-@app.command("data-health")
+@app.command("data-health", hidden=True)
 def data_health(
     config_dir: Annotated[
         Path,
@@ -379,7 +377,7 @@ def data_health(
         raise typer.Exit(code=2)
 
 
-@app.command("analyze-positions")
+@app.command("analyze-positions", hidden=True)
 def analyze_positions(
     report: Annotated[
         Path | None,
@@ -436,23 +434,38 @@ def analyze_positions(
 
     today = dt.date.today()
     provider = provider_from_project(cache_dir)
-    market = Market(today=today, fx=None, fx_source="implicito del reporte", mode="reporte")
 
-    if not offline:
+    # Si hay un stats de hoy para la misma cuenta, se reutiliza su foto de mercado
+    # (precios, FX y sectores) en vez de volver a pegarle a Yahoo.
+    stats = _stats_for(model.account)
+    sectors: dict[str, str] = {}
+    if stats is not None and stats.today == today:
         market = Market(
             today=today,
-            fx=_live_fx(provider, today),
-            fx_source="USDCLP=X" if not offline else "reporte",
-            quotes=_live_quotes(model, provider, today),
-            mode="live",
+            fx=stats.fx,
+            fx_source=stats.fx_source,
+            quotes=_stats_quotes(stats),
+            mode=stats.mode,
         )
-
-    sectors: dict[str, str] = {}
-    if not offline:
-        held = sorted({lot.ticker for lot in model.lots})
-        missing = [ticker for ticker in held if ticker not in themes.themes]
-        if missing:
-            sectors = sectors_from(missing)
+        themes_used = dict(stats.themes)
+        sectors = dict(stats.sectors)
+        typer.secho("  datos de stats de la cuenta (swing stats)", fg=typer.colors.GREEN)
+    else:
+        market = Market(today=today, fx=None, fx_source="implicito del reporte", mode="reporte")
+        if not offline:
+            market = Market(
+                today=today,
+                fx=_live_fx(provider, today),
+                fx_source="USDCLP=X" if not offline else "reporte",
+                quotes=_live_quotes(model, provider, today),
+                mode="live",
+            )
+        themes_used = themes.themes
+        if not offline:
+            held = sorted({lot.ticker for lot in model.lots})
+            missing = [ticker for ticker in held if ticker not in themes.themes]
+            if missing:
+                sectors = sectors_from(missing)
 
     rs_percentiles: dict[str, float] | None = None
     if rs and not offline:
@@ -463,7 +476,7 @@ def analyze_positions(
                 fg=typer.colors.YELLOW,
             )
 
-    analysis = analyze(model, market, strategy, themes.themes, rs=rs_percentiles, sectors=sectors)
+    analysis = analyze(model, market, strategy, themes_used, rs=rs_percentiles, sectors=sectors)
     informe = render_markdown(analysis)
     if out is not None:
         out.write_text(informe, encoding="utf-8")
@@ -471,6 +484,126 @@ def analyze_positions(
     typer.echo(informe.rstrip())
     if analysis.has_findings:
         raise typer.Exit(code=2)
+
+
+def _collect_and_save_stats(
+    model: PositionReport,
+    report_path: Path,
+    strategy: StrategyConfig,
+    theme_map: dict[str, str],
+    cache_dir: Path | None,
+    offline: bool,
+    today: dt.date,
+    out: Path | None = None,
+    out_dir: Path | None = None,
+) -> tuple[StatsReport, Path, Path]:
+    """Arma, escribe (Markdown + JSON) y devuelve el informe de stats.
+
+    El nombre por defecto es ``stats_<export>_<timestamp>.md``/``.json`` para que dos
+    corridas (o dos cuentas) no se pisen; ``out`` fuerza la ruta del Markdown y
+    ``out_dir`` cambia el directorio cuando no se fija ``out``.
+
+    Es la unica via por la que ``stats`` y ``review`` construyen el informe, para
+    que la funcion 1 (``review``) lo genere antes de decidir y reuse sus
+    fundamentales en vez de volver a pedirlos.
+    """
+    provider = provider_from_project(cache_dir, offline=offline)
+    market = Market(today=today, fx=None, fx_source="implicito del reporte", mode="reporte")
+    if not offline:
+        market = Market(
+            today=today,
+            fx=_live_fx(provider, today),
+            fx_source="USDCLP=X",
+            quotes=_live_quotes(model, provider, today),
+            mode="live",
+        )
+
+    sectors: dict[str, str] = {}
+    if not offline:
+        held = sorted({lot.ticker for lot in model.lots})
+        missing = [ticker for ticker in held if ticker not in theme_map]
+        if missing:
+            sectors = sectors_from(missing)
+
+    fprovider = fundamentals_provider_from_project(cache_dir, offline=offline)
+    finviz = finviz_provider_from_project(offline=offline)
+    stats_report = _collect_stats(
+        model,
+        market,
+        strategy,
+        theme_map,
+        fundamentals=fprovider,
+        finviz=finviz,
+        bars=provider,
+        sectors=sectors,
+    )
+    informe = _render_stats(stats_report)
+    if out is not None:
+        path, json_path = out, out.with_suffix(".json")
+    else:
+        path, json_path = _stats_paths(report_path, dt.datetime.now(), out_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(informe, encoding="utf-8")
+    _save_stats_report(stats_report, json_path)
+    return stats_report, path, json_path
+
+
+@app.command("stats")
+def stats(
+    report: Annotated[
+        Path | None,
+        typer.Option("--report", help="Export de XTB (xlsx). Por defecto el mas nuevo de posiciones/."),
+    ] = None,
+    config_dir: Annotated[
+        Path,
+        typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
+    ] = DEFAULT_CONFIG_DIR,
+    offline: Annotated[
+        bool,
+        typer.Option("--offline", help="Solo lee cache (barras, fundamentales y Finviz); no toca la red."),
+    ] = False,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Archivo Markdown. Por defecto output/stats_<fecha>.md."),
+    ] = None,
+    cache_dir: Annotated[
+        Path | None,
+        typer.Option("--cache-dir", help="Donde viven las velas cacheadas. Por defecto cache/bars."),
+    ] = None,
+) -> None:
+    """Ficha por posicion abierta con la mayor cantidad de campos posible (tipo Finviz).
+
+    No decide nada: reune valuacion, rentabilidad, salud financiera, crecimiento,
+    dividendos, tecnico, desempeno, liquidez, propiedad y analistas de cada posicion
+    abierta para un analisis posterior. Yahoo es la base, Finviz aporta lo que Yahoo
+    no publica y los tecnicos se calculan localmente desde las velas. Escribe el
+    informe en Markdown (``output/stats_<fecha>.md`` salvo ``--out``).
+    """
+    try:
+        strategy = load_strategy(config_dir / "strategy.yaml")
+        themes = load_themes(config_dir / "themes.yaml")
+    except ConfigError as exc:
+        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    report_path = report if report is not None else _newest_report(_report_dir())
+    if not report_path.is_file():
+        typer.secho(f"FALLA  no existe el reporte: {report_path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    try:
+        model = load_positions_report(report_path)
+    except ReportFormatError as exc:
+        typer.secho(f"FALLA  {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    today = dt.date.today()
+    _, path, json_path = _collect_and_save_stats(
+        model, report_path, strategy, themes.themes, cache_dir, offline, today, out
+    )
+    typer.echo(path.read_text(encoding="utf-8").rstrip())
+    typer.echo("")
+    typer.echo(f"Informe escrito en {path}")
+    typer.echo(f"Datos estructurados en {json_path}")
 
 
 #: Simbolo del indice de volatilidad en Yahoo.
@@ -619,33 +752,31 @@ def review(
         Path | None,
         typer.Option("--out", help="Escribe la recomendacion a este archivo en vez de output/."),
     ] = None,
-    llm: Annotated[
-        bool,
-        typer.Option("--llm", help="Pide a la IA su veredicto (mantener/vender); el motor fija los niveles."),
-    ] = False,
     web_search: Annotated[
         bool,
         typer.Option("--web-search", help="Pide la opinion con busqueda web (solo proveedores que la soporten)."),
     ] = False,
     formato: Annotated[
         str,
-        typer.Option("--formato", help="Formato del informe: detalle (explicado) o tabla."),
-    ] = "detalle",
+        typer.Option("--formato", help="Formato del informe: informe (7 secciones), detalle o tabla."),
+    ] = "informe",
     refresh_contexto: Annotated[
         bool,
         typer.Option("--refresh-contexto", help="Regenera el contexto macro aunque ya exista el de hoy."),
     ] = False,
 ) -> None:
-    """Funcion 1: recomendacion sobre tus posiciones (la IA decide, el motor fija niveles).
+    """Funcion 1: genera ``stats`` y luego recomienda sobre tus posiciones.
 
-    Lee el reporte, adopta las posiciones (stop inicial derivado de
+    Primero escribe el informe de stats (``output/stats_<fecha>.md`` y ``.json``) y
+    reutiliza sus fundamentales, para no volver a pedir todo a Yahoo. Despues lee el
+    reporte, adopta las posiciones (stop inicial derivado de
     ``legacy.max_loss_from_cost_pct`` si el broker no trae Sell Stop), corre las diez
     reglas de salida de la seccion 5.7 --las mismas del motor de decisiones--
-    y dictamina por posicion: la regla de mayor precedencia o MANTENER. No mira el
-    universo ni propone entradas. Con ``--llm`` la IA pondera fundamentales,
-    proyecciones de analistas, noticias y contexto macro y entrega su veredicto
-    (mantener/vender) con fuentes; el motor sigue fijando stop/meta/tamano. Sale con 0
-    si no hay nada que hacer, 2 si hay acciones y 3 si la IA falla (la recomendacion
+    y dictamina por posicion: la regla de mayor precedencia o MANTENER. La IA siempre
+    pondera fundamentales, proyecciones de analistas, noticias y contexto macro y
+    entrega su veredicto (mantener/vender) con fuentes; el motor sigue fijando
+    stop/meta/tamano. No mira el universo ni propone entradas. Sale con 0 si no hay
+    nada que hacer, 2 si hay acciones y 3 si la IA falla (la recomendacion
     determinista sale igual).
     """
     try:
@@ -692,8 +823,27 @@ def review(
         market.calendar,
         market.today,
     )
-    fprovider = fundamentals_provider_from_project(cache_dir, offline=offline)
-    fundamentals = fprovider.get_many(held, today=market.today) if held else {}
+    # Funcion 1 = stats -> review: se genera el informe de stats primero y se
+    # reutilizan sus fundamentales; lo que falte se completa con el proveedor.
+    stats_report, stats_md, stats_json = _collect_and_save_stats(
+        model,
+        report_path,
+        market.strategy,
+        themes.themes,
+        cache_dir,
+        offline,
+        market.today,
+        out_dir=out.parent if out is not None else None,
+    )
+    typer.echo(f"  stats escrito en {stats_md} y {stats_json}")
+    fundamentals: dict[str, Fundamentals] = {}
+    if held:
+        stored = _stats_fundamentals(stats_report)
+        fundamentals = {ticker: stored[ticker] for ticker in held if ticker in stored}
+    pending = [ticker for ticker in held if ticker not in fundamentals]
+    if pending:
+        fprovider = fundamentals_provider_from_project(cache_dir, offline=offline)
+        fundamentals.update(fprovider.get_many(pending, today=market.today))
     recon = reconcile_positions(lots, book)
     state = PortfolioState(
         equity_clp=equity,
@@ -713,41 +863,42 @@ def review(
     reviews: list[LLMReview] = []
     macro: LLMReview | None = None
     llm_failed = False
-    if llm:
-        client = client_from_env(web_search=web_search, max_searches=market.strategy.llm.max_searches_per_ticker)
-        if web_search and search_from_env() is None:
+    # La segunda opinion de la IA es obligatoria en este comando (ya no hay --llm).
+    client = client_from_env(web_search=web_search, max_searches=market.strategy.llm.max_searches_per_ticker)
+    if web_search and search_from_env() is None:
+        typer.secho(
+            "  aviso: sin TAVILY_API_KEY; la IA corre sin busqueda web",
+            fg=typer.colors.YELLOW,
+        )
+    if client is None:
+        typer.secho(
+            "  aviso: sin clave del LLM (SWING_LLM_API_KEY o .secrets/llm_api_key.txt)",
+            fg=typer.colors.YELLOW,
+        )
+    else:
+        out_dir = out.parent if out is not None else _output_dir()
+        macro = _macro_brief(client, market.today, out_dir, refresh=refresh_contexto)
+        contexto = macro.fundamento if macro is not None and macro.fundamento else ""
+        reviews, failed = _review_positions(
+            client,
+            plan,
+            themes,
+            market.today,
+            model.local,
+            contexto,
+            fundamentals,
+            snapshot=market.snapshot,
+            calendar=market.calendar,
+            blackout=market.strategy.gates.earnings_entry_blackout_sessions,
+        )
+        if failed:
+            llm_failed = True
             typer.secho(
-                "  aviso: sin TAVILY_API_KEY; la IA corre sin busqueda web",
+                f"  aviso LLM: sin opinion para {', '.join(failed)} (fallo tras reintento); "
+                "la recomendacion determinista sigue",
                 fg=typer.colors.YELLOW,
             )
-        if client is None:
-            typer.secho(
-                "  aviso: sin clave del LLM (SWING_LLM_API_KEY o .secrets/llm_api_key.txt)",
-                fg=typer.colors.YELLOW,
-            )
-        else:
-            out_dir = out.parent if out is not None else _output_dir()
-            macro = _macro_brief(client, market.today, out_dir, refresh=refresh_contexto)
-            contexto = macro.fundamento if macro is not None and macro.fundamento else ""
-            reviews, failed = _review_positions(
-                client,
-                plan,
-                themes,
-                market.today,
-                model.local,
-                contexto,
-                fundamentals,
-                snapshot=market.snapshot,
-                calendar=market.calendar,
-                blackout=market.strategy.gates.earnings_entry_blackout_sessions,
-            )
-            if failed:
-                llm_failed = True
-                typer.secho(
-                    f"  aviso LLM: sin opinion para {', '.join(failed)} (fallo tras reintento); "
-                    "la recomendacion determinista sigue",
-                    fg=typer.colors.YELLOW,
-                )
+        _echo_llm_usage(client)
 
     # Datos macro deterministas para la cabecera (no dependen de la IA).
     macro_data: dict[str, str] = {"regimen": plan.regime.value}
@@ -787,7 +938,7 @@ def review(
             macro=macro,
             macro_data=macro_data,
         )
-    else:
+    elif formato == "detalle":
         informe = render_review(
             plan,
             account=model.account,
@@ -798,12 +949,36 @@ def review(
             macro=macro,
             macro_data=macro_data,
         )
+    else:
+        prices: dict[str, float] = {ticker: trade_state.close for ticker, trade_state in book.items()}
+        prices.update({position.ticker: position.last_price_clp for position in model.local})
+        axes_by_ticker: dict[str, AxisRatings] = {}
+        for ticker, fundamental in fundamentals.items():
+            price = prices.get(ticker)
+            if fundamental.is_empty or price is None or price <= 0.0:
+                continue
+            score = score_fundamentals(fundamental, price, market.strategy.fundamentals)
+            axes_by_ticker[ticker] = rate_axes(score, market.strategy.fundamentals.axes)
+        report = build_review_report(
+            plan,
+            stats_report,
+            axes_by_ticker=axes_by_ticker,
+            reviews=reviews,
+            local=model.local,
+            macro=macro,
+            macro_data=macro_data,
+        )
+        if client is not None:
+            narrative = _portfolio_narrative(client, review_narrative_facts(report), market.today)
+            if narrative is not None:
+                report = replace(report, narrative=narrative)
+        informe = render_review_report(report)
     ticket_plan = plan_tickets(plan, market.broker, market.strategy)
     informe = informe.rstrip() + "\n\n" + "\n".join(render_tickets(ticket_plan))
     for issue in recon.issues:
         typer.secho(f"  {issue.kind.value}: {issue.detail}", fg=typer.colors.YELLOW)
 
-    target = out if out is not None else _output_dir() / f"review_{market.today.isoformat()}.md"
+    target = out if out is not None else _review_path(report_path, dt.datetime.now())
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(informe, encoding="utf-8")
     typer.echo(f"Recomendacion escrita en {target}")
@@ -844,10 +1019,6 @@ def screen(
         float | None,
         typer.Option("--min-score", help="Score compuesto minimo (0-100). Por defecto strategy.screener."),
     ] = None,
-    llm: Annotated[
-        bool,
-        typer.Option("--llm", help="Agrega la tesis de compra de la IA por candidato."),
-    ] = False,
     web_search: Annotated[
         bool,
         typer.Option("--web-search", help="Pide la tesis con busqueda web (si hay TAVILY_API_KEY)."),
@@ -855,17 +1026,19 @@ def screen(
 ) -> None:
     """Screener de compra (funcion 2): tecnico + fundamentales + proyecciones.
 
-    Rastrea un conjunto amplio (S&P 500 vivo por defecto), aplica el prefiltro
-    tecnico y las puertas fundamentales y ordena por score compuesto. Deja los
-    candidatos en ``state/candidates.json``. Con ``--llm`` agrega la tesis de compra
-    de la IA (veredicto BUY/WATCH). Sale con 0 si la corrida termino bien (haya o no
-    candidatos; el conteo queda en el archivo) y con un codigo distinto solo ante un
-    fallo de configuracion o de datos.
+    Rastrea un conjunto amplio (el S&P 500 vivo, de Wikipedia, que trae el **sector GICS** y de ahí sale el tema de cada
+    ticker), aplica el prefiltro de tendencia/rango de 52 semanas/liquidez/precio, baja los
+    **fundamentales y proyecciones** de analistas (yfinance, cacheados en
+    `cache/fundamentals/` con TTL) y ordena por **score compuesto** (configurable en
+    `fundamentals:` y `screener:` de `strategy.yaml`); deja los mejores en
+    `state/candidates.json`. Siempre agrega la tesis de compra de la IA (`BUY/WATCH`)
+    por candidato. Los candidatos quedan en `state/candidates.json`.
     """
-    _run_screener(config_dir, cache_dir, offline, top, breadth, out, min_score, llm, web_search)
+    # La tesis de compra de la IA es obligatoria en este comando (ya no hay --llm).
+    _run_screener(config_dir, cache_dir, offline, top, breadth, out, min_score, True, web_search)
 
 
-@app.command("discover")
+@app.command("discover", hidden=True)
 def discover(
     config_dir: Annotated[
         Path,
@@ -1023,6 +1196,7 @@ def _run_screener(
                     typer.echo(
                         f"**{candidate.ticker}** -> {review.verdict.value} ({review.confidence.value}): {review.fundamento}"
                     )
+            _echo_llm_usage(client)
 
     path = out if out is not None else _candidate_path()
     payload = [
@@ -1052,7 +1226,7 @@ def _run_screener(
     typer.echo(f"Candidatos escritos en {path}")
 
 
-@app.command("nightly")
+@app.command("nightly", hidden=True)
 def nightly(
     config_dir: Annotated[
         Path,
@@ -1074,10 +1248,6 @@ def nightly(
         Path | None,
         typer.Option("--portfolio", help="Export de XTB (xlsx). Por defecto el mas nuevo de posiciones/."),
     ] = None,
-    llm: Annotated[
-        bool,
-        typer.Option("--llm", help="Pide la opinion de la IA en el screener y en la revision."),
-    ] = False,
     web_search: Annotated[
         bool,
         typer.Option("--web-search", help="Habilita busqueda web para la IA (si hay TAVILY_API_KEY)."),
@@ -1115,7 +1285,7 @@ def nightly(
     lines: list[str] = []
 
     try:
-        _run_screener(config_dir, cache_dir, offline, top, "sp500", None, None, llm, web_search)
+        _run_screener(config_dir, cache_dir, offline, top, "sp500", None, None, True, web_search)
         screen_code = 0
     except typer.Exit as exc:
         screen_code = int(exc.exit_code or 0)
@@ -1128,7 +1298,7 @@ def nightly(
     if report_path is None:
         lines.append("- review: omitido (no hay export de XTB en posiciones/)")
     else:
-        review_path = target_dir / f"review_{today.isoformat()}.md"
+        review_path = _review_path(report_path, dt.datetime.now(), target_dir)
         try:
             review(
                 config_dir=config_dir,
@@ -1136,9 +1306,8 @@ def nightly(
                 cache_dir=cache_dir,
                 offline=offline,
                 out=review_path,
-                llm=llm,
                 web_search=web_search,
-                formato="tabla",
+                formato="detalle",
                 refresh_contexto=False,
             )
             review_code = 0
@@ -1189,15 +1358,15 @@ def _swing_exe() -> str:
     return str(Path(sys.executable).with_name("swing.exe"))
 
 
-@app.command("schedule")
+@app.command("schedule", hidden=True)
 def schedule(
     config_dir: Annotated[
         Path,
         typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
     ] = DEFAULT_CONFIG_DIR,
-    llm: Annotated[
+    web_search: Annotated[
         bool,
-        typer.Option("--llm", help="Incluye --llm --web-search en el comando agendado."),
+        typer.Option("--web-search", help="Incluye --web-search en el comando agendado."),
     ] = False,
     weekly: Annotated[
         bool,
@@ -1208,8 +1377,8 @@ def schedule(
 
     No toca el sistema: calcula la hora local (America/Santiago) equivalente al
     cierre de EE. UU. mas el margen D3 e imprime el comando ``schtasks`` listo para
-    pegar. El horario se corre con los cambios de horario de verano; conviene
-    revisarlo en marzo y septiembre.
+    pegar. La IA es obligatoria (``nightly`` ya no acepta ``--llm``). El horario se
+    corre con los cambios de horario de verano; conviene revisarlo en marzo y septiembre.
     """
     try:
         _, trigger = _evening_trigger(config_dir)
@@ -1219,7 +1388,7 @@ def schedule(
 
     hhmm = trigger.strftime("%H:%M")
     exe = _swing_exe()
-    flags = " --llm --web-search" if llm else ""
+    flags = " --web-search" if web_search else ""
     task = "Swing nightly"
     typer.echo(f"Corrida nocturna (America/Santiago): {hhmm}")
     typer.echo("  = cierre NYSE 16:00 ET + margen D3, en hora local del usuario.")
@@ -1235,6 +1404,15 @@ def schedule(
         )
     typer.echo("")
     typer.echo("Ver docs/PROGRAMACION.md para el detalle y la notificacion opcional.")
+
+
+def _echo_llm_usage(client: object) -> None:
+    """Imprime el consumo de tokens de la corrida si el cliente lo expone (best effort)."""
+    usage_line = getattr(client, "usage_line", None)
+    if callable(usage_line):
+        text = usage_line()
+        if text:
+            typer.echo(f"  {text}")
 
 
 def main() -> None:

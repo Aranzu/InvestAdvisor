@@ -1,7 +1,8 @@
-"""El comando ``review`` con la segunda opinion de la IA (``--llm``).
+"""El comando ``review``: genera ``stats`` y luego la segunda opinion de la IA.
 
 Se corre con export sintetico y dobles (provider y cliente LLM falsos): la
 recomendacion determinista no cambia y la tesis de la IA queda anotada con fuente.
+La IA es obligatoria (ya no hay ``--llm``); sin clave el comando sigue determinista.
 """
 
 from __future__ import annotations
@@ -78,17 +79,16 @@ def test_review_llm_anota_la_tesis_sin_cambiar_la_regla(monkeypatch, tmp_path: P
             "--portfolio",
             str(portfolio),
             "--offline",
-            "--llm",
             "--out",
             str(out),
         ],
     )
     assert result.exit_code == 2, result.output
     informe = out.read_text(encoding="utf-8")
-    assert "Tesis (IA):" in informe
-    assert "WEAKENED" in informe
-    assert "## Revisar primero" in informe
-    # WEAKENED degrada la recomendacion (vigilar) y el motor sigue mandando.
+    assert "# Review de cartera" in informe
+    assert "## 5. Alertas" in informe
+    assert "TESIS DEBILITADA" in informe
+    # WEAKENED queda como tesis a vigilar y el motor sigue mandando.
     assert "Coloca un Sell Stop" in informe
 
 
@@ -123,19 +123,19 @@ def test_review_llm_broken_alimenta_thesis_exit(monkeypatch, tmp_path: Path) -> 
             "--portfolio",
             str(portfolio),
             "--offline",
-            "--llm",
             "--out",
             str(tmp_path / "review.md"),
         ],
     )
     assert result.exit_code == 2, result.output
-    # BROKEN (con evidencia) encabeza "Revisar primero" y entra al motor como THESIS_EXIT.
-    assert "## Revisar primero" in result.output
+    # BROKEN (con evidencia) entra al motor como THESIS_EXIT y sale en Alertas.
+    assert "# Review de cartera" in result.output
     assert "TESIS ROTA" in result.output
 
 
-def test_review_sin_llm_no_muestra_la_columna_ia(monkeypatch, tmp_path: Path) -> None:
+def test_review_sin_clave_llm_no_muestra_la_columna_ia(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("swing.cli.provider_from_project", _fake_provider)
+    monkeypatch.setattr("swing.cli.client_from_env", lambda **_: None)
     portfolio = build_positions_workbook(tmp_path / "posiciones.xlsx")
     result = RUNNER.invoke(
         app,

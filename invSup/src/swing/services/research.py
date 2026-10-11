@@ -135,6 +135,22 @@ def candidate_earnings(provider: YahooDataProvider, tickers: Sequence[str], offl
     return out
 
 
+def portfolio_narrative(
+    client: LLMClient,
+    facts: Mapping[str, object],
+    today: dt.date,
+) -> LLMReview | None:
+    """Narrativa de cartera (secciones 1, 2 y 6 del review); ``None`` si la IA falla.
+
+    No busca en la web: reutiliza los hechos ya recolectados por las revisiones de
+    posicion, para no sumar consultas ni tokens a la corrida.
+    """
+    try:
+        return client.review("CARTERA", ReviewContext.PORTFOLIO_REVIEW, facts, today)
+    except LLMError:
+        return None
+
+
 def review_fields(review: LLMReview | None) -> dict[str, object]:
     """Lo que la IA dijo de un candidato, para ``candidates.json``."""
     if review is None:

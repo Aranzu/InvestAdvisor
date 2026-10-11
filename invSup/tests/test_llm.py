@@ -301,6 +301,31 @@ def test_tope_de_busquedas_por_consulta(monkeypatch) -> None:
     assert "tools" not in sent[-1]
 
 
+def test_acumula_el_uso_de_tokens() -> None:
+    from swing.adapters.llm import OpenAICompatibleClient
+
+    client = OpenAICompatibleClient(api_key="k", model="deepseek-flash")
+    assert client.usage_line() is None
+    client._accumulate_usage({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
+    client._accumulate_usage({"usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}})
+    line = client.usage_line()
+    assert line is not None
+    assert "2 llamada" in line
+    assert "12 tok entrada" in line
+    assert "8 tok salida" in line
+    assert "20 tok" in line
+    assert "deepseek-flash" in line
+
+
+def test_el_uso_ignora_respuestas_sin_usage() -> None:
+    from swing.adapters.llm import OpenAICompatibleClient
+
+    client = OpenAICompatibleClient(api_key="k")
+    client._accumulate_usage({})
+    client._accumulate_usage({"usage": "no soy dict"})
+    assert client.usage_line() is None
+
+
 def test_anthropic_no_recibe_temperature_ni_response_format() -> None:
     from swing.adapters.llm import OpenAICompatibleClient
 

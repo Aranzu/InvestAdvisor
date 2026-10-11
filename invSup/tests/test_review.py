@@ -6,12 +6,19 @@ import datetime as dt
 
 from swing.core.engine import ExitEvaluation, NightPlan, TradeExitJudgment
 from swing.core.exits import ExitSignal
+from swing.core.fundamentals import AxisRatings
 from swing.core.llm import Confidence, KeyFact, LLMReview, ReviewContext, ThesisStatus
 from swing.core.models import HorizonState, RegimeState
-from swing.core.planner import render_review, render_table
+from swing.core.planner import (
+    build_review_report,
+    render_review,
+    render_review_report,
+    render_table,
+)
 from swing.core.reasons import Action, Reason
 from swing.core.report import LocalPosition
 from swing.core.state import TradeState, TrancheState
+from swing.core.stats import PositionStats, StatsReport
 
 
 def _trade(ticker: str, *, close: float = 110.0, days: int = 10) -> TradeState:
@@ -47,6 +54,21 @@ def _plan(*exits: TradeExitJudgment) -> NightPlan:
         candidates=(),
         cap_trims=(),
         alerts=(),
+    )
+
+
+def _stats(*rows: PositionStats) -> StatsReport:
+    return StatsReport(
+        account="123",
+        today=dt.date(2026, 10, 7),
+        mode="offline",
+        fx=900.0,
+        fx_source="reporte",
+        equity_clp=1_000_000.0,
+        cash_clp=100_000.0,
+        positions_value_clp=900_000.0,
+        rows=rows,
+        limitations=("perdida mensual no evaluable sin equity previo",),
     )
 
 
@@ -222,6 +244,64 @@ def test_tabla_sin_ia_usa_la_regla_del_motor() -> None:
     )
     informe = render_table(_plan(vender), account="123", fx=900.0, today=dt.date(2026, 10, 7))
     assert "Vender 100%" in informe
+
+
+def test_informe_de_review_tiene_las_siete_secciones() -> None:
+    mantener = TradeExitJudgment(
+        trade=_trade("AAA"),
+        evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
+        state_after=_trade("AAA"),
+    )
+    row = PositionStats(
+        ticker="AAA",
+        context={"theme": "mineria", "weight_pct": 30.0, "earnings": "2026-11-02"},
+        fields={"target_upside_pct": 12.0, "analyst_count": 9.0},
+    )
+    report = build_review_report(
+        _plan(mantener),
+        _stats(row),
+        axes_by_ticker={"AAA": AxisRatings(value=2, quality=-1, growth=1, projections=0)},
+    )
+    informe = render_review_report(report)
+    for seccion in (
+        "## 1. Veredicto",
+        "## 2. Cobertura",
+        "## 3. Decisiones",
+        "## 4. Niveles",
+        "## 5. Alertas",
+        "## 6. Supuestos y vacios",
+        "## 7. Fuentes clave",
+    ):
+        assert seccion in informe
+    assert "| AAA |" in informe
+    assert "caja 10.0 %" in informe
+    assert "mineria 30.0 %" in informe
+    assert "+2/-1/+1/0" in informe  # ejes V/C/G/P con signo
+    assert "perdida mensual no evaluable" in informe
+    assert "Sin fuentes citadas" in informe
+
+
+def test_informe_de_review_usa_la_narrativa_de_la_ia() -> None:
+    narrative = LLMReview(
+        ticker="CARTERA",
+        context=ReviewContext.PORTFOLIO_REVIEW,
+        thesis_status=ThesisStatus.UNKNOWN,
+        veto=False,
+        veto_reason=None,
+        key_facts=(KeyFact("Fed recorto 25 pb", dt.date(2026, 10, 1), "https://fed"),),
+        search_conclusive=True,
+        confidence=Confidence.MEDIUM,
+        requested_info=(),
+        veredicto="Cartera concentrada; mantener.",
+        cobertura="Todos los activos con datos de analistas.",
+        supuestos="Asume FX estable en 900.",
+    )
+    report = build_review_report(_plan(), _stats(), axes_by_ticker={}, narrative=narrative)
+    informe = render_review_report(report)
+    assert "Cartera concentrada; mantener." in informe
+    assert "Todos los activos con datos de analistas." in informe
+    assert "Asume FX estable en 900." in informe
+    assert "**CARTERA** 2026-10-01: Fed recorto 25 pb (https://fed)" in informe
 
 
 def test_incluye_el_contexto_macro() -> None:

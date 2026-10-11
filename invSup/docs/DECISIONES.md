@@ -386,10 +386,11 @@ determinista.
 **Que estaba abierto.** El motor solo mira SPY + VIX (regimen); no modela Fed, inflacion,
 dolar, elecciones, geopolica ni petroleo.
 
-**Decision.** Con `--llm`, `review` hace **una** consulta macro por corrida
-(`ReviewContext.MACRO`), la cachea en `output/contexto_<fecha>.json`/`.md` (se reutiliza;
-`--refresh-contexto` la regenera) y la **inyecta** en cada posicion. Ademas agrega
-benchmarks deterministas: VIX, 10Y (`^TNX`), DXY (`DX-Y.NYB`) y regimen.
+**Decision.** `review` (la IA corre siempre que haya clave; ya no hay `--llm`) hace **una**
+consulta macro por corrida (`ReviewContext.MACRO`), la cachea en
+`output/contexto_<fecha>.json`/`.md` (se reutiliza; `--refresh-contexto` la regenera) y la
+**inyecta** en cada posicion. Ademas agrega benchmarks deterministas: VIX, 10Y (`^TNX`),
+DXY (`DX-Y.NYB`) y regimen.
 
 **Por que separar dato de opinion.** Tasas y dolar los trae el motor de la fuente; lo
 politico/cualitativo (Fed, elecciones, aranceles) lo aporta la IA con `source_url`. La IA
@@ -403,11 +404,12 @@ no fija niveles.
 hago con lo que tengo?" faltaba un comando que mire **solo** lo abierto.
 
 **Decision.** `review` corre `decide(universe=())` (sin entradas) sobre las posiciones
-adoptadas + la local (SQM-B). Dos formatos: `detalle` (bloque por posicion con que hacer /
-que mas aplica / tesis) y `tabla` (`Activo·Plat.·Retorno%·Accion·Conf.·Fundamento·Stop·TP·
-Catalizador`). El **stop y el TP los fija el motor**; la accion/fundamento/catalizador los
-aporta la IA. `WEAKENED`/`BROKEN` encabezan "Revisar primero" y un `BROKEN` confirmado entra
-al motor como `THESIS_EXIT`.
+adoptadas + la local (SQM-B). Tres formatos: `informe` (por defecto; ver D32), `detalle`
+(bloque por posicion con que hacer / que mas aplica / tesis, el que usa `nightly`) y
+`tabla` (`Activo·Plat.·Retorno%·Accion·Conf.·Fundamento·Stop·TP·Catalizador`). El **stop y
+el TP los fija el motor**; la accion/fundamento/catalizador los aporta la IA. `WEAKENED`
+sale como `TESIS DEBILITADA` (vigilar) y un `BROKEN` confirmado entra al motor como
+`THESIS_EXIT` y aparece en Alertas.
 
 **Por que la IA no fija niveles.** Tamanos y stops son la parte auditable y money-critical;
 dejarlos en manos de la IA romperia la autoridad asimetrica del §12.
@@ -496,10 +498,10 @@ tecnico+fundamentales+proyecciones.
 **Decision.** El motor (y lo que sirve: universo, velas, reglas de salida, niveles) se
 **extiende** para alimentar ambas funciones y se **poda** lo que deja de aportar. Las dos
 funciones implementadas:
-- `swing review --llm` (funcion 1): la IA pondera fundamentales, proyecciones, noticias y
+- `swing review` (funcion 1): la IA pondera fundamentales, proyecciones, noticias y
   contexto macro y emite su veredicto (`BUY/HOLD/SELL/WATCH`).
 - `swing screen` (funcion 2): con el mismo universo, aplica puertas **fundamentales** y
-  ordena por score compuesto; `--llm` agrega la tesis de compra.
+  ordena por score compuesto; la IA agrega la tesis de compra.
 
 El resto (`backtest`, `allocate`, `confirm`, journal, `scan`, `daily`) se **poda**: su
 codigo queda archivado en `legacy/` (fuera del paquete, no se instala) para consulta, y sus
@@ -621,6 +623,42 @@ anclas de P/E y P/B).
 
 ---
 
+## D31. `swing stats`: informe por posicion, best effort y auditable
+
+**Que estaba abierto.** Reunir en un solo Markdown la mayor cantidad de campos de cada
+posicion abierta (tipo Finviz) para analisis posterior, sumando las posiciones fuera de
+XTB y sin inventar datos.
+
+**Decision.**
+
+- **Tres fuentes, una politica de mezcla.** Yahoo (fundamentales) es la base; los
+  tecnicos (SMA20/50/200, RSI, ATR, 52 semanas) se calculan localmente desde las velas
+  para no depender de Finviz; Finviz rellena lo que Yahoo no publica (float y short,
+  propiedad, ROA/ROIC, payout, desempeno). `merge_fields` deja ganar a la primera fuente
+  con dato.
+- **Posiciones locales.** La hoja `Hoja1` del export (hoy SQM-B) entra como una fila mas.
+  Como Yahoo no conoce `SQM-B`, el servicio prueba el ticker y los sufijos de mercado
+  (`.SN`) y usa el primero con fundamentales. Precio y montos absolutos de esa fila van
+  en **CLP**; la limitacion se declara (queda fuera de la caja/equity de XTB).
+- **Compras de insiders.** Nueva seccion con las compras (Form 4, `Buy`/`Purchase`) de los
+  ultimos 90 dias, via la tabla `insider-table` de Finviz, con cache propio
+  (`<T>.insiders.json`) y modo offline. Solo interesan compras; ventas y ejercicios no se
+  muestran.
+- **Best effort, con la ausencia declarada.** Un ticker sin Yahoo/Finviz sale igual; la
+  seccion **Cobertura de datos** cuenta campos y lista faltantes. Una **vela incoherente**
+  de Yahoo (fail-closed en `frame_to_series`) degrada a ese ticker **sin tecnicos** en vez
+  de tumbar el informe, y se declara en **Limites de esta evaluacion**.
+- **Contrato JSON y consumo.** Junto al `.md`, `stats` escribe `stats_<fecha>.json`
+  (`schema: 1`) con el mismo contenido (posiciones, cotizaciones, fundamentales, temas,
+  sectores, insiders). `analyze-positions` y `review` lo **reutilizan** si es de hoy y de la
+  misma cuenta, para no repetir las consultas a Yahoo ya hechas; lo que falte se completa con
+  el proveedor. El match por cuenta evita que un informe de otra cartera contamine la corrida.
+
+**Limite declarado.** El informe no decide ni recomienda: solo reune. La calidad de los
+campos depende de que Yahoo y Finviz cambien o no su formato.
+
+---
+
 ## Preguntas que siguen abiertas
 
 - **Puerta de validacion (fase 3): diferida, consciente.** El backtest esta archivado
@@ -640,3 +678,37 @@ anclas de P/E y P/B).
   `confirm`, journal, `scan` y `daily` salen del CLI y su codigo se archiva en
   `legacy/` (`legacy/backtest/`, `legacy/adapters_journal.py`, `legacy/tests/`). El
   paquete `swing` queda con las dos funciones de D25.
+
+---
+
+## D32. `review`: informe de 7 secciones con la IA solo como narrativa
+
+**Que estaba abierto.** El informe de `review` (`detalle`/`tabla`) mezclaba la prosa de la
+IA con la decision del motor en cada posicion, sin un veredicto de cartera ni una vista de
+cobertura y supuestos. Se pidio un formato de informe con motor determinista y la IA
+acotada a lo narrativo, sin sumar costo de tokens.
+
+**Decision.**
+
+- **Formato `informe` (por defecto).** Siete secciones: 1. Veredicto, 2. Cobertura,
+  3. Decisiones, 4. Niveles, 5. Alertas, 6. Supuestos y vacios, 7. Fuentes clave. `detalle`
+  y `tabla` siguen disponibles (`nightly` usa `detalle`).
+- **El motor manda.** Decision, puntaje por ejes, niveles (stop/meta) y alertas salen del
+  motor y del `stats`. El **puntaje** de cada activo es la suma de cuatro ejes —valor,
+  calidad, crecimiento, proyecciones— en rango `-8..+8`; los cortes viven en
+  `fundamentals.axes` de `strategy.yaml` (ningun umbral en el codigo).
+- **La IA narra, en una sola llamada.** `PORTFOLIO_REVIEW` recibe los hechos ya
+  recolectados (nada se vuelve a pedir) y devuelve `veredicto`, `cobertura` y `supuestos`;
+  no busca en la web, para no sumar consultas ni tokens.
+- **Cobertura y alertas sin costo extra.** La cobertura de fundamentales sale de
+  `core/stats.coverage`; las alertas de tesis (`TESIS ROTA`/`TESIS DEBILITADA`) salen del
+  `thesis_status` ya resuelto. El puntaje por ejes se calcula del `FundamentalScore`
+  reutilizado, con umbrales en `fundamentals.axes`.
+
+**Por que.** El motor fija lo auditable (decisiones y niveles); la IA aporta lectura, no
+numeros. Una sola llamada de narrativa mantiene el costo de la corrida casi igual que
+antes.
+
+**Alternativa descartada.** Investigacion web por activo para la cobertura: se descarto por
+costo de tokens; la cobertura sale determinista de `stats` y de los `key_facts` ya
+recolectados.

@@ -35,6 +35,8 @@ class ReviewContext(StrEnum):
     WEEKLY = "WEEKLY"
     MACRO = "MACRO"
     """Resumen del contexto macro (EE.UU. y mundo) que afecta a las posiciones."""
+    PORTFOLIO_REVIEW = "PORTFOLIO_REVIEW"
+    """Narrativa de cartera del informe de ``review`` (secciones 1, 2 y 6)."""
 
 
 class Verdict(StrEnum):
@@ -96,6 +98,12 @@ class LLMReview:
     """Parrafo breve en lenguaje llano: valorizacion, objetivos de analistas, noticias."""
     catalizador: str = ""
     """Proximo evento relevante, con fecha si se conoce."""
+    veredicto: str = ""
+    """Narrativa de cartera (``PORTFOLIO_REVIEW``): seccion 1 del informe."""
+    cobertura: str = ""
+    """Narrativa de cartera: la tabla de cobertura de datos (seccion 2)."""
+    supuestos: str = ""
+    """Narrativa de cartera: supuestos y vacios de la corrida (seccion 6)."""
 
     @property
     def confidence_score(self) -> int:
@@ -145,6 +153,9 @@ def parse_review(payload: Mapping[str, object], today: dt.date) -> LLMReview:
         verdict=_optional_enum(payload, "verdict", Verdict, Verdict.UNKNOWN),
         fundamento=_optional_text(payload, "fundamento") or "",
         catalizador=_optional_text(payload, "catalizador") or "",
+        veredicto=_optional_text(payload, "veredicto") or "",
+        cobertura=_optional_text(payload, "cobertura") or "",
+        supuestos=_optional_text(payload, "supuestos") or "",
     )
     _check_action(review.accion, review.context)
     if review.thesis_status is ThesisStatus.BROKEN and not review.broken_is_confirmed(today):

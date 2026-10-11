@@ -20,7 +20,7 @@ tiene evidencia a su favor.
 | 3 | Backtest walk-forward + puerta de validación | archivado (`legacy/backtest/`) |
 | 4 | Importación XTB, reconciliación, plan nocturno con tickets y adopción | archivado (`legacy/`) |
 | 5 | **Funcion 2**: screener de compra (técnico + fundamentales + proyecciones) | hecho (`swing screen`) |
-| 6 | **Funcion 1**: revisión de posiciones con IA que decide mantener/vender | hecho (`swing review --llm`) |
+| 6 | **Funcion 1**: revisión de posiciones con IA que decide mantener/vender | hecho (`swing review`) |
 | 7 | Journal SQLite, métricas, kill switch | archivado (`legacy/adapters_journal.py`) |
 | 8 | Programación y notificación | hecho (`swing nightly`, `swing schedule`) |
 
@@ -39,25 +39,25 @@ opcional. Ver `docs/PROGRAMACION.md`.
 
 ## Comandos
 
+El CLI expone **tres comandos**: `stats`, `review` y `screen`. El resto sigue existiendo
+pero está **oculto** (`check-config`, `verify-broker`, `data-health`, `analyze-positions`,
+`discover`, `nightly`, `schedule`): son herramientas de diagnóstico y automatización.
+
 ```powershell
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e ".[dev]"
 
-.venv\Scripts\swing.exe check-config    # valida config/ completa
-.venv\Scripts\swing.exe verify-broker   # qué de broker.yaml sigue sin verificar
-.venv\Scripts\swing.exe data-health     # velas, frescura, huecos y earnings por ticker
-.venv\Scripts\swing.exe analyze-positions  # el objetivo: valuar posiciones y hallazgos
-.venv\Scripts\swing.exe review          # función 1: recomendación sobre tus posiciones
-.venv\Scripts\swing.exe review --llm    # función 1: la IA pondera todo y decide mantener/vender
+.venv\Scripts\swing.exe stats           # ficha por posicion con todos los campos (tipo Finviz)
+.venv\Scripts\swing.exe review          # función 1: stats + recomendación sobre tus posiciones
 .venv\Scripts\swing.exe screen          # función 2: screener de compra (S&P 500 + fundamentales)
-.venv\Scripts\swing.exe screen --llm    # función 2: agrega la tesis de compra de la IA
-.venv\Scripts\swing.exe discover        # alias heredado de `screen`
-.venv\Scripts\swing.exe nightly         # fase 8: screen + review en una corrida, resumen y aviso
-.venv\Scripts\swing.exe schedule        # fase 8: horario local y comando para el Programador de tareas
 .venv\Scripts\python.exe -m pytest      # tests offline (+1 live con RUN_LIVE=1)
 .venv\Scripts\python.exe -m ruff check .
 .venv\Scripts\python.exe -m mypy src
 ```
+
+`nightly` (`swing nightly`) corre `screen` y luego `review --formato detalle` de una
+pasada y deja un resumen; `schedule` imprime el horario local (`America/Santiago`) y el
+comando para el Programador de tareas.
 
 `check-config` no necesita red ni broker. Sale con código 1 y el nombre del archivo si
 algo no valida. `verify-broker` tampoco habla con el broker: muestra qué dice la
@@ -80,30 +80,45 @@ reporte y declara la fuente. Los hallazgos y las acciones sugeridas salen en Mar
 por convención el código de salida es 0 sin hallazgos, 1 si el reporte o la config
 fallan y 2 con hallazgos contra `strategy.yaml`.
 
-`review` es la **función 1**: recomendación sobre tus posiciones. Adopta lo abierto y corre
-las diez reglas de salida de §5.7 (las mismas del backtest) sin mirar el universo ni proponer
-entradas. Con `--llm` la IA pondera fundamentales, proyecciones de analistas, noticias y
-contexto macro y **decide** mantener o vender con su veredicto (`BUY/HOLD/SELL/WATCH`);
-el motor sigue fijando stop, meta y tamaño. Hay dos formatos con `--formato`:
+`stats` no decide nada: reúne la **mayor cantidad de campos posible** de cada posición
+abierta para un análisis posterior, en el estilo del screener de Finviz. Yahoo es la base
+(valoración, márgenes, proyecciones), los técnicos (SMA20/50/200, RSI, ATR, máximos/mínimos
+de 52 semanas) se calculan localmente desde las velas y Finviz aporta lo que Yahoo no publica
+(float y short interest, propiedad de insiders e institucional, ROA/ROIC, payout, desempeño
+por período). Escribe `output/stats_<fecha>.md` (o `--out`), con una tabla por sección y una
+sección final de **cobertura** que declara qué quedó sin dato (`-` nunca es un cero).
 
-- `detalle` (por defecto): bloque por posición con **qué hacer** en una frase concreta
-  (el nivel del stop, el % a vender), **qué más aplica** (las reglas que la precedencia
-  tapa) y la tesis de la IA; cierra con un glosario "cómo leer esto".
+`review` es la **función 1**: primero escribe el informe de `stats` (y reutiliza sus
+fundamentales) y después recomienda sobre tus posiciones. Adopta lo abierto y corre las
+diez reglas de salida de §5.7 (las mismas del backtest) sin mirar el universo ni proponer
+entradas. La IA (siempre encendida cuando hay clave; sin clave el informe sale igual, con
+un aviso) entrega su veredicto (`BUY/HOLD/SELL/WATCH`) y **decide** mantener o vender;
+el motor sigue fijando stop, meta y tamaño. Hay tres formatos con `--formato`:
+
+- `informe` (por defecto): **7 secciones** — 1. Veredicto, 2. Cobertura, 3. Decisiones,
+  4. Niveles, 5. Alertas, 6. Supuestos y vacíos, 7. Fuentes clave. El motor resuelve
+  decisiones, puntaje por ejes (V/C/G/P), niveles y alertas; la IA aporta una narrativa
+  en **una sola llamada** (`PORTFOLIO_REVIEW`, sin búsquedas nuevas) que llena el
+  veredicto, la cobertura y los supuestos.
+- `detalle`: bloque por posición con **qué hacer** y **qué más aplica** (las reglas que la
+  precedencia tapa) y la tesis de la IA; cierra con un glosario. Es el que usa `nightly`.
 - `tabla`: `Activo · Plat. · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Próximo
-  catalizador`. La **acción, el fundamento (prosa con valorización/objetivos/noticias) y el
-  catalizador** los aporta la IA con `--llm`; el **stop y el TP siempre salen del motor**
-  (niveles auditables).
+  catalizador`. La **acción, el fundamento y el catalizador** los aporta la IA; el
+  **stop y el TP siempre salen del motor**.
 
-Incluye la **posición local SQM‑B**: con `--llm` también se busca con noticias (no solo la
-valuación). Como el export no trae Sell Stop, el stop inicial se deriva al
+El puntaje por activo es la suma de cuatro ejes (valor, calidad, crecimiento,
+proyecciones), rango `-8..+8`; los umbrales viven en `fundamentals.axes` de
+`strategy.yaml`.
+
+Incluye la **posición local SQM‑B**: con `--web-search` también se busca con noticias
+(no solo la valuación). Como el export no trae Sell Stop, el stop inicial se deriva al
 `legacy.max_loss_from_cost_pct` (aproximación declarada).
 
-Con `--llm`, `review` agrega un bloque **"Contexto macro"**: datos deterministas (VIX,
-10Y, DXY, régimen) más una **síntesis macro con búsqueda** (Fed/tasas, inflación, dólar,
-elecciones, geopolítica/aranceles, petróleo) que se **inyecta en cada posición** para que
-el fundamento y la acción consideren el contexto de EE.UU. y del mundo. Un veredicto
-`WEAKENED` pasa a `REVISAR TESIS (IA)` delante de la regla y `BROKEN` (con evidencia
-fechada y con fuente) entra al motor como la regla `THESIS_EXIT`.
+Con `--web-search`, `review` agrega el bloque **"Contexto macro"**: datos deterministas
+(VIX, 10Y, DXY, régimen) más una **síntesis macro con búsqueda** que se **inyecta en cada
+posición**. Un veredicto `WEAKENED` aparece como `TESIS DEBILITADA` (vigilar); `BROKEN`
+(con evidencia fechada y con fuente) entra al motor como la regla `THESIS_EXIT` y sale en
+la sección de Alertas.
 
 `screen` es la **función 2**: el screener de compra. Rastrea el S&P 500 vivo, aplica el
 prefiltro técnico de tendencia/rango/liquidez y las **puertas fundamentales**
@@ -111,16 +126,18 @@ prefiltro técnico de tendencia/rango/liquidez y las **puertas fundamentales**
 potencial al objetivo de analistas) y ordena por **score compuesto** (valor/calidad/
 crecimiento/proyecciones mezclado con la fuerza relativa del universo). Saca a quien
 reporta resultados dentro del blackout de entrada (la misma puerta G6 del motor) y deja
-una sola clase de acción por empresa. Con `--min-score` filtra por ese score; con `--llm` agrega la
-tesis de compra de la IA (veredicto `BUY/WATCH`) y la deja en el JSON. Los candidatos
-quedan en `state/candidates.json`.
+una sola clase de acción por empresa. Con `--min-score` filtra por ese score; la IA
+(obligatoria cuando hay clave) agrega la tesis de compra (veredicto `BUY/WATCH`) y la deja
+en el JSON. Los candidatos quedan en `state/candidates.json`.
 
 ### Clave del LLM (fase 6)
 
-La capa de IA es **opcional**. La clave se lee del entorno (`SWING_LLM_API_KEY` o
+La capa de IA es **obligatoria cuando hay clave**: `review`, `screen` y `nightly` siempre
+piden la opinión (ya no hay `--llm`). La clave se lee del entorno (`SWING_LLM_API_KEY` o
 `OPENAI_API_KEY`) y, como último recurso local, de `.secrets/llm_api_key.txt` (ignorado
 por git). El `base_url` y el `model` salen de `SWING_LLM_BASE_URL`/`SWING_LLM_MODEL` o de
-un `.secrets/llm.json` local. Sin clave, todo sale igual (determinista).
+un `.secrets/llm.json` local. Sin clave, `review` y `screen` salen igual en modo
+determinista con un aviso.
 
 Ejemplo con DeepSeek (chat OpenAI-compatible), en `.secrets/llm.json`:
 
@@ -128,7 +145,7 @@ Ejemplo con DeepSeek (chat OpenAI-compatible), en `.secrets/llm.json`:
 {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"}
 ```
 
-`review --llm` agrega la decisión por posición y `screen --llm` la tesis de compra;
+`review` agrega la decisión por posición y `screen` la tesis de compra;
 `--web-search` habilita la búsqueda web **por function calling** (DeepSeek no ejecuta
 `web_search` del lado del servidor, pero sí llamadas a función): el modelo pide
 `web_search`, la resolvemos con **Tavily** y le devolvemos resultados con `url`, que
@@ -170,6 +187,9 @@ supervivencia del §11.1.
 ## Estructura
 
 `core/` es puro: sin disco, sin red, sin imports de `adapters/`. Un test lo verifica.
+`adapters/` es I/O (Yahoo, cache, config, XTB, Finviz, LLM). `services/` es la lógica
+de orquestación que el CLI usa para armar datos, informes e investigación, y no depende
+de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumentos.
 
 | Módulo | Sección del spec | Qué hace |
 |---|---|---|
@@ -197,6 +217,7 @@ supervivencia del §11.1.
 | `core/fundamentals.py` | 5.2 | `Fundamentals`, puertas y score compuesto (valor/calidad/crecimiento/proyecciones) |
 | `core/llm.py` | 12 | Esquema del veredicto LLM; la IA decide, el motor fija niveles |
 | `core/discovery.py` | 5.2 | Prefiltro técnico + puertas/score fundamentales y ranking del screener |
+| `core/stats.py` | — | Ficha por posición: specs de campos, derivados y render Markdown |
 | `adapters/config_loader.py` | 7 | YAML → modelos, con errores que dicen qué falta |
 | `adapters/cache.py` | 6 | Una vela diaria por símbolo en CSV, escritura atómica, rango faltante |
 | `adapters/data_yahoo.py` | 6, 8 | Yahoo sin ajustes, earnings, `CLP=X`, mapeo de símbolos, sector |
@@ -206,7 +227,13 @@ supervivencia del §11.1.
 | `adapters/search.py` | 12 | Búsqueda web por function calling (Tavily) para la segunda opinión |
 | `adapters/notify.py` | 14 | Notificación opcional de la corrida (webhook genérico o Telegram), best-effort |
 | `adapters/xtb_report.py` | — | Export de XTB → `PositionReport` puro (hojas + hoja local CLP) |
-| `cli.py` | — | `check-config`, `verify-broker`, `data-health`, `analyze-positions`, `review`, `screen`/`discover`, `nightly`, `schedule` |
+| `adapters/finviz.py` | — | Snapshot de Finviz por ticker (scraping best effort, cache por día) |
+| `services/paths.py` | — | Rutas del proyecto (`posiciones/`, `output/`, `state/`) y nombres únicos de informes |
+| `services/market_data.py` | 6 | Arma velas, FX, quotes, earnings y fuerza relativa del snapshot |
+| `services/stats.py` | 5.2 | Ensambla el informe de stats (Yahoo base + técnicos + Finviz + hoja local) |
+| `services/research.py` | 12 | Hechos para el prompt de la IA y contexto macro con caché |
+| `services/reporting.py` | 14 | Presentación de la corrida nocturna y lectura de candidatos |
+| `cli.py` | — | `check-config`, `verify-broker`, `data-health`, `analyze-positions`, `stats`, `review`, `screen`/`discover`, `nightly`, `schedule` |
 
 Queda la fase 8 implementada como `swing nightly` + `swing schedule`: el núcleo no
 depende de ella y la notificación es opcional. Ver `docs/PROGRAMACION.md`.

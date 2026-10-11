@@ -475,6 +475,29 @@ class ScoreAnchors(StrictModel):
         return self
 
 
+class AxisThresholds(StrictModel):
+    """Cortes (0..100) que traducen el score de un bloque a un eje ``-2..+2``.
+
+    Se usan en el informe de ``review``: cada bloque (valor, calidad, crecimiento,
+    proyecciones) es un eje y la suma es el puntaje del activo. Los cortes son
+    configurables para que el informe lea sus umbrales de la config, no del codigo.
+    """
+
+    plus2: float = Field(default=75.0, ge=0.0, le=100.0)
+    plus1: float = Field(default=60.0, ge=0.0, le=100.0)
+    minus1: float = Field(default=40.0, ge=0.0, le=100.0)
+    minus2: float = Field(default=25.0, ge=0.0, le=100.0)
+
+    @model_validator(mode="after")
+    def _check(self) -> AxisThresholds:
+        if not (self.plus2 > self.plus1 > self.minus1 > self.minus2):
+            raise ValueError(
+                "fundamentals.axes debe cumplir plus2 > plus1 > minus1 > minus2; recibio "
+                f"{self.plus2}/{self.plus1}/{self.minus1}/{self.minus2}"
+            )
+        return self
+
+
 class FundamentalWeights(StrictModel):
     """Peso relativo de cada bloque del score compuesto (no tienen que sumar 1)."""
 
@@ -511,6 +534,7 @@ class FundamentalsConfig(StrictModel):
     require_fundamentals: bool
     score: ScoreAnchors
     weights: FundamentalWeights
+    axes: AxisThresholds = Field(default_factory=AxisThresholds)
 
 
 class ScreenerConfig(StrictModel):

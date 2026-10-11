@@ -12,6 +12,9 @@ Es la capa pura entre ``decide()`` (que decide) y la CLI (que lee disco y red):
   sistema recomienda; nunca envia.
 - ``render_tickets`` presenta esos tickets para copiar en el broker.
 - ``render_review`` y ``render_table`` arman los informes de posiciones en Markdown.
+- ``build_review_report`` y ``render_review_report`` arman el informe de 7 secciones
+  del comando ``review`` (veredicto, cobertura, decisiones, niveles, alertas,
+  supuestos y fuentes).
 
 Todo es puro: los datos llegan resueltos y ninguna funcion toca disco ni red.
 """
@@ -25,13 +28,16 @@ from dataclasses import dataclass, replace
 from swing.core.calendar import SessionCalendar
 from swing.core.engine import IndicatorFrame, NightPlan, TradeExitJudgment
 from swing.core.exits import ExitEvaluation, ExitSignal
-from swing.core.llm import LLMReview, ThesisStatus
+from swing.core.fundamentals import AxisRatings, format_rating
+from swing.core.llm import KeyFact, LLMReview, ThesisStatus
 from swing.core.models import BrokerConfig, StrategyConfig
 from swing.core.orders import OrderExpiry, OrderKind, Ticket, expiry_from_config
 from swing.core.reasons import Action, Reason
 from swing.core.reconcile import BrokerPosition
 from swing.core.report import LocalPosition
 from swing.core.state import TradeState, TrancheState
+from swing.core.stats import StatsReport, all_field_keys
+from swing.core.stats import coverage as field_coverage
 
 #: Tolerancia de volumen para no dejar un tramo residual por redondeo.
 VOLUME_EPSILON = 1e-9
@@ -604,3 +610,427 @@ def _catalyst(review: LLMReview | None, earnings: dt.date | None) -> str:
     if earnings is not None:
         return f"Resultados {earnings.isoformat()}"
     return "-"
+
+
+# --------------------------------------------------------------------------- #
+# Informe de review (7 secciones)
+# --------------------------------------------------------------------------- #
+
+#: Decisiones que no son una accion de cambio (para contar cuantas requieren algo).
+_NEUTRAL_DECISIONS = frozenset({"Mantener", "Revisar (fuera del motor)"})
+
+
+@dataclass(frozen=True, slots=True)
+class AssetReview:
+    """Una fila del informe de review: motor (niveles/decision) + IA (fundamento)."""
+
+    ticker: str
+    theme: str
+    weight_pct: float
+    price: float
+    retorno_pct: float
+    axes: AxisRatings | None
+    coverage_pct: float | None
+    upside_pct: float | None
+    analysts: float | None
+    decision: str
+    confidence: int
+    stop: float | None
+    target: float | None
+    earnings: str
+    fundamento: str
+    catalyst: str
+    thesis: ThesisStatus | None
+    facts: tuple[KeyFact, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewReport:
+    """Todo lo que el informe de review necesita, ya resuelto (sin red ni disco)."""
+
+    account: str
+    today: dt.date
+    regime: str
+    regime_detail: str
+    horizon: str
+    equity_clp: float
+    cash_pct: float
+    fx: float
+    assets: tuple[AssetReview, ...]
+    theme_weights: Mapping[str, float]
+    alerts: tuple[str, ...]
+    trims: tuple[str, ...]
+    limitations: tuple[str, ...]
+    narrative: LLMReview | None
+    macro: LLMReview | None
+    macro_data: Mapping[str, str]
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _row_context(row: object, key: str) -> object:
+    context = getattr(row, "context", None)
+    return context.get(key) if isinstance(context, Mapping) else None
+
+
+def _row_field(row: object, key: str) -> object:
+    fields = getattr(row, "fields", None)
+    return fields.get(key) if isinstance(fields, Mapping) else None
+
+
+def _row_metrics(row: object) -> tuple[float | None, float | None, float | None]:
+    """``(cobertura fundamentales %, potencial objetivo %, n analistas)`` de una fila."""
+    if row is None:
+        return (None, None, None)
+    present, _ = field_coverage(getattr(row, "fields", {}))
+    total = len(all_field_keys())
+    coverage_pct = present / total * 100.0 if total else None
+    return (
+        coverage_pct,
+        _as_float(_row_field(row, "target_upside_pct")),
+        _as_float(_row_field(row, "analyst_count")),
+    )
+
+
+def _theme_weights(stats: StatsReport) -> dict[str, float]:
+    """Peso por tema sumando el ``weight_pct`` de cada fila del informe de stats."""
+    weights: dict[str, float] = {}
+    for row in stats.rows:
+        theme = str(_row_context(row, "theme") or "")
+        weight = _as_float(_row_context(row, "weight_pct"))
+        if theme and weight is not None:
+            weights[theme] = weights.get(theme, 0.0) + weight
+    return weights
+
+
+def build_review_report(
+    plan: NightPlan,
+    stats: StatsReport,
+    *,
+    axes_by_ticker: Mapping[str, AxisRatings],
+    reviews: Sequence[LLMReview] = (),
+    narrative: LLMReview | None = None,
+    local: Sequence[LocalPosition] = (),
+    macro: LLMReview | None = None,
+    macro_data: Mapping[str, str] | None = None,
+) -> ReviewReport:
+    """Ensambla el informe de review desde el plan, el stats y las opiniones de la IA.
+
+    Las posiciones del motor y las locales se cruzan con la fila de ``stats`` (peso,
+    tema, cobertura, analistas, earnings) y con la opinion de la IA (fundamento,
+    catalizador, tesis, hechos). Nada se recalcula dos veces: el puntaje por eje
+    llega resuelto en ``axes_by_ticker`` y los niveles salen del ``TradeState``.
+    """
+    by_ticker = {review.ticker: review for review in reviews}
+    rows = {row.ticker: row for row in stats.rows}
+    assets: list[AssetReview] = []
+    for judgment in sorted(plan.exits, key=lambda item: item.trade.ticker):
+        assets.append(_asset_from_trade(judgment, rows.get(judgment.trade.ticker), by_ticker, axes_by_ticker))
+    for position in local:
+        assets.append(_asset_from_local(position, rows.get(position.ticker), by_ticker, axes_by_ticker))
+
+    cash_pct = stats.cash_clp / stats.equity_clp * 100.0 if stats.equity_clp > 0.0 else 0.0
+    return ReviewReport(
+        account=stats.account,
+        today=stats.today,
+        regime=plan.regime.value,
+        regime_detail=plan.regime_detail,
+        horizon=plan.horizon.value,
+        equity_clp=stats.equity_clp,
+        cash_pct=cash_pct,
+        fx=stats.fx if stats.fx is not None else plan.fx,
+        assets=tuple(assets),
+        theme_weights=_theme_weights(stats),
+        alerts=tuple(f"{_short_rule(alert.reason)}: {alert.detail}" for alert in plan.alerts),
+        trims=tuple(trim.detail for trim in plan.cap_trims),
+        limitations=stats.limitations,
+        narrative=narrative,
+        macro=macro,
+        macro_data=dict(macro_data or {}),
+    )
+
+
+def _asset_from_trade(
+    judgment: TradeExitJudgment,
+    row: object,
+    by_ticker: Mapping[str, LLMReview],
+    axes_by_ticker: Mapping[str, AxisRatings],
+) -> AssetReview:
+    trade = judgment.trade
+    review = by_ticker.get(trade.ticker)
+    coverage_pct, upside_pct, analysts = _row_metrics(row)
+    target = trade.next_target_r
+    retorno = (trade.close / trade.entry_price - 1.0) * 100.0 if trade.entry_price > 0.0 else 0.0
+    return AssetReview(
+        ticker=trade.ticker,
+        theme=str(_row_context(row, "theme") or "sin_tema"),
+        weight_pct=_as_float(_row_context(row, "weight_pct")) or 0.0,
+        price=trade.close,
+        retorno_pct=retorno,
+        axes=axes_by_ticker.get(trade.ticker),
+        coverage_pct=coverage_pct,
+        upside_pct=upside_pct,
+        analysts=analysts,
+        decision=review.accion if (review is not None and review.accion) else _table_engine_action(judgment, trade),
+        confidence=review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE,
+        stop=trade.stop,
+        target=trade.entry_price + target * trade.risk_per_share if target is not None else None,
+        earnings=str(_row_context(row, "earnings") or "-"),
+        fundamento=review.fundamento
+        if (review is not None and review.fundamento)
+        else _engine_fundamento(judgment, trade),
+        catalyst=_catalyst(review, None),
+        thesis=review.thesis_status if review is not None else None,
+        facts=review.key_facts if review is not None else (),
+    )
+
+
+def _asset_from_local(
+    position: LocalPosition,
+    row: object,
+    by_ticker: Mapping[str, LLMReview],
+    axes_by_ticker: Mapping[str, AxisRatings],
+) -> AssetReview:
+    review = by_ticker.get(position.ticker)
+    coverage_pct, upside_pct, analysts = _row_metrics(row)
+    retorno = (position.last_price_clp / position.avg_price_clp - 1.0) * 100.0 if position.avg_price_clp > 0.0 else 0.0
+    return AssetReview(
+        ticker=position.ticker,
+        theme=str(_row_context(row, "theme") or "sin_tema"),
+        weight_pct=_as_float(_row_context(row, "weight_pct")) or 0.0,
+        price=position.last_price_clp,
+        retorno_pct=retorno,
+        axes=axes_by_ticker.get(position.ticker),
+        coverage_pct=coverage_pct,
+        upside_pct=upside_pct,
+        analysts=analysts,
+        decision=review.accion if (review is not None and review.accion) else "Revisar (fuera del motor)",
+        confidence=review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE,
+        stop=None,
+        target=None,
+        earnings=str(_row_context(row, "earnings") or "-"),
+        fundamento=review.fundamento
+        if (review is not None and review.fundamento)
+        else "Fuera del motor; solo valuacion.",
+        catalyst=_catalyst(review, None),
+        thesis=review.thesis_status if review is not None else None,
+        facts=review.key_facts if review is not None else (),
+    )
+
+
+def review_narrative_facts(report: ReviewReport) -> dict[str, object]:
+    """Hechos compactos de la cartera para la consulta narrativa (sin volver a pedir datos).
+
+    Se le pasa a la IA solo lo que necesita para redactar: pesos, puntajes, decision
+    del motor, cobertura, tesis y los hechos ya citados. No incluye fundamentales
+    crudos ni dispara busquedas: mantiene el consumo de tokens casi plano.
+    """
+    positions: list[dict[str, object]] = []
+    for asset in report.assets:
+        positions.append(
+            {
+                "ticker": asset.ticker,
+                "tema": asset.theme,
+                "peso_pct": round(asset.weight_pct, 2),
+                "puntaje": asset.axes.total if asset.axes is not None else None,
+                "ejes": list(asset.axes.as_tuple()) if asset.axes is not None else None,
+                "potencial_objetivo_pct": None if asset.upside_pct is None else round(asset.upside_pct, 2),
+                "decision_motor": asset.decision,
+                "confianza": asset.confidence,
+                "cobertura_fundamentales_pct": None if asset.coverage_pct is None else round(asset.coverage_pct, 1),
+                "analistas": asset.analysts,
+                "earnings": asset.earnings,
+                "tesis_ia": asset.thesis.value if asset.thesis is not None else None,
+                "fundamento_ia": asset.fundamento,
+                "hechos": [
+                    {"fact": fact.fact, "date": fact.date.isoformat(), "source_url": fact.source_url}
+                    for fact in asset.facts
+                ],
+            }
+        )
+    return {
+        "regimen": report.regime,
+        "horizonte": report.horizon,
+        "equity_clp": report.equity_clp,
+        "caja_pct": round(report.cash_pct, 2),
+        "concentracion_tema_pct": {theme: round(pct, 2) for theme, pct in report.theme_weights.items()},
+        "posiciones": positions,
+        "alertas": list(report.alerts),
+        "recortes": list(report.trims),
+        "limites": list(report.limitations),
+        "contexto_macro": report.macro.fundamento if report.macro is not None else "",
+    }
+
+
+def render_review_report(report: ReviewReport) -> str:
+    """Informe de review en 7 secciones: motor determinista, IA solo narrativa."""
+    lines: list[str] = []
+    lines.append(f"# Review de cartera - cuenta {report.account}")
+    lines.append("")
+    lines.append(
+        f"Datos al {report.today} - regimen {report.regime} - FX {report.fx:.2f} - "
+        f"equity {report.equity_clp:,.0f} CLP - caja {report.cash_pct:.1f} %"
+    )
+    lines.append("")
+    lines.extend(_section_veredicto(report))
+    lines.extend(_section_cobertura(report))
+    lines.extend(_section_decisiones(report))
+    lines.extend(_section_niveles(report))
+    lines.extend(_section_alertas(report))
+    lines.extend(_section_supuestos(report))
+    lines.extend(_section_fuentes(report))
+    return "\n".join(lines) + "\n"
+
+
+def _section_veredicto(report: ReviewReport) -> list[str]:
+    lines = ["## 1. Veredicto", ""]
+    narrative = report.narrative
+    if narrative is not None and narrative.veredicto:
+        lines.append(narrative.veredicto)
+    else:
+        lines.append("Sin narrativa de la IA en esta corrida; resumen determinista del motor.")
+    lines.append("")
+    detail = f" ({report.regime_detail})" if report.regime_detail else ""
+    lines.append(f"- Regimen {report.regime}{detail}; horizonte {report.horizon}.")
+    if report.theme_weights:
+        pares = ", ".join(
+            f"{theme} {pct:.1f} %" for theme, pct in sorted(report.theme_weights.items(), key=lambda kv: -kv[1])
+        )
+        lines.append(f"- Concentracion por tema: {pares}.")
+    con_accion = sum(1 for asset in report.assets if asset.decision not in _NEUTRAL_DECISIONS)
+    lines.append(f"- {len(report.assets)} posicion(es); {con_accion} con accion del motor.")
+    lines.append("")
+    lines.extend(_macro_lines(report.macro, report.macro_data))
+    return lines
+
+
+def _section_cobertura(report: ReviewReport) -> list[str]:
+    lines = ["## 2. Cobertura", ""]
+    narrative = report.narrative
+    if narrative is not None and narrative.cobertura:
+        lines.append(narrative.cobertura)
+        lines.append("")
+    lines.append("| Activo | Tema | Peso | Fundamentales | Analistas | Proximo reporte | Tesis IA |")
+    lines.append("|---|---|---:|---:|---:|---|---|")
+    for asset in sorted(report.assets, key=lambda item: -item.weight_pct):
+        cov = f"{asset.coverage_pct:.0f} %" if asset.coverage_pct is not None else "-"
+        analysts = f"{asset.analysts:.0f}" if asset.analysts is not None else "-"
+        thesis = asset.thesis.value if asset.thesis is not None else "-"
+        lines.append(
+            f"| {asset.ticker} | {asset.theme} | {asset.weight_pct:.1f} % | {cov} | {analysts} | "
+            f"{asset.earnings} | {thesis} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _section_decisiones(report: ReviewReport) -> list[str]:
+    lines = ["## 3. Decisiones", ""]
+    lines.append("| Activo | Puntaje | Ejes (V/C/G/P) | Potencial obj. | Decision | Conf. |")
+    lines.append("|---|---:|---|---:|---|---:|")
+    for asset in sorted(report.assets, key=lambda item: (-(item.axes.total if item.axes else 0), item.ticker)):
+        puntaje = format_rating(asset.axes.total) if asset.axes is not None else "-"
+        ejes = "/".join(format_rating(axis) for axis in asset.axes.as_tuple()) if asset.axes is not None else "-"
+        lines.append(
+            f"| {asset.ticker} | {puntaje} | {ejes} | {_fmt_pct(asset.upside_pct)} | {asset.decision} | "
+            f"{asset.confidence} |"
+        )
+    lines.append("")
+    for asset in report.assets:
+        if not asset.fundamento:
+            continue
+        lines.append(f"- **{asset.ticker}**: {asset.fundamento}")
+        if asset.catalyst and asset.catalyst != "-":
+            lines.append(f"    - Proximo catalizador: {asset.catalyst}")
+    lines.append("")
+    return lines
+
+
+def _section_niveles(report: ReviewReport) -> list[str]:
+    lines = ["## 4. Niveles (stops y metas)", ""]
+    lines.append("| Activo | Precio | Stop (motor) | Meta (motor) | Dist. stop | Retorno |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
+    for asset in sorted(report.assets, key=lambda item: item.ticker):
+        stop = f"{asset.stop:.2f}" if asset.stop is not None else "-"
+        target = f"{asset.target:.2f}" if asset.target is not None else "-"
+        dist = f"{(asset.stop / asset.price - 1.0) * 100.0:+.2f} %" if asset.stop and asset.price > 0.0 else "-"
+        lines.append(
+            f"| {asset.ticker} | {asset.price:.2f} | {stop} | {target} | {dist} | {asset.retorno_pct:+.2f} % |"
+        )
+    lines.append("")
+    lines.append("Stop y meta los fija el motor; no la IA. La distancia al stop es negativa si el stop esta abajo.")
+    lines.append("")
+    return lines
+
+
+def _section_alertas(report: ReviewReport) -> list[str]:
+    lines = ["## 5. Alertas", ""]
+    alerts = list(report.alerts)
+    for asset in report.assets:
+        if asset.thesis is ThesisStatus.BROKEN:
+            lines.append(f"- **{asset.ticker}**: TESIS ROTA - revisar salida.")
+        elif asset.thesis is ThesisStatus.WEAKENED:
+            lines.append(f"- **{asset.ticker}**: TESIS DEBILITADA - vigilar.")
+    for alert in alerts:
+        lines.append(f"- {alert}")
+    for trim in report.trims:
+        lines.append(f"- Recorte por concentracion: {trim}")
+    if len(lines) == 2:
+        lines.append("Sin alertas del motor ni tesis debilitadas.")
+    lines.append("")
+    return lines
+
+
+def _section_supuestos(report: ReviewReport) -> list[str]:
+    lines = ["## 6. Supuestos y vacios", ""]
+    narrative = report.narrative
+    if narrative is not None and narrative.supuestos:
+        lines.append(narrative.supuestos)
+        lines.append("")
+    if report.limitations:
+        for limitation in report.limitations:
+            lines.append(f"- {limitation}")
+    elif not (narrative is not None and narrative.supuestos):
+        lines.append("Sin supuestos declarados.")
+    lines.append("")
+    return lines
+
+
+def _section_fuentes(report: ReviewReport) -> list[str]:
+    lines = ["## 7. Fuentes clave", ""]
+    seen: set[tuple[dt.date, str, str]] = set()
+    any_fact = False
+    for fact in report.narrative.key_facts if report.narrative is not None else ():
+        any_fact |= _emit_fact(lines, "CARTERA", fact, seen)
+    for asset in report.assets:
+        for fact in asset.facts:
+            any_fact |= _emit_fact(lines, asset.ticker, fact, seen)
+    if not any_fact:
+        lines.append("Sin fuentes citadas en esta corrida (la IA no aporto hechos con URL).")
+    lines.append("")
+    return lines
+
+
+def _emit_fact(
+    lines: list[str],
+    label: str,
+    fact: KeyFact,
+    seen: set[tuple[dt.date, str, str]],
+) -> bool:
+    key = (fact.date, fact.fact, fact.source_url)
+    if key in seen:
+        return False
+    seen.add(key)
+    source = f" ({fact.source_url})" if fact.source_url else ""
+    lines.append(f"- **{label}** {fact.date.isoformat()}: {fact.fact}{source}")
+    return True
+
+
+def _fmt_pct(value: float | None) -> str:
+    return f"{value:+.2f} %" if value is not None else "-"

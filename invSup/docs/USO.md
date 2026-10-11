@@ -13,18 +13,19 @@ las ordenes en el broker y confirmas lo hecho.
 - Opcional (notificacion de la corrida nocturna): `SWING_NOTIFY_WEBHOOK` o
   `SWING_TELEGRAM_BOT_TOKEN` + `SWING_TELEGRAM_CHAT_ID` (ver `docs/PROGRAMACION.md`).
 
-Sin claves, todo funciona igual en modo determinista.
+Sin clave del LLM, `review` y `screen` funcionan igual en modo determinista (con un aviso).
 
 ## Flujo semanal (o diario, si queres candidatos frescos)
 
 Las dos funciones del producto:
 
 ```powershell
-# Funcion 1 - que hacer con lo que ya tenes (la IA decide mantener/vender; el motor el stop):
-swing review --llm --web-search --formato tabla
+# Funcion 1 - que hacer con lo que ya tenes (el motor fija el stop; la IA narra y decide):
+swing review                          # informe de 7 secciones (con --web-search agrega la busqueda)
+swing review --formato detalle        # bloque por posicion, como lo deja `nightly`
 
 # Funcion 2 - que comprar (screener dinamico: tecnico + fundamentales + proyecciones):
-swing screen --llm --top 20           # deja state/candidates.json con score y veredicto
+swing screen --top 20                 # deja state/candidates.json con score y veredicto
 ```
 
 ## Corrida nocturna (fase 8)
@@ -32,7 +33,7 @@ swing screen --llm --top 20           # deja state/candidates.json con score y v
 Para dejarlo agendado y sin intervencion, una sola pasada:
 
 ```powershell
-swing nightly --llm --web-search      # screen + review, resumen en output/nightly_<fecha>.md
+swing nightly --web-search            # screen + review --formato detalle, resumen en output/nightly_<fecha>.md
 swing schedule                        # imprime la hora local y el comando schtasks
 ```
 
@@ -46,25 +47,50 @@ esta en `docs/PROGRAMACION.md`.
 - `review_<fecha>.md` — recomendacion por posicion (o `--out`).
 - `contexto_<fecha>.md` / `.json` — resumen macro (se reutiliza; `--refresh-contexto` lo regenera).
 
+`stats` escribe `output/stats_<fecha>.md` (o `--out`) y, junto a él, un
+`stats_<fecha>.json` con el mismo contenido en forma estructurada (contrato
+`schema: 1`). `analyze-positions` y `review` **consumen** ese JSON si es de hoy y
+de la misma cuenta, para no volver a pedir a Yahoo los fundamentales y las
+cotizaciones ya capturados; lo que falte se completa con el proveedor.
+
 ## Diagnostico
 
 ```powershell
 swing check-config               # valida config/ (sin red)
 swing verify-broker              # que de broker.yaml sigue sin verificar
 swing data-health                # velas, frescura, huecos y earnings por ticker
+swing stats                      # ficha por posicion con todos los campos (tipo Finviz)
 ```
+
+`stats` no recomienda nada: reúne la mayor cantidad de campos posible de cada posición
+abierta (empresa, valoración, rentabilidad, salud financiera, crecimiento, dividendos,
+técnico, desempeño, liquidez/propiedad y analistas), más una tabla de **compras de insiders**
+recientes (Form 4, vía Finviz), para un análisis posterior. También incluye la posición local
+de la hoja `Hoja1` del export (p. ej. SQM-B), resuelta por sufijo de mercado y con sus montos
+en CLP. Yahoo es la base, los técnicos se calculan localmente y Finviz aporta lo que Yahoo no
+publica; escribe `output/stats_<fecha>.md` (o `--out`). Un `-` es "sin dato"; la sección
+**Cobertura de datos** dice cuántos campos llegaron y cuáles faltan por ticker, y
+**Límites de esta evaluación** declara offline, montos en CLP y velas incoherentes de Yahoo.
+Con `--offline` solo lee cache.
 
 ## Como leer el informe
 
-- **R**: cuantas veces el riesgo inicial (entrada menos stop) vas ganando (+) o perdiendo (-).
-- **Que hacer / Accion**: la accion concreta (colocar stop a X, vender X %, subir stop, mantener).
-- **Stop / TP**: siempre del **motor** (auditables). Si el broker no trae Sell Stop, el motor
-  lo deriva al `legacy.max_loss_from_cost_pct` y lo declara.
-- **Tambien aplica, pero va despues**: otra regla se cumple, pero queda detras por orden de
-  seguridad (primero se protege el riesgo).
-- **Tesis (IA)**: el veredicto de la IA (`Mantener`/`Vender`/`Comprar`) con fuentes
-  (noticias). `WEAKENED` = vigilar; `BROKEN` = revisar salida. Nunca fija niveles.
-- **Contexto macro**: Fed/tasas, dolar, elecciones, geopolitica, petroleo, con fuentes.
+`review --formato informe` (por defecto) trae **7 secciones**: 1. Veredicto, 2. Cobertura,
+3. Decisiones, 4. Niveles, 5. Alertas, 6. Supuestos y vacíos, 7. Fuentes clave. El motor
+resuelve decisiones, el puntaje por ejes (V/C/G/P, suma `-8..+8`), los niveles y las
+alertas; la IA aporta una narrativa en una sola llamada (sin búsquedas nuevas) que llena
+el veredicto, la cobertura y los supuestos.
+
+`review --formato detalle` (el que usa `nightly`) repite la lectura de siempre:
+
+- **Qué hacer:** la acción concreta (el nivel del stop, el % a vender).
+- **Qué más aplica:** las reglas que la precedencia tapa.
+- **Tesis (IA):** el veredicto; `TESIS DEBILITADA` = vigilar y `TESIS ROTA` = revisar
+  salida (con evidencia fechada entra al motor como `THESIS_EXIT`).
+- **Contexto macro:** Fed/tasas, dólar, elecciones, geopolítica, petróleo, con fuentes.
+
+En cualquier formato, el **stop/TP siempre salen del motor** (niveles auditables); la IA
+nunca los fija.
 
 En `screen`, lee la tabla por **score** (sobre 100): mezcla el score fundamental `fund`
 (valor/calidad/crecimiento/proyecciones) con la fuerza relativa `RS%` segun

@@ -19,6 +19,7 @@ código queda como referencia y ya no se instala ni expone comandos.
 ```
 core/         nucleo PURO: sin disco, sin red, sin importar adapters/ (un test lo verifica)
 adapters/     I/O: Yahoo, cache, config YAML, parser XTB, fundamentales, LLM, busqueda, universo, notificacion
+services/     orquestacion del CLI: rutas, armado de datos, informes y research (no importa cli)
 cli.py        comandos (Typer); es la capa que toca disco/red y arma los objetos de core
 legacy/       codigo archivado (backtest, journal); fuera del paquete, solo referencia
 ```
@@ -26,7 +27,10 @@ legacy/       codigo archivado (backtest, journal); fuera del paquete, solo refe
 Regla de oro: **`core/` no importa `adapters/`**. Los datos entran ya resueltos
 (`Bar`, `PriceSeries`, `TradeState`, `PositionReport`) y la salida son objetos
 (`NightPlan`, `Analysis`, `Ticket`). Eso permite que las dos funciones compartan
-exactamente la misma función de decisión.
+exactamente la misma función de decisión. Sobre esa base, `services/` concentra la
+lógica de orquestación (resolver rutas, juntar velas/FX/fundamentales, escribir el
+informe) para que `cli.py` quede con los comandos y los argumentos; un test fija que
+`services/` no dependa de `cli.py`.
 
 ## 3. Flujo de una corrida
 
@@ -37,22 +41,30 @@ motor `decide()` sigue siendo el mismo que consumen `review` y `screen`, y el fl
 config → universo → datos → reporte XTB → reconciliación → adopción → `decide()` → IA
 opcional → tickets e informe (`output/plan_<fecha>.md`).
 
-### 3.2 Función 1 — revisión de posiciones: `swing review [--llm --web-search --formato tabla]`
+### 3.2 Función 1 — revisión de posiciones: `swing review [--web-search --formato informe|detalle|tabla]`
 
 Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantiene o se vende:
 1. Reporte → adopción → `decide(universe=())` (solo salidas).
-2. **Fundamentales y proyecciones** (porposición): `adapters/fundamentals` inyecta
+2. **Stats por posición** (`services/stats`): escribe `output/stats_<fecha>.md` y `.json` y
+   reutiliza sus fundamentales, para no volver a pedir todo a Yahoo.
+3. **Fundamentales y proyecciones** (por posición): `adapters/fundamentals` inyecta
    valoración, ROE/margen, crecimiento y objetivo de analistas del ticker.
-3. La IA (opcional) pondera técnico + fundamental + proyecciones + noticias y emite su
-   **veredicto** (`BUY/HOLD/SELL/WATCH`) y la **acción** (`Mantener`, `Vender 50%`,
-   ...); sobre una posición no puede sumar. El motor sigue fijando stop/meta/tamaño.
-4. **Contexto macro**: `_macro_brief` (una consulta macro con búsqueda; se cachea en
+4. La IA (obligatoria cuando hay clave; ya no hay `--llm`) pondera técnico + fundamental +
+   proyecciones + noticias y emite su **veredicto** (`BUY/HOLD/SELL/WATCH`) y la **acción**
+   (`Mantener`, `Vender 50%`, ...); sobre una posición no puede sumar. El motor sigue
+   fijando stop/meta/tamaño.
+5. **Contexto macro**: `_macro_brief` (una consulta macro con búsqueda; se cachea en
    `output/contexto_<fecha>.json/.md` y se reutiliza) + datos deterministas
    (`VIX`, `10Y`, `DXY`, régimen). Se inyecta en cada posición.
-5. Informe: `--formato detalle` (bloques explicados) o `--formato tabla`
-   (`Activo · Plat. · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`).
+6. **Narrativa de cartera** (una sola llamada `PORTFOLIO_REVIEW`, sin búsquedas nuevas) que
+   llena el veredicto, la cobertura y los supuestos del informe.
+6. Informe con `--formato`:
+   - `informe` (por defecto): **7 secciones** — Veredicto, Cobertura, Decisiones, Niveles,
+     Alertas, Supuestos y vacíos, Fuentes clave. Puntaje por ejes V/C/G/P (`-8..+8`).
+   - `detalle` (el de `nightly`): bloques explicados.
+   - `tabla`: `Activo · Plat. · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`.
 
-### 3.3 Función 2 — screener de compra: `swing screen [--llm]`
+### 3.3 Función 2 — screener de compra: `swing screen`
 
 1. Universo amplio: S&P 500 vivo desde Wikipedia (GICS → tema) o watchlist local.
 2. Prefiltro técnico (`core/discovery`): tendencia SMA200, stack, rango 52 semanas,
@@ -61,8 +73,8 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
    puertas (`fundamentals:` en `strategy.yaml`) y **score compuesto** por bloque
    (valor/calidad/crecimiento/proyecciones; `core/fundamentals.py`).
 4. Ranking por score → los `top` mejores y `min_composite_score` van a
-   `state/candidates.json`. Con `--llm`, la IA emite su tesis de compra
-    (`BUY/WATCH`) por candidato.
+   `state/candidates.json`. La IA (obligatoria cuando hay clave) emite su tesis de compra
+   (`BUY/WATCH`) por candidato.
 
 ### 3.4 Corrida nocturna (fase 8) — `swing nightly`
 
@@ -111,8 +123,13 @@ Limit; la misma que usaba el simulador archivado.
 - **Contexto macro** (`ReviewContext.MACRO`): una consulta por corrida (Fed/tasas,
   inflación, dólar, elecciones, geopolítica, petróleo) con fuentes; se cachea y se inyecta
   en cada posición.
+- **Narrativa de cartera** (`ReviewContext.PORTFOLIO_REVIEW`): **una** llamada por corrida,
+  **sin búsqueda web**, que redacta las secciones 1/2/6 del informe de `review` (veredicto,
+  cobertura, supuestos) a partir de los hechos ya recolectados. Mantiene bajo el costo de
+  tokens.
 - **Clave**: `SWING_LLM_API_KEY`/`OPENAI_API_KEY`, `SWING_LLM_BASE_URL`/`SWING_LLM_MODEL`
-  o `.secrets/llm.json` (ej. DeepSeek). Sin clave, todo sale determinista.
+  o `.secrets/llm.json` (ej. DeepSeek). Sin clave, `review` y `screen` salen deterministas
+  (con un aviso); ya no existe el flag `--llm`.
 
 ## 6. Journal y métricas (archivado)
 
@@ -138,6 +155,9 @@ El journal SQLite (`state/journal.db`) + `state/journal.csv` y el cálculo de m�
   vivía en el backtest archivado.
 - **`core/fx`**: CLP/USD implícito por mediana, con descarte de outliers.
 - **`adapters/universe`**: S&P 500 vivo (Wikipedia, con GICS) cacheado.
+- **`adapters/finviz`**: scrapéa la página de cotización de Finviz a un snapshot
+  normalizado, cacheado por día. Best effort: si bloquea o cambia el HTML, el informe sigue
+  con lo de Yahoo y declara la ausencia.
 
 ## 8. Configuración (`config/`)
 
@@ -147,18 +167,23 @@ conjunto que la watchlist — hay un test). Los invariantes se validan al cargar
 
 ## 9. Comandos
 
+El CLI expone **tres comandos**: `stats`, `review` y `screen`. El resto está **oculto**
+(sigue operativo para diagnóstico/automatización y aparece con `<cmd> --help` o
+`swing --help`).
+
 | Comando | Qué hace |
 |---|---|
-| `check-config` | valida `config/` sin red |
-| `verify-broker` | campos de `broker.yaml` sin verificar |
-| `data-health` | frescura/huecos/earnings por ticker |
-| `analyze-positions` | valúa la cartera y hallazgos (sin reglas de salida completas) |
-| `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto |
-| `screen` / `discover` | **funcion 2**: screener de compra (técnico + fundamentales + proyecciones) |
-| `nightly` | **fase 8**: `screen` + `review` en una corrida, resumen y notificación opcional |
-| `schedule` | **fase 8**: hora local del cierre + margen y comando `schtasks` |
+| `check-config` (oculto) | valida `config/` sin red |
+| `verify-broker` (oculto) | campos de `broker.yaml` sin verificar |
+| `data-health` (oculto) | frescura/huecos/earnings por ticker |
+| `analyze-positions` (oculto) | valúa la cartera y hallazgos (sin reglas de salida completas) |
+| `stats` | ficha por posición con todos los campos posibles (tipo Finviz) + posición local (CLP) y compras de insiders; emite `stats_<fecha>.md` y `.json` (`schema: 1`), que `analyze-positions` y `review` reutilizan |
+| `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto. `--formato informe` (7 secciones, por defecto), `detalle` o `tabla` |
+| `screen` (alias `discover`) | **funcion 2**: screener de compra (técnico + fundamentales + proyecciones) |
+| `nightly` (oculto) | **fase 8**: `screen` + `review --formato detalle` en una corrida, resumen y notificación opcional |
+| `schedule` (oculto) | **fase 8**: hora local del cierre + margen y comando `schtasks` |
 
-Los comandos archivados (`daily`, `scan`, `allocate`, `stats`, `confirm`, `backtest`)
+Los comandos archivados (`daily`, `scan`, `allocate`, `confirm`, `backtest`)
 ya no existen; su código está en `legacy/`.
 
 Códigos de salida: `0` limpio, `1` error de config/datos, `2` hallazgos/acciones,

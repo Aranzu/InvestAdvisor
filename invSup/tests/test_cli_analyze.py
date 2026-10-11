@@ -131,3 +131,70 @@ def test_con_out_escribe_el_informe(tmp_path: Path) -> None:
     assert out.is_file()
     assert "Informe escrito" in result.output
     assert "# Analisis de posiciones" in out.read_text(encoding="utf-8")
+
+
+def test_usa_el_stats_de_hoy_de_la_misma_cuenta(monkeypatch, tmp_path: Path) -> None:
+    from swing.core.stats import StatsReport
+    from swing.services.stats import save_report
+
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+    monkeypatch.setattr("swing.cli._output_dir", lambda: out_dir)
+
+    today = dt.date.today()
+    stats = StatsReport(
+        account="123456",
+        today=today,
+        mode="live",
+        fx=900.0,
+        fx_source="stats",
+        equity_clp=1.0,
+        cash_clp=1.0,
+        positions_value_clp=1.0,
+        rows=(),
+        quotes={
+            "TEST": {"price_usd": 110.0, "price_source": "stats", "earnings_date": None, "earnings_known": False},
+        },
+    )
+    save_report(stats, out_dir / f"stats_{today.isoformat()}.json")
+
+    report = build_positions_workbook(
+        tmp_path / "poses.xlsx",
+        open_rows=_open_with_stop(),
+        cash_balance=50_000_000.0,
+    )
+    result = RUNNER.invoke(
+        app,
+        ["analyze-positions", "--report", str(report), "--config-dir", str(CONFIG_DIR), "--offline"],
+    )
+    assert "datos de stats" in result.output
+
+
+def test_ignora_el_stats_de_otra_cuenta(monkeypatch, tmp_path: Path) -> None:
+    from swing.core.stats import StatsReport
+    from swing.services.stats import save_report
+
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+    monkeypatch.setattr("swing.cli._output_dir", lambda: out_dir)
+
+    today = dt.date.today()
+    stats = StatsReport(
+        account="OTRA",
+        today=today,
+        mode="live",
+        fx=900.0,
+        fx_source="stats",
+        equity_clp=0.0,
+        cash_clp=0.0,
+        positions_value_clp=0.0,
+        rows=(),
+    )
+    save_report(stats, out_dir / f"stats_{today.isoformat()}.json")
+
+    report = build_positions_workbook(tmp_path / "poses.xlsx", open_rows=_open_with_stop(), cash_balance=50_000_000.0)
+    result = RUNNER.invoke(
+        app,
+        ["analyze-positions", "--report", str(report), "--config-dir", str(CONFIG_DIR), "--offline"],
+    )
+    assert "datos de stats" not in result.output

@@ -18,7 +18,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 
-from swing.core.models import FundamentalsConfig, Rejected
+from swing.core.models import AxisThresholds, FundamentalsConfig, Rejected
 from swing.core.reasons import Reason
 
 
@@ -256,6 +256,54 @@ def score_fundamentals(f: Fundamentals, price: float, config: FundamentalsConfig
         coverage=coverage,
         missing=missing,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class AxisRatings:
+    """El score de cada bloque traducido a un eje ``-2..+2`` (puntaje del informe)."""
+
+    value: int
+    quality: int
+    growth: int
+    projections: int
+
+    @property
+    def total(self) -> int:
+        """Puntaje del activo: la suma de los cuatro ejes (``-8..+8``)."""
+        return self.value + self.quality + self.growth + self.projections
+
+    def as_tuple(self) -> tuple[int, int, int, int]:
+        return (self.value, self.quality, self.growth, self.projections)
+
+
+def _rate(block: float | None, thresholds: AxisThresholds) -> int:
+    """Traduce un bloque 0..100 a un eje. ``None`` (sin datos) es neutro (0)."""
+    if block is None:
+        return 0
+    if block >= thresholds.plus2:
+        return 2
+    if block >= thresholds.plus1:
+        return 1
+    if block >= thresholds.minus1:
+        return 0
+    if block >= thresholds.minus2:
+        return -1
+    return -2
+
+
+def rate_axes(score: FundamentalScore, thresholds: AxisThresholds) -> AxisRatings:
+    """Convierte un ``FundamentalScore`` en los cuatro ejes del informe de review."""
+    return AxisRatings(
+        value=_rate(score.value, thresholds),
+        quality=_rate(score.quality, thresholds),
+        growth=_rate(score.growth, thresholds),
+        projections=_rate(score.projections, thresholds),
+    )
+
+
+def format_rating(value: int) -> str:
+    """Un eje con signo explícito: ``+2``, ``0``, ``-1``."""
+    return f"+{value}" if value > 0 else str(value)
 
 
 @dataclass(slots=True)

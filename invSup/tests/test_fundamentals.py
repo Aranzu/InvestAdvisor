@@ -13,7 +13,14 @@ from pathlib import Path
 import pytest
 
 from swing.adapters.config_loader import load_strategy
-from swing.core.fundamentals import Fundamentals, check_fundamentals, score_fundamentals
+from swing.core.fundamentals import (
+    Fundamentals,
+    FundamentalScore,
+    check_fundamentals,
+    format_rating,
+    rate_axes,
+    score_fundamentals,
+)
 from swing.core.reasons import Reason
 
 FUND = load_strategy(Path(__file__).resolve().parents[1] / "config" / "strategy.yaml").fundamentals
@@ -153,3 +160,37 @@ def test_consenso_de_analistas_entra_en_proyecciones() -> None:
     venta = score_fundamentals(_f(recommendation_mean=4.0), 100.0, FUND)
     assert compra.projections is not None and venta.projections is not None
     assert compra.projections > venta.projections
+
+
+def test_rate_axes_suma_los_cuatro_ejes() -> None:
+    ratings = rate_axes(score_fundamentals(_f(), 100.0, FUND), FUND.axes)
+    assert ratings.as_tuple() == (2, 2, 2, 2)
+    assert ratings.total == 8
+
+
+def test_rate_axes_bloques_sin_datos_son_neutros() -> None:
+    solo_valor = Fundamentals(ticker="X", as_of=TODAY, source="t", forward_pe=10.0, price_to_book=1.0)
+    ratings = rate_axes(score_fundamentals(solo_valor, 100.0, FUND), FUND.axes)
+    assert ratings.value == 2
+    assert (ratings.quality, ratings.growth, ratings.projections) == (0, 0, 0)
+    assert ratings.total == 2
+
+
+def test_rate_axes_respeta_umbrales_de_config() -> None:
+    score = FundamentalScore(
+        value=60.0,
+        quality=40.0,
+        growth=25.0,
+        projections=24.9,
+        composite=None,
+        coverage=0.0,
+    )
+    ratings = rate_axes(score, FUND.axes)
+    assert ratings.as_tuple() == (1, 0, -1, -2)
+    assert ratings.total == -2
+
+
+def test_format_rating_con_signo() -> None:
+    assert format_rating(2) == "+2"
+    assert format_rating(0) == "0"
+    assert format_rating(-1) == "-1"

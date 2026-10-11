@@ -94,6 +94,14 @@ fundamentals:
     # Consenso de analistas (recommendationMean: 1 = compra fuerte, 5 = venta).
     rec_good: 1.5
     rec_bad: 3.5
+  # Cortes del puntaje por eje del informe de review: cada bloque 0..100 (valor,
+  # calidad, crecimiento, proyecciones) se traduce a un eje -2..+2 y la suma es el
+  # puntaje del activo. Simetrico alrededor de 50; ningun corte vive en el codigo.
+  axes:
+    plus2: 75.0
+    plus1: 60.0
+    minus1: 40.0
+    minus2: 25.0
   weights:
     value: 0.30
     quality: 0.30
