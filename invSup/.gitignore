@@ -1,6 +1,7 @@
 # Datos cacheados y salidas de corridas: se regeneran, no se versionan.
 cache/
 output/
+reports/
 logs/
 
 # Estado del broker: contiene datos de la cuenta.

@@ -347,6 +347,30 @@ def test_core_no_importa_la_capa_de_adaptadores() -> None:
     assert not offenders, f"core/ no debe depender de adapters/: {offenders}"
 
 
+def test_services_no_importa_el_modulo_de_comandos() -> None:
+    # services/ orquesta para el CLI pero no puede depender de cli.py: esa es la
+    # frontera que permite sacar logica de los comandos sin ciclos de importacion.
+    import ast
+    from pathlib import Path as P
+
+    offenders: list[str] = []
+    root = P(__file__).resolve().parents[1] / "src" / "swing"
+    for base in (root / "core", root / "services"):
+        for source in base.rglob("*.py"):
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    if node.module == "swing.cli":
+                        offenders.append(f"{source.name}: from {node.module}")
+                    if node.module == "swing" and any(alias.name == "cli" for alias in node.names):
+                        offenders.append(f"{source.name}: from swing import cli")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == "swing.cli":
+                            offenders.append(f"{source.name}: import {alias.name}")
+    assert not offenders, f"core/ y services/ no deben depender de cli.py: {offenders}"
+
+
 def test_regimen_tiene_tres_estados() -> None:
     # Pleno, medio riesgo y sin entradas (seccion 5.1).
     assert {state.value for state in RegimeState} == {"full", "half", "no_entries"}

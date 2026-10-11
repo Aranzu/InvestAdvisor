@@ -1,12 +1,18 @@
 """Genera dos reportes de posiciones sobre el export de XTB mas reciente.
 
+**Archivado.** Lo reemplazan los comandos ``swing stats`` (Reporte 1: estadisticas
+puras por posicion) y ``swing review`` (Reporte 2: la IA decide mantener/vender a
+partir de esas estadisticas). Se conserva como referencia: tenia la cartera y una
+fecha fijos y escribia un prompt para pegar a mano en la IA.
+
 Reporte 1 (``reports/datos_posiciones_<fecha>.md``): estadisticas puras de cada
 posicion abierta (indicadores, fundamentales, proyecciones, tecnico, earnings),
 sin analisis ni recomendaciones.
 
-Reporte 2 (``reports/revision_portafolio_<fecha>.md``): la IA declarada recibe
-esas estadisticas (+ contexto macro) y redacta el informe de mantenеr/vender con
-la estructura pedida, usando web_search para verificar hechos recientes con fuente.
+Reporte 2 (manual): exporta el prompt (``reports/prompt_revision_portafolio_<fecha>.txt``)
+con esas estadisticas (+ contexto macro) para que la IA redacte el informe de
+mantener/vender con la estructura pedida, usando web_search para verificar hechos
+recientes con fuente.
 
 Herramienta, no parte del paquete: se ejecuta con el venv del proyecto.
 """
