@@ -111,6 +111,8 @@ class AccountConfig(StrictModel):
     base_currency: Literal["CLP"] = "CLP"
     equity_scope: list[Literal["xtb", "local"]] = Field(default_factory=lambda: list(EQUITY_SCOPE_DEFAULT))
     trade_unit: Literal["ticker"] = "ticker"
+    local_platform: str = Field(default="Local", min_length=1)
+    """Etiqueta de la hoja local (columna ``Plat.`` de la tabla de acciones, p. ej. Zesty)."""
 
 
 class CostsConfig(StrictModel):

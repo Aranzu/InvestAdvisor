@@ -8,6 +8,8 @@ account:
   base_currency: CLP
   equity_scope: [xtb, local]
   trade_unit: ticker
+  # Etiqueta de la hoja local (fuera de XTB) en la tabla de acciones de `review`.
+  local_platform: Zesty
 
 costs:
   # 0.5 por pierna. Con un round-trip de 1.0 y un R tipico de 8 (seccion 16.2),

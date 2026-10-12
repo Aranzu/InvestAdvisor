@@ -20,10 +20,13 @@ import pandas as pd
 
 __all__ = [
     "atr",
+    "ema",
+    "heikin_ashi_state",
     "highest",
     "lowest",
     "rsi",
     "sma",
+    "smoothed_heikin_ashi",
     "true_range",
     "wilder_smooth",
 ]
@@ -149,3 +152,90 @@ def highest(series: pd.Series, period: int) -> pd.Series:
 def lowest(series: pd.Series, period: int) -> pd.Series:
     """Minimo rodante, NaN hasta tener ``period`` observaciones."""
     return series.rolling(window=period, min_periods=period).min()
+
+
+def ema(series: pd.Series, period: int) -> pd.Series:
+    """Media movil exponencial estilo Pine/TradingView (``alpha = 2 / (period + 1)``).
+
+    La semilla es la primera observacion, igual que ``ta.ema``: el indicador queda
+    definido desde la primera vela y no hay NaN de calentamiento. Decidir cuanta
+    historia hace falta es de quien lo usa, no del indicador.
+    """
+    if period < 1:
+        raise ValueError(f"period debe ser >= 1 (recibido {period})")
+    values = _as_float(series, str(series.name or "series"))
+    alpha = 2.0 / (period + 1.0)
+    out = np.empty(values.shape, dtype="float64")
+    prev = np.nan
+    for i in range(values.size):
+        value = values[i]
+        if np.isnan(value):
+            out[i] = prev
+            continue
+        prev = value if np.isnan(prev) else alpha * value + (1.0 - alpha) * prev
+        out[i] = prev
+    return pd.Series(out, index=series.index, name=series.name)
+
+
+def smoothed_heikin_ashi(
+    open: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    *,
+    smooth: int = 10,
+    smooth2: int = 10,
+) -> pd.DataFrame:
+    """Heikin-Ashi suavizado ("Smoothed HA candles" de TradingView).
+
+    Tres pasos, calcados del indicador: (1) ``ema(smooth)`` del OHLC, (2) Heikin-Ashi
+    sobre ese OHLC suavizado (``haclose = (o+h+l+c)/4`` y ``haopen`` recursivo), y
+    (3) ``ema(smooth2)`` de ``haopen/hahigh/halow/haclose``. Devuelve las cuatro velas
+    suavizadas (``o2/h2/l2/c2``) con el mismo indice que la entrada. El color del
+    indicador es alcista cuando ``open <= close``.
+    """
+    _check_aligned(open=open, high=high, low=low, close=close)
+    o = ema(open, smooth).to_numpy()
+    h = ema(high, smooth).to_numpy()
+    lo = ema(low, smooth).to_numpy()
+    c = ema(close, smooth).to_numpy()
+    ha_close = (o + h + lo + c) / 4.0
+    ha_open = np.empty_like(ha_close)
+    ha_high = np.empty_like(ha_close)
+    ha_low = np.empty_like(ha_close)
+    prev_open = np.nan
+    prev_close = np.nan
+    for i in range(ha_close.size):
+        cur_close = ha_close[i]
+        cur_open = (o[i] + c[i]) / 2.0 if np.isnan(prev_open) else (prev_open + prev_close) / 2.0
+        ha_open[i] = cur_open
+        ha_high[i] = max(h[i], cur_open, cur_close)
+        ha_low[i] = min(lo[i], cur_open, cur_close)
+        prev_open, prev_close = cur_open, cur_close
+    index = open.index
+    return pd.DataFrame(
+        {
+            "open": ema(pd.Series(ha_open, index=index), smooth2),
+            "high": ema(pd.Series(ha_high, index=index), smooth2),
+            "low": ema(pd.Series(ha_low, index=index), smooth2),
+            "close": ema(pd.Series(ha_close, index=index), smooth2),
+        }
+    )
+
+
+def heikin_ashi_state(frame: pd.DataFrame) -> tuple[str, int] | None:
+    """Estado del SHA: ``("alcista"|"bajista", sesiones desde el ultimo giro)``.
+
+    Alcista cuando el cierre suavizado no baja de la apertura suavizada (verde). El
+    giro se marca cuando cambia ese signo; las "sesiones desde el ultimo giro" son las
+    velas transcurridas desde entonces (el total si nunca giro). ``None`` sin velas.
+    """
+    if len(frame) == 0:
+        return None
+    bull = frame["close"] >= frame["open"]
+    trend = "alcista" if bool(bull.iloc[-1]) else "bajista"
+    changes = bull.ne(bull.shift())
+    changes.iloc[0] = False
+    flips = np.flatnonzero(changes.to_numpy())
+    sessions = len(frame) - 1 - int(flips[-1]) if flips.size else len(frame)
+    return trend, sessions

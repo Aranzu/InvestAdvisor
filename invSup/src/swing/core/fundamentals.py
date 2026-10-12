@@ -266,6 +266,8 @@ class AxisRatings:
     quality: int
     growth: int
     projections: int
+    available: tuple[bool, bool, bool, bool] = (True, True, True, True)
+    """Si cada bloque (V/C/G/P) tenia datos. Un eje sin datos se imprime ``n.p.`` y no puntua."""
 
     @property
     def total(self) -> int:
@@ -274,6 +276,12 @@ class AxisRatings:
 
     def as_tuple(self) -> tuple[int, int, int, int]:
         return (self.value, self.quality, self.growth, self.projections)
+
+    def formatted(self) -> str:
+        """Ejes V/C/G/P con signo, separados por ``/``; un eje sin datos se imprime ``n.p.``."""
+        return " / ".join(
+            format_rating(value) if ok else "n.p." for value, ok in zip(self.as_tuple(), self.available, strict=True)
+        )
 
 
 def _rate(block: float | None, thresholds: AxisThresholds) -> int:
@@ -298,6 +306,12 @@ def rate_axes(score: FundamentalScore, thresholds: AxisThresholds) -> AxisRating
         quality=_rate(score.quality, thresholds),
         growth=_rate(score.growth, thresholds),
         projections=_rate(score.projections, thresholds),
+        available=(
+            score.value is not None,
+            score.quality is not None,
+            score.growth is not None,
+            score.projections is not None,
+        ),
     )
 
 

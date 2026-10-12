@@ -12,7 +12,18 @@ import math
 import pandas as pd
 import pytest
 
-from swing.core.indicators import atr, highest, lowest, rsi, sma, true_range, wilder_smooth
+from swing.core.indicators import (
+    atr,
+    ema,
+    heikin_ashi_state,
+    highest,
+    lowest,
+    rsi,
+    sma,
+    smoothed_heikin_ashi,
+    true_range,
+    wilder_smooth,
+)
 
 TOL = 1e-6
 
@@ -206,3 +217,60 @@ def test_extremos_devuelven_nan_sin_historia_suficiente() -> None:
     close = _frame([1.0, 2.0])
     assert highest(close, 3).isna().all()
     assert lowest(close, 3).isna().all()
+
+
+# --------------------------------------------------------------------------- #
+# Heikin-Ashi suavizado (indicador "Smoothed HA candles")
+# --------------------------------------------------------------------------- #
+
+
+def test_ema_semilla_en_la_primera_observacion_y_alpha_2_sobre_n_mas_1() -> None:
+    out = ema(_frame([1.0, 2.0, 3.0]), period=2)
+    # alpha = 2/3: e0=1; e1=(2/3)*2+(1/3)*1; e2=(2/3)*3+(1/3)*e1.
+    assert list(out) == pytest.approx([1.0, 5.0 / 3.0, 23.0 / 9.0], abs=TOL)
+
+
+def _rising_bars(count: int) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    opens = _frame([float(i) for i in range(count)])
+    closes = _frame([i + 0.8 for i in range(count)])
+    highs = _frame([i + 1.0 for i in range(count)])
+    lows = _frame([i - 0.5 for i in range(count)])
+    return opens, highs, lows, closes
+
+
+def test_sha_sube_en_una_serie_que_solo_sube() -> None:
+    opens, highs, lows, closes = _rising_bars(40)
+    frame = smoothed_heikin_ashi(opens, highs, lows, closes)
+    assert list(frame.columns) == ["open", "high", "low", "close"]
+    state = heikin_ashi_state(frame)
+    assert state is not None
+    trend, sessions = state
+    assert trend == "alcista"
+    # Los primeros suavizados arrancan cerca de cero y tardan unas velas en girar.
+    assert 0 <= sessions < len(frame)
+
+
+def test_sha_sin_giro_cuenta_todas_las_sesiones() -> None:
+    frame = pd.DataFrame(
+        {"open": [1.0, 1.0, 1.0], "high": [2.0, 2.0, 2.0], "low": [0.0, 0.0, 0.0], "close": [2.0, 2.0, 2.0]}
+    )
+    assert heikin_ashi_state(frame) == ("alcista", 3)
+
+
+def test_sha_estado_marca_el_giro_y_las_sesiones_desde_el() -> None:
+    # Cierres por debajo de la apertura en la ultima vela: giró a bajista ahi mismo.
+    frame = pd.DataFrame(
+        {
+            "open": [1.0, 1.0, 2.0],
+            "high": [2.0, 2.0, 2.0],
+            "low": [0.5, 0.5, 0.5],
+            "close": [2.0, 1.5, 1.0],
+        }
+    )
+    state = heikin_ashi_state(frame)
+    assert state == ("bajista", 0)
+
+
+def test_sha_sin_velas_no_tiene_estado() -> None:
+    empty = pd.DataFrame({"open": [], "high": [], "low": [], "close": []})
+    assert heikin_ashi_state(empty) is None

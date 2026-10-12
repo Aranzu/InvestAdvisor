@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from dataclasses import replace
 
 import pytest
 
+from swing.core.commodities import Commodity
 from swing.core.stats import (
     InsiderBuy,
     PositionStats,
@@ -183,3 +185,36 @@ def test_stats_report_json_round_trip() -> None:
 def test_stats_report_from_dict_schema_inesperado() -> None:
     with pytest.raises(ValueError, match="schema"):
         StatsReport.from_dict({"schema": 999})
+
+
+def test_materias_primas_en_el_informe_y_en_el_json() -> None:
+    commodities = (
+        Commodity(
+            key="oro",
+            name="Oro",
+            symbol="GC=F",
+            proxy=False,
+            price=2400.0,
+            chg_1m_pct=3.5,
+            chg_ytd_pct=12.0,
+            high_52w=2500.0,
+            low_52w=2000.0,
+        ),
+        Commodity(key="litio", name="Litio", symbol="LIT", proxy=True, price=45.0, chg_1m_pct=-2.0),
+    )
+    row = PositionStats(ticker="SQM-B", context={}, fields={"driver": "Litio (proxy)", "driver_1m_pct": -2.0})
+    report = replace(_report((row,)), commodities=commodities)
+    text = render_stats(report)
+    assert "## Materias primas" in text
+    assert "| Oro | GC=F | 2,400.00 | +3.50 % | +12.00 % | 2,500.00 | 2,000.00 |" in text
+    assert "| Litio (proxy) | LIT | 45.00 | -2.00 % | - | - | - |" in text
+    # La fila de SQM-B trae su driver de materia prima.
+    assert "| SQM-B | Litio (proxy) | -2.00 % |" in text
+    assert StatsReport.from_dict(json.loads(json.dumps(report.to_dict()))).commodities == commodities
+
+
+def test_materias_primas_sin_datos_no_inventa_precio() -> None:
+    empty = Commodity(key="cobre", name="Cobre", symbol="HG=F", proxy=False)
+    row = PositionStats(ticker="AAA", context={}, fields={})
+    text = render_stats(replace(_report((row,)), commodities=(empty,)))
+    assert "| Cobre | HG=F | - | - | - | - | - |" in text

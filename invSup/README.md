@@ -82,18 +82,22 @@ fallan y 2 con hallazgos contra `strategy.yaml`.
 
 `stats` no decide nada: reúne la **mayor cantidad de campos posible** de cada posición
 abierta para un análisis posterior, en el estilo del screener de Finviz. Yahoo es la base
-(valoración, márgenes, proyecciones), los técnicos (SMA20/50/200, RSI, ATR, máximos/mínimos
-de 52 semanas) se calculan localmente desde las velas y Finviz aporta lo que Yahoo no publica
-(float y short interest, propiedad de insiders e institucional, ROA/ROIC, payout, desempeño
-por período). Escribe `output/stats_<fecha>.md` (o `--out`), con una tabla por sección y una
-sección final de **cobertura** que declara qué quedó sin dato (`-` nunca es un cero).
+(valoración, márgenes, proyecciones), los técnicos (SMA20/50/200, RSI, ATR, Heikin‑Ashi
+suavizado —tendencia y sesiones desde el último giro— y máximos/mínimos de 52 semanas) se
+calculan localmente desde las velas y Finviz aporta lo que Yahoo no publica (float y short
+interest, propiedad de insiders e institucional, ROA/ROIC, payout, desempeño por período).
+Además trae una sección de **materias primas** (oro, plata y cobre como futuros; litio por
+**proxy** `LIT` y el par `ALB`, declarado como proxy) y una columna **Driver** que mapea cada
+posición a su materia prima (SQM‑B → litio). Escribe `output/stats_<fecha>.md` (o `--out`),
+con una tabla por sección y una sección final de **cobertura** que declara qué quedó sin dato
+(`-` nunca es un cero).
 
 `review` es la **función 1**: primero escribe el informe de `stats` (y reutiliza sus
 fundamentales) y después recomienda sobre tus posiciones. Adopta lo abierto y corre las
 diez reglas de salida de §5.7 (las mismas del backtest) sin mirar el universo ni proponer
 entradas. La IA (siempre encendida cuando hay clave; sin clave el informe sale igual, con
 un aviso) entrega su veredicto (`BUY/HOLD/SELL/WATCH`) y **decide** mantener o vender;
-el motor sigue fijando stop, meta y tamaño. Hay tres formatos con `--formato`:
+el motor sigue fijando stop, meta y tamaño. Hay cuatro formatos con `--formato`:
 
 - `informe` (por defecto): **7 secciones** — 1. Veredicto, 2. Cobertura, 3. Decisiones,
   4. Niveles, 5. Alertas, 6. Supuestos y vacíos, 7. Fuentes clave. El motor resuelve
@@ -105,6 +109,14 @@ el motor sigue fijando stop, meta y tamaño. Hay tres formatos con `--formato`:
 - `tabla`: `Activo · Plat. · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Próximo
   catalizador`. La **acción, el fundamento y el catalizador** los aporta la IA; el
   **stop y el TP siempre salen del motor**.
+- `acciones`: **una sola tabla** —
+  `Activo · Plat. · Retorno · Peso (actual → post) · Acción · Puntaje · Conf. · Fundamento`—
+  sin las 7 secciones y **sin tickets**. No llama al LLM para la narrativa de cartera (ahorra
+  una consulta). El **peso** es sobre el capital invertido (suma 100 %) y la columna `post`
+  aplica las ventas de la tabla y renormaliza, así que vender una posición sube el peso del
+  resto. El **porcentaje y el volumen** de venta los fija el motor (la IA solo propone cuando
+  la posición queda fuera de él); la IA aporta el fundamento. La `Plat.` de la hoja local sale
+  de `account.local_platform` en `strategy.yaml` (p. ej. `Zesty`).
 
 El puntaje por activo es la suma de cuatro ejes (valor, calidad, crecimiento,
 proyecciones), rango `-8..+8`; los umbrales viven en `fundamentals.axes` de

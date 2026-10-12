@@ -15,6 +15,9 @@ Es la capa pura entre ``decide()`` (que decide) y la CLI (que lee disco y red):
 - ``build_review_report`` y ``render_review_report`` arman el informe de 7 secciones
   del comando ``review`` (veredicto, cobertura, decisiones, niveles, alertas,
   supuestos y fuentes).
+- ``render_action_table`` resume ese mismo informe en una tabla unica de acciones
+  (``review --formato acciones``): peso actual -> post, accion con volumen, puntaje
+  por ejes y fundamento, sin tickets.
 
 Todo es puro: los datos llegan resueltos y ninguna funcion toca disco ni red.
 """
@@ -22,6 +25,7 @@ Todo es puro: los datos llegan resueltos y ninguna funcion toca disco ni red.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
@@ -642,6 +646,16 @@ class AssetReview:
     catalyst: str
     thesis: ThesisStatus | None
     facts: tuple[KeyFact, ...]
+    platform: str = "XTB"
+    """Plataforma/hoja donde vive la posicion (``XTB`` o la hoja local, p. ej. ``Zesty``)."""
+    is_local: bool = False
+    """``True`` si es una posicion de la hoja local (fuera del motor, montos en CLP)."""
+    shares: float = 0.0
+    """Acciones abiertas de la posicion (para expresar la accion en volumen)."""
+    sell_fraction: float = 0.0
+    """Fraccion de la posicion que la accion vende (``0..1``); ``0`` si no vende."""
+    weight_invested_pct: float = 0.0
+    """Peso sobre el capital invertido (suma 100 %), no sobre el equity."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,6 +678,8 @@ class ReviewReport:
     narrative: LLMReview | None
     macro: LLMReview | None
     macro_data: Mapping[str, str]
+    invested_clp: float = 0.0
+    """Capital invertido (posiciones del broker + hoja local) usado como base del peso."""
 
 
 def _as_float(value: object) -> float | None:
@@ -709,6 +725,48 @@ def _theme_weights(stats: StatsReport) -> dict[str, float]:
     return weights
 
 
+def _invested_clp(stats: StatsReport) -> float:
+    """Capital invertido: la suma del ``value_clp`` de todas las filas (broker + local).
+
+    ``stats.positions_value_clp`` solo cubre el broker; la hoja local queda fuera de
+    su caja y su equity, asi que se suman los valores de las filas (que traen ambos).
+    Sin filas valuadas se cae al total del broker.
+    """
+    total = 0.0
+    for row in stats.rows:
+        total += _as_float(_row_context(row, "value_clp")) or 0.0
+    return total if total > 0.0 else stats.positions_value_clp
+
+
+def _invested_weight(row: object, invested: float) -> float:
+    """Peso de una fila sobre el capital invertido (suma 100 %), no sobre el equity."""
+    value = _as_float(_row_context(row, "value_clp"))
+    if value is None or invested <= 0.0:
+        return 0.0
+    return value / invested * 100.0
+
+
+#: ``Vender 50%`` en el texto de la IA -> la fraccion ``0.5``.
+_SELL_PCT = re.compile(r"vender\s+(\d+(?:[.,]\d+)?)\s*%", re.IGNORECASE)
+
+
+def _sell_fraction_from_text(text: str) -> float:
+    """Fraccion de venta que anuncia el texto de la IA (``Vender 50%`` -> ``0.5``)."""
+    match = _SELL_PCT.search(text or "")
+    if match is None:
+        return 0.0
+    return min(1.0, float(match.group(1).replace(",", ".")) / 100.0)
+
+
+def _engine_sell_fraction(judgment: TradeExitJudgment) -> float:
+    """Fraccion que vende la regla primaria del motor (``0`` si no vende)."""
+    primary = judgment.evaluation.primary
+    if primary is None or not primary.execute or primary.action is not Action.SELL:
+        return 0.0
+    volume = judgment.trade.open_volume
+    return 1.0 if volume <= 0.0 else min(1.0, primary.volume / volume)
+
+
 def build_review_report(
     plan: NightPlan,
     stats: StatsReport,
@@ -719,6 +777,7 @@ def build_review_report(
     local: Sequence[LocalPosition] = (),
     macro: LLMReview | None = None,
     macro_data: Mapping[str, str] | None = None,
+    local_platform: str = "Local",
 ) -> ReviewReport:
     """Ensambla el informe de review desde el plan, el stats y las opiniones de la IA.
 
@@ -726,14 +785,29 @@ def build_review_report(
     tema, cobertura, analistas, earnings) y con la opinion de la IA (fundamento,
     catalizador, tesis, hechos). Nada se recalcula dos veces: el puntaje por eje
     llega resuelto en ``axes_by_ticker`` y los niveles salen del ``TradeState``.
+
+    ``local_platform`` es la etiqueta de la hoja local (``Plat.`` en la tabla de
+    acciones); las posiciones del broker van siempre como ``XTB``.
     """
     by_ticker = {review.ticker: review for review in reviews}
     rows = {row.ticker: row for row in stats.rows}
+    invested = _invested_clp(stats)
     assets: list[AssetReview] = []
     for judgment in sorted(plan.exits, key=lambda item: item.trade.ticker):
-        assets.append(_asset_from_trade(judgment, rows.get(judgment.trade.ticker), by_ticker, axes_by_ticker))
+        assets.append(
+            _asset_from_trade(judgment, rows.get(judgment.trade.ticker), by_ticker, axes_by_ticker, invested=invested)
+        )
     for position in local:
-        assets.append(_asset_from_local(position, rows.get(position.ticker), by_ticker, axes_by_ticker))
+        assets.append(
+            _asset_from_local(
+                position,
+                rows.get(position.ticker),
+                by_ticker,
+                axes_by_ticker,
+                invested=invested,
+                platform=local_platform,
+            )
+        )
 
     cash_pct = stats.cash_clp / stats.equity_clp * 100.0 if stats.equity_clp > 0.0 else 0.0
     return ReviewReport(
@@ -753,6 +827,7 @@ def build_review_report(
         narrative=narrative,
         macro=macro,
         macro_data=dict(macro_data or {}),
+        invested_clp=invested,
     )
 
 
@@ -761,12 +836,19 @@ def _asset_from_trade(
     row: object,
     by_ticker: Mapping[str, LLMReview],
     axes_by_ticker: Mapping[str, AxisRatings],
+    *,
+    invested: float = 0.0,
 ) -> AssetReview:
     trade = judgment.trade
     review = by_ticker.get(trade.ticker)
     coverage_pct, upside_pct, analysts = _row_metrics(row)
     target = trade.next_target_r
     retorno = (trade.close / trade.entry_price - 1.0) * 100.0 if trade.entry_price > 0.0 else 0.0
+    decision = review.accion if (review is not None and review.accion) else _table_engine_action(judgment, trade)
+    # La fraccion la manda el motor; si no vende, se acepta el % que proponga la IA.
+    fraction = _engine_sell_fraction(judgment)
+    if fraction <= 0.0:
+        fraction = _sell_fraction_from_text(decision)
     return AssetReview(
         ticker=trade.ticker,
         theme=str(_row_context(row, "theme") or "sin_tema"),
@@ -777,7 +859,7 @@ def _asset_from_trade(
         coverage_pct=coverage_pct,
         upside_pct=upside_pct,
         analysts=analysts,
-        decision=review.accion if (review is not None and review.accion) else _table_engine_action(judgment, trade),
+        decision=decision,
         confidence=review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE,
         stop=trade.stop,
         target=trade.entry_price + target * trade.risk_per_share if target is not None else None,
@@ -788,6 +870,11 @@ def _asset_from_trade(
         catalyst=_catalyst(review, None),
         thesis=review.thesis_status if review is not None else None,
         facts=review.key_facts if review is not None else (),
+        platform="XTB",
+        is_local=False,
+        shares=trade.open_volume,
+        sell_fraction=fraction,
+        weight_invested_pct=_invested_weight(row, invested),
     )
 
 
@@ -796,10 +883,14 @@ def _asset_from_local(
     row: object,
     by_ticker: Mapping[str, LLMReview],
     axes_by_ticker: Mapping[str, AxisRatings],
+    *,
+    invested: float = 0.0,
+    platform: str = "Local",
 ) -> AssetReview:
     review = by_ticker.get(position.ticker)
     coverage_pct, upside_pct, analysts = _row_metrics(row)
     retorno = (position.last_price_clp / position.avg_price_clp - 1.0) * 100.0 if position.avg_price_clp > 0.0 else 0.0
+    decision = review.accion if (review is not None and review.accion) else "Revisar (fuera del motor)"
     return AssetReview(
         ticker=position.ticker,
         theme=str(_row_context(row, "theme") or "sin_tema"),
@@ -810,7 +901,7 @@ def _asset_from_local(
         coverage_pct=coverage_pct,
         upside_pct=upside_pct,
         analysts=analysts,
-        decision=review.accion if (review is not None and review.accion) else "Revisar (fuera del motor)",
+        decision=decision,
         confidence=review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE,
         stop=None,
         target=None,
@@ -821,6 +912,11 @@ def _asset_from_local(
         catalyst=_catalyst(review, None),
         thesis=review.thesis_status if review is not None else None,
         facts=review.key_facts if review is not None else (),
+        platform=platform,
+        is_local=True,
+        shares=position.volume,
+        sell_fraction=_sell_fraction_from_text(decision),
+        weight_invested_pct=_invested_weight(row, invested),
     )
 
 
@@ -886,6 +982,63 @@ def render_review_report(report: ReviewReport) -> str:
     lines.extend(_section_supuestos(report))
     lines.extend(_section_fuentes(report))
     return "\n".join(lines) + "\n"
+
+
+def render_action_table(report: ReviewReport) -> str:
+    """Tabla unica de acciones del review (``--formato acciones``), sin secciones ni tickets.
+
+    Columnas: activo, plataforma, retorno, peso actual -> post, accion (con el volumen
+    que fija el motor), puntaje por ejes y confianza. El peso es sobre el **capital
+    invertido** (suma 100 %); la columna ``post`` aplica las acciones de la tabla y
+    renormaliza, asi que vender una posicion sube el peso de las demas.
+    """
+    lines: list[str] = []
+    lines.append(f"# Acciones sugeridas - cuenta {report.account}")
+    lines.append("")
+    lines.append(
+        f"Datos al {report.today} - regimen {report.regime} - FX {report.fx:.2f} - "
+        f"equity {report.equity_clp:,.0f} CLP - caja {report.cash_pct:.1f} %"
+    )
+    lines.append("")
+    lines.append("| Activo | Plat. | Retorno | Peso (actual -> post) | Accion | Puntaje | Conf. | Fundamento |")
+    lines.append("|---|---|---:|---:|---|---:|---:|---|")
+    remaining = sum(asset.weight_invested_pct * (1.0 - asset.sell_fraction) for asset in report.assets)
+    for asset in sorted(report.assets, key=_action_order):
+        lines.append(_action_row(asset, remaining))
+    lines.append("")
+    lines.append(
+        "- Peso sobre el capital invertido (suma 100 %); 'post' aplica las acciones de la tabla "
+        "y renormaliza. El porcentaje y el volumen de venta los fija el motor; la IA aporta el fundamento."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _action_order(asset: AssetReview) -> tuple[int, float]:
+    """Ventas primero; dentro de cada grupo, mayor peso primero (como en la cartera)."""
+    return (0 if asset.sell_fraction > 0.0 else 1, -asset.weight_invested_pct)
+
+
+def _action_row(asset: AssetReview, remaining: float) -> str:
+    retorno = f"{asset.retorno_pct:+.1f} %" + (" (CLP)" if asset.is_local else "")
+    post = asset.weight_invested_pct * (1.0 - asset.sell_fraction) / remaining * 100.0 if remaining > 0.0 else 0.0
+    puntaje = f"{asset.axes.formatted()} -> {format_rating(asset.axes.total)}" if asset.axes is not None else "-"
+    return (
+        f"| {asset.ticker} | {asset.platform} | {retorno} | {asset.weight_invested_pct:.1f} -> {post:.1f} | "
+        f"{_action_text(asset)} | {puntaje} | {asset.confidence} | {_cell(asset.fundamento)} |"
+    )
+
+
+def _action_text(asset: AssetReview) -> str:
+    """Accion de la tabla: si vende, el porcentaje y el volumen los fija el motor."""
+    if asset.sell_fraction <= 0.0:
+        return asset.decision or "Mantener"
+    sold = round(asset.sell_fraction * asset.shares)
+    return f"Vender {asset.sell_fraction * 100:.0f}% ({sold:.0f} acc.)"
+
+
+def _cell(text: str) -> str:
+    """Una celda de tabla: sin saltos de linea ni pipes que rompan el markdown."""
+    return " ".join((text or "").split()).replace("|", "\\|")
 
 
 def _section_veredicto(report: ReviewReport) -> list[str]:

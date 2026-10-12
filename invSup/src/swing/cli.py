@@ -62,6 +62,7 @@ from swing.core.planner import (
     adopt_positions,
     build_review_report,
     plan_tickets,
+    render_action_table,
     render_review,
     render_review_report,
     render_table,
@@ -730,6 +731,10 @@ def _build_market(
     return _Market(strategy, broker, universe, themes, calendar, provider, today, frames, snapshot, missing)
 
 
+#: Formatos validos del comando ``review`` (ver ``--formato``).
+_REVIEW_FORMATS = frozenset({"informe", "detalle", "tabla", "acciones"})
+
+
 @app.command("review")
 def review(
     config_dir: Annotated[
@@ -758,7 +763,10 @@ def review(
     ] = False,
     formato: Annotated[
         str,
-        typer.Option("--formato", help="Formato del informe: informe (7 secciones), detalle o tabla."),
+        typer.Option(
+            "--formato",
+            help="Formato del informe: informe (7 secciones), detalle, tabla o acciones (tabla unica, sin tickets).",
+        ),
     ] = "informe",
     refresh_contexto: Annotated[
         bool,
@@ -779,6 +787,14 @@ def review(
     nada que hacer, 2 si hay acciones y 3 si la IA falla (la recomendacion
     determinista sale igual).
     """
+    if formato not in _REVIEW_FORMATS:
+        typer.secho(
+            f"FALLA  formato desconocido: {formato!r} (usa informe, detalle, tabla o acciones)",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     try:
         _, _, _, themes_file = _load_config(config_dir)
     except ConfigError as exc:
@@ -967,14 +983,18 @@ def review(
             local=model.local,
             macro=macro,
             macro_data=macro_data,
+            local_platform=market.strategy.account.local_platform,
         )
-        if client is not None:
+        # La narrativa de cartera solo alimenta la seccion 1 del informe; la tabla de
+        # acciones no la usa y omitirla evita una llamada al LLM.
+        if formato == "informe" and client is not None:
             narrative = _portfolio_narrative(client, review_narrative_facts(report), market.today)
             if narrative is not None:
                 report = replace(report, narrative=narrative)
-        informe = render_review_report(report)
+        informe = render_action_table(report) if formato == "acciones" else render_review_report(report)
     ticket_plan = plan_tickets(plan, market.broker, market.strategy)
-    informe = informe.rstrip() + "\n\n" + "\n".join(render_tickets(ticket_plan))
+    if formato != "acciones":
+        informe = informe.rstrip() + "\n\n" + "\n".join(render_tickets(ticket_plan))
     for issue in recon.issues:
         typer.secho(f"  {issue.kind.value}: {issue.detail}", fg=typer.colors.YELLOW)
 

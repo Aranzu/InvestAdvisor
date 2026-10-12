@@ -41,11 +41,12 @@ motor `decide()` sigue siendo el mismo que consumen `review` y `screen`, y el fl
 config → universo → datos → reporte XTB → reconciliación → adopción → `decide()` → IA
 opcional → tickets e informe (`output/plan_<fecha>.md`).
 
-### 3.2 Función 1 — revisión de posiciones: `swing review [--web-search --formato informe|detalle|tabla]`
+### 3.2 Función 1 — revisión de posiciones: `swing review [--web-search --formato informe|detalle|tabla|acciones]`
 
 Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantiene o se vende:
 1. Reporte → adopción → `decide(universe=())` (solo salidas).
-2. **Stats por posición** (`services/stats`): escribe `output/stats_<fecha>.md` y `.json` y
+2. **Stats por posición** (`services/stats`): escribe `output/stats_<fecha>.md` y `.json` (con
+   materias primas y el driver de cada posición) y
    reutiliza sus fundamentales, para no volver a pedir todo a Yahoo.
 3. **Fundamentales y proyecciones** (por posición): `adapters/fundamentals` inyecta
    valoración, ROE/margen, crecimiento y objetivo de analistas del ticker.
@@ -63,6 +64,10 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
      Alertas, Supuestos y vacíos, Fuentes clave. Puntaje por ejes V/C/G/P (`-8..+8`).
    - `detalle` (el de `nightly`): bloques explicados.
    - `tabla`: `Activo · Plat. · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`.
+   - `acciones`: una sola tabla `Activo · Plat. · Retorno · Peso (actual → post) · Acción ·
+     Puntaje · Conf. · Fundamento`, sin secciones ni tickets y sin narrativa de cartera
+     (ahorra una consulta). Peso sobre el capital invertido (suma 100 %); `post` renormaliza
+     tras aplicar las ventas. El porcentaje/volumen lo fija el motor.
 
 ### 3.3 Función 2 — screener de compra: `swing screen`
 
@@ -177,7 +182,7 @@ El CLI expone **tres comandos**: `stats`, `review` y `screen`. El resto está **
 | `verify-broker` (oculto) | campos de `broker.yaml` sin verificar |
 | `data-health` (oculto) | frescura/huecos/earnings por ticker |
 | `analyze-positions` (oculto) | valúa la cartera y hallazgos (sin reglas de salida completas) |
-| `stats` | ficha por posición con todos los campos posibles (tipo Finviz) + posición local (CLP) y compras de insiders; emite `stats_<fecha>.md` y `.json` (`schema: 1`), que `analyze-positions` y `review` reutilizan |
+| `stats` | ficha por posición con todos los campos posibles (tipo Finviz) + posición local (CLP), compras de insiders y materias primas (oro/plata/cobre/litio proxy); emite `stats_<fecha>.md` y `.json` (`schema: 2`), que `analyze-positions` y `review` reutilizan |
 | `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto. `--formato informe` (7 secciones, por defecto), `detalle` o `tabla` |
 | `screen` (alias `discover`) | **funcion 2**: screener de compra (técnico + fundamentales + proyecciones) |
 | `nightly` (oculto) | **fase 8**: `screen` + `review --formato detalle` en una corrida, resumen y notificación opcional |

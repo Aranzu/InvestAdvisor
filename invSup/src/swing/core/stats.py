@@ -25,11 +25,13 @@ import datetime as dt
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from swing.core.commodities import Commodity
+
 #: Como se formatea un campo. Ver ``_format``.
 FORMATS = frozenset({"text", "int", "num", "pct", "pct_signed", "ratio", "money", "clp"})
 
 #: Version del contrato JSON de ``StatsReport``. Sube cuando cambia la forma.
-STATS_SCHEMA = 1
+STATS_SCHEMA = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +152,15 @@ SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             FieldSpec("low_52w", "Min 52S", "num"),
             FieldSpec("pct_to_52w_high", "Al max 52S", "pct_signed"),
             FieldSpec("pct_from_52w_low", "Del min 52S", "pct_signed"),
+            FieldSpec("sha_trend", "SHA tend.", "text"),
+            FieldSpec("sha_flip_sesiones", "SHA giro (ses)", "int"),
+        ),
+    ),
+    (
+        "Driver de materia prima",
+        (
+            FieldSpec("driver", "Driver", "text"),
+            FieldSpec("driver_1m_pct", "Driver 1 mes", "pct_signed"),
         ),
     ),
     (
@@ -248,6 +259,8 @@ class StatsReport:
     themes: Mapping[str, str] = field(default_factory=dict)
     sectors: Mapping[str, str] = field(default_factory=dict)
     fundamentals: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    commodities: tuple[Commodity, ...] = ()
+    """Contexto de materias primas (oro, plata, cobre y litio proxy) del dia."""
 
     @property
     def total_fields(self) -> int:
@@ -269,6 +282,7 @@ class StatsReport:
             "themes": dict(self.themes),
             "sectors": dict(self.sectors),
             "fundamentals": {ticker: dict(fund) for ticker, fund in self.fundamentals.items()},
+            "commodities": [_commodity_to_dict(item) for item in self.commodities],
             "rows": [_position_to_dict(row) for row in self.rows],
             "limitations": list(self.limitations),
             "notes": list(self.notes),
@@ -296,6 +310,7 @@ class StatsReport:
             themes={ticker: _text(value) for ticker, value in _mapping(data.get("themes")).items()},
             sectors={ticker: _text(value) for ticker, value in _mapping(data.get("sectors")).items()},
             fundamentals={ticker: _mapping(value) for ticker, value in _mapping(data.get("fundamentals")).items()},
+            commodities=tuple(_commodity_from_dict(item) for item in _list(data.get("commodities"))),
         )
 
 
@@ -325,6 +340,35 @@ def _date(value: object) -> dt.date:
     if isinstance(value, str):
         return dt.date.fromisoformat(value)
     raise ValueError(f"fecha invalida en stats: {value!r}")
+
+
+def _commodity_to_dict(item: Commodity) -> dict[str, object]:
+    return {
+        "key": item.key,
+        "name": item.name,
+        "symbol": item.symbol,
+        "proxy": item.proxy,
+        "price": item.price,
+        "chg_1m_pct": item.chg_1m_pct,
+        "chg_ytd_pct": item.chg_ytd_pct,
+        "high_52w": item.high_52w,
+        "low_52w": item.low_52w,
+    }
+
+
+def _commodity_from_dict(data: object) -> Commodity:
+    values = _mapping(data)
+    return Commodity(
+        key=_text(values.get("key")),
+        name=_text(values.get("name")),
+        symbol=_text(values.get("symbol")),
+        proxy=bool(values.get("proxy")),
+        price=_number(values.get("price")),
+        chg_1m_pct=_number(values.get("chg_1m_pct")),
+        chg_ytd_pct=_number(values.get("chg_ytd_pct")),
+        high_52w=_number(values.get("high_52w")),
+        low_52w=_number(values.get("low_52w")),
+    )
 
 
 def _insider_to_dict(buy: InsiderBuy) -> dict[str, object]:
@@ -506,6 +550,7 @@ def render_stats(report: StatsReport) -> str:
         lines.extend(_section("Posicion y valuacion", POSITION_FIELDS, report.rows, "context"))
         for title, specs in SECTIONS:
             lines.extend(_section(title, specs, report.rows, "fields"))
+        lines.extend(_commodities_section(report))
         lines.extend(_insiders_section(report))
         lines.extend(_coverage_section(report))
 
@@ -524,6 +569,28 @@ def render_stats(report: StatsReport) -> str:
         lines.append("")
 
     return "\n".join(lines) + "\n"
+
+
+def _commodities_section(report: StatsReport) -> list[str]:
+    if not report.commodities:
+        return []
+    lines = ["## Materias primas", ""]
+    lines.append("| Materia prima | Simbolo | Precio | 1 mes | YTD | Max 52S | Min 52S |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|")
+    for item in report.commodities:
+        lines.append(
+            f"| {item.label} | {item.symbol} | {_format('num', item.price)} | "
+            f"{_format('pct_signed', item.chg_1m_pct)} | {_format('pct_signed', item.chg_ytd_pct)} | "
+            f"{_format('num', item.high_52w)} | {_format('num', item.low_52w)} |"
+        )
+    lines.append("")
+    lines.append(
+        "- El litio no tiene futuro liquido en Yahoo: es un **proxy** (ETF LIT y el par ALB); "
+        "el oro, la plata y el cobre son futuros (COMEX). La columna 'Driver' de cada posicion mapea "
+        "el ticker a su materia prima (SQM-B -> Litio)."
+    )
+    lines.append("")
+    return lines
 
 
 def _insiders_section(report: StatsReport) -> list[str]:

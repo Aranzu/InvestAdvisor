@@ -36,8 +36,9 @@ from swing.adapters.data_yahoo import DataUnavailable, YahooDataProvider, to_yah
 from swing.adapters.finviz import FinvizProvider, FinvizSnapshot
 from swing.adapters.fundamentals import YahooFundamentalsProvider
 from swing.core.analysis import Market, PositionView, Quote, analyze
+from swing.core.commodities import COMMODITIES, Commodity, CommoditySpec, commodity_driver
 from swing.core.fundamentals import Fundamentals
-from swing.core.indicators import atr, rsi, sma
+from swing.core.indicators import atr, heikin_ashi_state, rsi, sma, smoothed_heikin_ashi
 from swing.core.market import PriceSeries
 from swing.core.models import StrategyConfig
 from swing.core.report import LocalPosition, PositionReport
@@ -56,6 +57,15 @@ INSIDER_WINDOW_DAYS = 90
 #: de la hoja es el del broker (``SQM-B``); Yahoo necesita el sufijo de mercado
 #: (``SQM-B.SN``), que no se puede inferir del ticker.
 _LOCAL_MARKET_SUFFIXES = (".SN",)
+
+#: Suavizados del Heikin-Ashi suavizado ("Smoothed HA candles"): EMA del OHLC, HA y
+#: segunda EMA de la HA. Los dos 10 son los del indicador original.
+SHA_SMOOTH = 10
+SHA_SMOOTH2 = 10
+
+#: Sesiones minimas para publicar el SHA: sin los dos suavizados completos el color no
+#: significa nada, asi que antes de eso los campos quedan ausentes (``-``), no en cero.
+SHA_MIN_SESSIONS = SHA_SMOOTH + SHA_SMOOTH2
 
 
 def collect_stats(
@@ -82,6 +92,8 @@ def collect_stats(
 
     rows: list[PositionStats] = []
     quality_gaps: list[str] = []
+    commodity_rows = _commodities(bars, market.today, window_days)
+    commodity_index = {item.key: item for item in commodity_rows}
     for view in positions:
         series, incoherent = _series(bars, view.ticker, market.today, window_days)
         if incoherent:
@@ -90,6 +102,7 @@ def collect_stats(
         snapshot = fvz.get(view.ticker) or FinvizSnapshot.missing(view.ticker, "sin dato", market.today)
         merged = merge_fields(yahoo, _technical_fields(series), snapshot.values)
         merged.update(derive_fields(merged, view.price_usd))
+        merged.update(_driver_fields(view.ticker, merged, commodity_index))
         rows.append(
             PositionStats(
                 ticker=view.ticker,
@@ -109,6 +122,7 @@ def collect_stats(
         window_days,
         quality_gaps,
         fundamentals_used,
+        commodity_index,
     )
     rows.extend(local_rows)
 
@@ -129,6 +143,7 @@ def collect_stats(
         themes=dict(themes),
         sectors=dict(sectors or {}),
         fundamentals=fundamentals_used,
+        commodities=commodity_rows,
     )
 
 
@@ -186,6 +201,7 @@ def _local_rows(
     window_days: int,
     quality_gaps: list[str],
     fundamentals_used: dict[str, Mapping[str, object]],
+    commodity_index: Mapping[str, Commodity],
 ) -> list[PositionStats]:
     """Filas de las posiciones de la hoja local (fuera de XTB), en CLP.
 
@@ -209,6 +225,7 @@ def _local_rows(
             quality_gaps.append(symbol)
         merged = merge_fields(yahoo, _technical_fields(series), snapshot.values if snapshot else {})
         merged.update(derive_fields(merged, position.last_price_clp))
+        merged.update(_driver_fields(position.ticker, merged, commodity_index))
         rows.append(
             PositionStats(
                 ticker=position.ticker,
@@ -274,6 +291,66 @@ def _local_context(position: LocalPosition, themes: Mapping[str, str]) -> dict[s
     }
 
 
+def _commodities(bars: YahooDataProvider, today: dt.date, window_days: int) -> tuple[Commodity, ...]:
+    """Contexto de materias primas del dia (oro, plata, cobre y litio proxy).
+
+    Best effort: un simbolo sin dato sale con ``None`` (el informe lo muestra ``-``),
+    nunca se inventa un precio.
+    """
+    return tuple(_commodity(spec, _series(bars, spec.symbol, today, window_days)[0], today) for spec in COMMODITIES)
+
+
+def _commodity(spec: CommoditySpec, series: PriceSeries | None, today: dt.date) -> Commodity:
+    base = Commodity(key=spec.key, name=spec.name, symbol=spec.symbol, proxy=spec.proxy)
+    if series is None or series.is_empty:
+        return base
+    window = series.tail(WEEKS_52_SESSIONS)
+    return Commodity(
+        key=spec.key,
+        name=spec.name,
+        symbol=spec.symbol,
+        proxy=spec.proxy,
+        price=series.last_close,
+        chg_1m_pct=_change_pct(series.closes(), 21),
+        chg_ytd_pct=_ytd_pct(series, today),
+        high_52w=max(bar.high for bar in window) if len(window) > 0 else None,
+        low_52w=min(bar.low for bar in window) if len(window) > 0 else None,
+    )
+
+
+def _change_pct(closes: pd.Series, sessions: int) -> float | None:
+    """Variacion porcentual contra el cierre de hace ``sessions`` sesiones."""
+    if len(closes) <= sessions:
+        return None
+    then = float(closes.iloc[-1 - sessions])
+    now = float(closes.iloc[-1])
+    return None if then <= 0.0 else (now / then - 1.0) * 100.0
+
+
+def _ytd_pct(series: PriceSeries, today: dt.date) -> float | None:
+    """Variacion en lo que va del ano: cierre actual vs primer cierre del ano."""
+    last = series.last_close
+    if last is None:
+        return None
+    first = next((bar.close for bar in series.bars if bar.date.year == today.year), None)
+    if first is None or first <= 0.0:
+        return None
+    return (last / first - 1.0) * 100.0
+
+
+def _driver_fields(ticker: str, fields: Mapping[str, object], index: Mapping[str, Commodity]) -> dict[str, object]:
+    """Driver de materia prima de una posicion (SQM-B -> Litio) y su variacion a 1 mes."""
+    key = commodity_driver(
+        ticker,
+        sector=str(fields.get("sector") or ""),
+        industry=str(fields.get("industry") or ""),
+    )
+    item = index.get(key) if key is not None else None
+    if item is None:
+        return {}
+    return {"driver": item.label, "driver_1m_pct": item.chg_1m_pct}
+
+
 def _yahoo_fields(f: Fundamentals) -> dict[str, object]:
     """``Fundamentals`` -> claves canónicas. Las fracciones pasan a puntos porcentuales."""
     return _clean(
@@ -328,6 +405,15 @@ def _technical_fields(series: PriceSeries | None) -> dict[str, object]:
     if len(window) > 0:
         out["high_52w"] = max(bar.high for bar in window)
         out["low_52w"] = min(bar.low for bar in window)
+    frame = series.frame()
+    if len(frame) >= SHA_MIN_SESSIONS:
+        state = heikin_ashi_state(
+            smoothed_heikin_ashi(
+                frame["open"], frame["high"], frame["low"], frame["close"], smooth=SHA_SMOOTH, smooth2=SHA_SMOOTH2
+            )
+        )
+        if state is not None:
+            out["sha_trend"], out["sha_flip_sesiones"] = state
     return out
 
 

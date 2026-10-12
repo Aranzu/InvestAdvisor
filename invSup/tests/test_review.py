@@ -11,6 +11,7 @@ from swing.core.llm import Confidence, KeyFact, LLMReview, ReviewContext, Thesis
 from swing.core.models import HorizonState, RegimeState
 from swing.core.planner import (
     build_review_report,
+    render_action_table,
     render_review,
     render_review_report,
     render_table,
@@ -302,6 +303,75 @@ def test_informe_de_review_usa_la_narrativa_de_la_ia() -> None:
     assert "Todos los activos con datos de analistas." in informe
     assert "Asume FX estable en 900." in informe
     assert "**CARTERA** 2026-10-01: Fed recorto 25 pb (https://fed)" in informe
+
+
+def test_tabla_de_acciones_con_peso_post_y_volumen() -> None:
+    # AAA vende 50 % por el motor; BBB mantiene; ZZZ (local) vende 50 % por la IA.
+    vender = TradeExitJudgment(
+        trade=_trade("AAA", close=120.0),
+        evaluation=ExitEvaluation(
+            signals=(
+                ExitSignal(
+                    cause=Reason.TP_HIT, action=Action.SELL, execute=True, volume=5.0, tranche="A", detail="+1R"
+                ),
+            ),
+            primary_cause=Reason.TP_HIT,
+            should_exit=True,
+        ),
+        state_after=_trade("AAA"),
+    )
+    mantener = TradeExitJudgment(
+        trade=_trade("BBB"),
+        evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
+        state_after=_trade("BBB"),
+    )
+    zzz = LLMReview(
+        ticker="ZZZ",
+        context=ReviewContext.POSITION_REVIEW,
+        thesis_status=ThesisStatus.INTACT,
+        veto=False,
+        veto_reason=None,
+        key_facts=(),
+        search_conclusive=True,
+        confidence=Confidence.HIGH,
+        requested_info=(),
+        accion="Vender 50%",
+        fundamento="Bajo el promedio; tesis debil.",
+    )
+    rows = (
+        PositionStats(ticker="AAA", context={"theme": "semis", "value_clp": 300_000.0}, fields={}),
+        PositionStats(ticker="BBB", context={"theme": "semis", "value_clp": 300_000.0}, fields={}),
+        PositionStats(ticker="ZZZ", context={"theme": "mineria", "value_clp": 300_000.0}, fields={}),
+    )
+    local = (
+        LocalPosition(name="Sociedad Quimica", ticker="ZZZ", volume=68.0, avg_price_clp=500.0, last_price_clp=400.0),
+    )
+    report = build_review_report(
+        _plan(vender, mantener),
+        _stats(*rows),
+        axes_by_ticker={
+            "AAA": AxisRatings(value=2, quality=1, growth=1, projections=0, available=(True, True, True, False)),
+            "BBB": AxisRatings(value=0, quality=0, growth=0, projections=0),
+        },
+        reviews=(zzz,),
+        local=local,
+        local_platform="Zesty",
+    )
+    tabla = render_action_table(report)
+    # Cabecera exacta de la tabla de acciones.
+    assert "| Activo | Plat. | Retorno | Peso (actual -> post) | Accion | Puntaje | Conf. | Fundamento |" in tabla
+    # El volumen de venta lo fija el motor (5 de 10 acciones).
+    assert "Vender 50% (5 acc.)" in tabla
+    # La hoja local lleva su etiqueta y anota CLP en el retorno.
+    assert "| ZZZ | Zesty |" in tabla
+    assert "(CLP)" in tabla
+    assert "Vender 50% (34 acc.)" in tabla  # 50 % de 68 acciones (IA, fuera del motor)
+    # Eje sin datos: n.p. no puntua, pero el total suma los demas.
+    assert "+2 / +1 / +1 / n.p. -> +4" in tabla
+    # Peso renormalizado: BBB mantiene y pasa de 33.3 % a 50.0 % del invertido.
+    assert "33.3 -> 50.0" in tabla
+    # La tabla de acciones no trae tickets.
+    assert "Ticket" not in tabla
 
 
 def test_incluye_el_contexto_macro() -> None:
