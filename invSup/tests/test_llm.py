@@ -114,6 +114,35 @@ def test_la_ia_puede_sugerir_vender_o_mantener() -> None:
     assert parse_review(_payload(accion="Mantener (no anadir)"), TODAY).accion == "Mantener (no anadir)"
 
 
+def test_sell_intent_lee_el_porcentaje_del_texto() -> None:
+    review = parse_review(_payload(context="POSITION_REVIEW", accion="Vender 40%"), TODAY)
+    assert review.sell_intent() == 0.4
+    comma = parse_review(_payload(context="POSITION_REVIEW", accion="Vender 33,5%"), TODAY)
+    assert comma.sell_intent() == 0.335
+
+
+def test_sell_intent_sin_porcentaje_es_salida_completa() -> None:
+    assert parse_review(_payload(context="POSITION_REVIEW", accion="Vender"), TODAY).sell_intent() == 1.0
+    assert parse_review(_payload(context="POSITION_REVIEW", verdict="SELL"), TODAY).sell_intent() == 1.0
+
+
+def test_sell_intent_mantener_es_cero() -> None:
+    review = parse_review(_payload(context="POSITION_REVIEW", accion="Mantener (no anadir)"), TODAY)
+    assert review.sell_intent() == 0.0
+
+
+def test_sell_intent_el_texto_manda_sobre_el_verdict() -> None:
+    # Un "Mantener" explicito gana sobre un verdict SELL contradictorio.
+    review = parse_review(_payload(context="POSITION_REVIEW", verdict="SELL", accion="Mantener"), TODAY)
+    assert review.sell_intent() == 0.0
+
+
+def test_sell_intent_solo_aplica_a_posiciones() -> None:
+    # En una entrada o en el screener, "vender" no decide sobre una posicion.
+    assert parse_review(_payload(context="ENTRY_REVIEW", accion="Vender 40%"), TODAY).sell_intent() == 0.0
+    assert parse_review(_payload(context="SCREEN_REVIEW", accion="Vender 40%"), TODAY).sell_intent() == 0.0
+
+
 def test_apply_reviews_mueve_entrada_vetada_a_diferido() -> None:
     review = parse_review(_payload(ticker="AMD", veto=True, veto_reason="guidance rota"), TODAY)
     outcome = apply_reviews([review], TODAY, ["AMD", "NVDA"])
@@ -350,3 +379,77 @@ def test_http_error_del_proveedor_muestra_el_motivo(monkeypatch) -> None:
     monkeypatch.setattr("urllib.request.urlopen", boom)
     with pytest.raises(LLMError, match=r"HTTP 400.*temperature is deprecated"):
         OpenAICompatibleClient(api_key="k")._post("/chat/completions", {})
+
+
+def test_reintenta_un_503_transitorio(monkeypatch) -> None:
+    import io
+    import json
+    import urllib.error
+
+    from swing.adapters.llm import OpenAICompatibleClient
+
+    attempts = {"n": 0}
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
+
+    def flaky(*args: object, **kwargs: object) -> _Response:
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise urllib.error.HTTPError("u", 503, "Busy", {}, io.BytesIO(b'{"error":"busy"}'))  # type: ignore[arg-type]
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", flaky)
+    client = OpenAICompatibleClient(api_key="k", backoff_s=0.0)
+    data = client._post("/chat/completions", {})
+    assert attempts["n"] == 3
+    assert data["choices"]
+
+
+def test_un_503_persistente_agota_los_intentos(monkeypatch) -> None:
+    import io
+    import urllib.error
+
+    import pytest
+
+    from swing.adapters.llm import LLMError, OpenAICompatibleClient
+
+    attempts = {"n": 0}
+
+    def boom(*args: object, **kwargs: object) -> None:
+        attempts["n"] += 1
+        raise urllib.error.HTTPError("u", 503, "Busy", {}, io.BytesIO(b'{"error":"busy"}'))  # type: ignore[arg-type]
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    client = OpenAICompatibleClient(api_key="k", retries=3, backoff_s=0.0)
+    with pytest.raises(LLMError, match="HTTP 503"):
+        client._post("/chat/completions", {})
+    assert attempts["n"] == 3
+
+
+def test_un_400_no_se_reintenta(monkeypatch) -> None:
+    import io
+    import urllib.error
+
+    import pytest
+
+    from swing.adapters.llm import LLMError, OpenAICompatibleClient
+
+    attempts = {"n": 0}
+
+    def boom(*args: object, **kwargs: object) -> None:
+        attempts["n"] += 1
+        raise urllib.error.HTTPError("u", 400, "Bad", {}, io.BytesIO(b'{"error":"bad"}'))  # type: ignore[arg-type]
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    client = OpenAICompatibleClient(api_key="k", retries=3, backoff_s=0.0)
+    with pytest.raises(LLMError, match="HTTP 400"):
+        client._post("/chat/completions", {})
+    assert attempts["n"] == 1

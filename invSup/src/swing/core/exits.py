@@ -30,7 +30,7 @@ from swing.core.models import ExitsConfig, HorizonConfig, HorizonState, StopsCon
 from swing.core.portfolio import CapTrim
 from swing.core.reasons import Action, ExitCause, Reason
 from swing.core.state import TradeState, TrancheState
-from swing.core.stops import breakeven_price, chandelier_stop, should_raise_stop
+from swing.core.stops import breakeven_price, chandelier_stop, protect_gain, should_raise_stop
 
 #: Diferencia maxima para considerar que el stop del broker es el que pedimos.
 #: Es 0,01 % del precio: el broker redondea a centavos y en un ticker de 200 USD
@@ -141,6 +141,10 @@ class ExitContext:
     earnings_known: bool = True
     cap_trim: CapTrim | None = None
     thesis_broken: bool = False
+    llm_sell_fraction: float = 0.0
+    """Fraccion que la IA decide vender (``0`` = mantener). Sólo se llena con
+    ``llm.veto_only=false``; el motor traduce esa intencion a volumen y la evalua
+    como una regla mas, de precedencia baja (despues de las mecanicas)."""
 
 
 # --------------------------------------------------------------------------- #
@@ -181,6 +185,7 @@ EXIT_PRECEDENCE: tuple[Reason, ...] = (
     Reason.HORIZON_TIGHTEN,
     Reason.CAP_TRIM,
     Reason.THESIS_EXIT,
+    Reason.LLM_SELL,
 )
 
 
@@ -353,36 +358,56 @@ def _stall_exit(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
 
 
 def _raise_stop(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
-    """6. Trail del runner, con la histeresis de la seccion 4.4.
+    """6. Trail del runner y proteccion de la ganancia (seccion 4.4).
 
-    Solo aplica a un trade **asegurado**. Antes de vender el tramo A el stop es el
-    inicial y moverlo seria inventar una proteccion que la estrategia no pidio.
-    En modo ``SINGLE``, alcanzar +1 R es lo que asegura: el stop sube a
-    ``entrada x 1,01`` y desde ahi rige el trail (seccion 5.6).
+    Un trade **asegurado** (tramo A vendido, o SINGLE en +1 R) traila a
+    ``max(breakeven, Chandelier)``. Antes de asegurarlo, el mismo Chandelier corre
+    pero **solo para proteger ganancia**: sube el stop unicamente si el candidato
+    queda sobre el costo y bajo el precio (``protect_gain``). Asi la utilidad
+    abierta queda cubierta sin apretar a una posicion que aun no gana. En modo
+    ``SINGLE``, alcanzar +1 R es lo que asegura: el stop sube a ``entrada x 1,01``
+    y desde ahi rige el trail (seccion 5.6).
     """
     if trade.open_volume <= 0.0:
         return None
 
-    candidate: float | None = None
-    detail = ""
-    if trade.single and not trade.locked and trade.current_r >= SINGLE_LOCK_R:
+    if trade.single and not trade.locked:
+        if trade.current_r < SINGLE_LOCK_R:
+            return None
         candidate = breakeven_price(trade.entry_price, ctx.stops.breakeven_buffer_pct)
         detail = f"SINGLE: cierre en {trade.current_r:+.2f} R, sin venta parcial"
-    elif trade.locked:
-        candidate = max(
-            breakeven_price(trade.entry_price, ctx.stops.breakeven_buffer_pct),
-            chandelier_stop(
-                highest_n=trade.highest_n,
-                atr=trade.atr,
-                atr_mult=ctx.exits.runner_trail.atr_mult,
-                days_open=trade.days_open,
-                tighten_after_days=ctx.exits.runner_trail.tighten_after_days,
-                tightened_atr_mult=ctx.exits.runner_trail.tightened_atr_mult,
-            ),
-        )
-        detail = f"trail Chandelier {ctx.exits.runner_trail.atr_mult:g} x ATR"
-    if candidate is None:
+        return _stop_raise(trade, ctx, candidate, Reason.RAISE_STOP, detail)
+
+    # El trail (y el Chandelier) necesita ATR para existir.
+    if trade.atr <= 0.0:
         return None
+
+    trail = chandelier_stop(
+        highest_n=trade.highest_n,
+        atr=trade.atr,
+        atr_mult=ctx.exits.runner_trail.atr_mult,
+        days_open=trade.days_open,
+        tighten_after_days=ctx.exits.runner_trail.tighten_after_days,
+        tightened_atr_mult=ctx.exits.runner_trail.tightened_atr_mult,
+    )
+    detail = f"trail Chandelier {ctx.exits.runner_trail.atr_mult:g} x ATR"
+    if trade.locked:
+        candidate = max(breakeven_price(trade.entry_price, ctx.stops.breakeven_buffer_pct), trail)
+    else:
+        candidate = protect_gain(
+            trade.stop,
+            entry=trade.entry_price,
+            price=trade.close,
+            highest_n=trade.highest_n,
+            atr=trade.atr,
+            atr_mult=ctx.exits.runner_trail.atr_mult,
+            days_open=trade.days_open,
+            tighten_after_days=ctx.exits.runner_trail.tighten_after_days,
+            tightened_atr_mult=ctx.exits.runner_trail.tightened_atr_mult,
+        )
+        if candidate <= trade.stop:
+            return None
+        detail = f"{detail} (protege ganancia)"
 
     return _stop_raise(trade, ctx, candidate, Reason.RAISE_STOP, detail)
 
@@ -507,6 +532,30 @@ def _thesis_exit(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
     )
 
 
+def _llm_sell(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
+    """11. La IA decide vender (``llm.veto_only=false``).
+
+    El motor fija el volumen: ``fraction * open_volume``. Es una decision, no un
+    veto, y por eso va despues de todas las reglas mecanicas: si un stop se rompio
+    o una meta se alcanzo, esa regla manda y la IA queda suprimida. El tamaño
+    (acciones) lo calcula el motor; la IA solo aporta la direccion y la fraccion.
+    """
+    fraction = ctx.llm_sell_fraction
+    if fraction <= 0.0 or trade.open_volume <= 0.0:
+        return None
+    volume = min(trade.open_volume, trade.open_volume * fraction)
+    if volume <= 0.0:
+        return None
+    return _sell(
+        Reason.LLM_SELL,
+        ExitCause.LLM,
+        trade,
+        volume,
+        ctx,
+        f"la IA decide vender {fraction * 100:.0f}% de la posicion (veto_only=false)",
+    )
+
+
 _RULES = (
     _stop_breach,
     _stop_protection,
@@ -518,6 +567,7 @@ _RULES = (
     _horizon_tighten,
     _cap_trim,
     _thesis_exit,
+    _llm_sell,
 )
 
 

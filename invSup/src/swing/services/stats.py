@@ -11,13 +11,12 @@ como base, Finviz para lo que falta, técnicos calculados encima":
   semanas, calculados localmente para que no dependan de la red de Finviz.
 - **Finviz**: lo que Yahoo no publica (float y short interest, propiedad de
   insiders e institucional, ROA/ROIC, payout, desempeño por período, etc.), más las
-  compras de insiders (Form 4) de los últimos ``INSIDER_WINDOW_DAYS`` días.
-- **Hoja local**: las posiciones fuera de XTB (p. ej. SQM-B) entran como una fila más,
-  con Yahoo y Finviz resueltos por sufijo de mercado y montos absolutos en CLP.
+  compras y ventas de insiders (Form 4) de los últimos ``INSIDER_WINDOW_DAYS`` días.
 
 Es best effort por diseño: un ticker sin Yahoo o sin Finviz sale igual, con los
 campos que se pudieron reunir y la ausencia declarada en "Cobertura de datos". Una
-vela incoherente de Yahoo también degrada a ese ticker sin técnicos, no al informe.
+vela incoherente de Yahoo se descarta (sin repararla) y se declara en los límites, no
+tumba ni al ticker ni al informe.
 """
 
 from __future__ import annotations
@@ -27,22 +26,33 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import fields as dataclass_fields
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
 
 from swing.adapters.cache import CacheError
-from swing.adapters.data_yahoo import DataUnavailable, YahooDataProvider, to_yahoo_symbol
+from swing.adapters.data_yahoo import DataUnavailable, YahooDataProvider
 from swing.adapters.finviz import FinvizProvider, FinvizSnapshot
 from swing.adapters.fundamentals import YahooFundamentalsProvider
-from swing.core.analysis import Market, PositionView, Quote, analyze
+from swing.adapters.tradingeconomics import TeCommodity, TradingEconomicsProvider
+from swing.core.analysis import Analysis, Market, PositionView, Quote, analyze
+from swing.core.briefing import build as build_briefing
 from swing.core.commodities import COMMODITIES, Commodity, CommoditySpec, commodity_driver
 from swing.core.fundamentals import Fundamentals
 from swing.core.indicators import atr, heikin_ashi_state, rsi, sma, smoothed_heikin_ashi
 from swing.core.market import PriceSeries
-from swing.core.models import StrategyConfig
-from swing.core.report import LocalPosition, PositionReport
-from swing.core.stats import InsiderBuy, PositionStats, StatsReport, derive_fields, merge_fields
+from swing.core.market_context import MARKET, MarketInstrument, instrument
+from swing.core.models import Cluster, StrategyConfig
+from swing.core.report import PositionReport
+from swing.core.stats import (
+    INSIDER_WINDOW_DAYS,
+    InsiderTrade,
+    PositionStats,
+    StatsReport,
+    derive_fields,
+    merge_fields,
+)
 
 #: Sesiones del máximo/mínimo de 52 semanas.
 WEEKS_52_SESSIONS = 252
@@ -50,13 +60,8 @@ WEEKS_52_SESSIONS = 252
 #: Días de calendario que se piden para cubrir la SMA200 y las 52 semanas.
 BAR_WINDOW_DAYS = 400
 
-#: Ventana de compras de insiders que entra al informe.
-INSIDER_WINDOW_DAYS = 90
-
-#: Mercados de Yahoo que se prueban para una posicion de la hoja local. El ticker
-#: de la hoja es el del broker (``SQM-B``); Yahoo necesita el sufijo de mercado
-#: (``SQM-B.SN``), que no se puede inferir del ticker.
-_LOCAL_MARKET_SUFFIXES = (".SN",)
+#: Observaciones minimas para publicar un percentil: con menos, el numero es ruido.
+MIN_PERCENTILE_OBS = 60
 
 #: Suavizados del Heikin-Ashi suavizado ("Smoothed HA candles"): EMA del OHLC, HA y
 #: segunda EMA de la HA. Los dos 10 son los del indicador original.
@@ -66,6 +71,12 @@ SHA_SMOOTH2 = 10
 #: Sesiones minimas para publicar el SHA: sin los dos suavizados completos el color no
 #: significa nada, asi que antes de eso los campos quedan ausentes (``-``), no en cero.
 SHA_MIN_SESSIONS = SHA_SMOOTH + SHA_SMOOTH2
+
+#: Sesiones planas y sin volumen seguidas al final de la serie que delatan una fuente
+#: congelada (p. ej. Yahoo dejando de actualizar un ticker y repitiendo el ultimo cierre).
+#: Con los tecnicos sobre datos congelados, el stop que sale es un numero y no un nivel: se
+#: marca con ``flat_tail_sessions`` y el briefing lo levanta como "indicador sospechoso".
+STALE_TAIL_SESSIONS = 10
 
 
 def collect_stats(
@@ -77,6 +88,7 @@ def collect_stats(
     fundamentals: YahooFundamentalsProvider,
     finviz: FinvizProvider,
     bars: YahooDataProvider,
+    te: TradingEconomicsProvider | None = None,
     sectors: Mapping[str, str] | None = None,
     window_days: int = BAR_WINDOW_DAYS,
 ) -> StatsReport:
@@ -92,15 +104,27 @@ def collect_stats(
 
     rows: list[PositionStats] = []
     quality_gaps: list[str] = []
-    commodity_rows = _commodities(bars, market.today, window_days)
+    repaired_gaps: list[str] = []
+    technical_gaps: list[str] = []
+    commodity_rows = _commodities(bars, te.get(today=market.today) if te is not None else {}, market.today, window_days)
     commodity_index = {item.key: item for item in commodity_rows}
+    spy_series = _series(bars, "SPY", market.today, window_days)[0]
+    rs_lookback = strategy.gates.rs_lookback_days
     for view in positions:
-        series, incoherent = _series(bars, view.ticker, market.today, window_days)
-        if incoherent:
+        series, gap = _series(bars, view.ticker, market.today, window_days)
+        if gap == "incoherent":
             quality_gaps.append(view.ticker)
+        elif gap == "repaired":
+            repaired_gaps.append(view.ticker)
+        elif gap:
+            technical_gaps.append(view.ticker)
         yahoo = _yahoo_fields(fund.get(view.ticker) or Fundamentals.missing(view.ticker, "sin dato", market.today))
         snapshot = fvz.get(view.ticker) or FinvizSnapshot.missing(view.ticker, "sin dato", market.today)
-        merged = merge_fields(yahoo, _technical_fields(series), snapshot.values)
+        merged = merge_fields(
+            yahoo,
+            _technical_fields(series, spy=spy_series, rs_lookback=rs_lookback),
+            snapshot.values,
+        )
         merged.update(derive_fields(merged, view.price_usd))
         merged.update(_driver_fields(view.ticker, merged, commodity_index))
         rows.append(
@@ -108,23 +132,18 @@ def collect_stats(
                 ticker=view.ticker,
                 context=_context(view),
                 fields=merged,
-                insider_buys=_insider_buys(finviz, view.ticker, market.today),
+                insider_trades=_insider_trades(finviz, view.ticker, market.today),
             )
         )
 
-    local_rows = _local_rows(
-        analysis.local,
-        fundamentals,
-        finviz,
-        bars,
-        themes,
-        market.today,
-        window_days,
-        quality_gaps,
-        fundamentals_used,
-        commodity_index,
+    enriched, invested_clp = _enrich_panel(rows, equity_clp=analysis.equity_clp, cash_clp=analysis.cash_clp, strategy=strategy)
+    market_rows = _market_context(bars, market.today, window_days)
+    panel = _portfolio_panel(
+        enriched,
+        analysis=analysis,
+        invested_clp=invested_clp,
+        strategy=strategy,
     )
-    rows.extend(local_rows)
 
     return StatsReport(
         account=analysis.account,
@@ -135,34 +154,64 @@ def collect_stats(
         equity_clp=analysis.equity_clp,
         cash_clp=analysis.cash_clp,
         positions_value_clp=analysis.positions_value_clp,
-        rows=tuple(rows),
+        rows=tuple(enriched),
         limitations=tuple(
-            _limitations(rows, fund, fvz, analysis.mode, has_local=bool(local_rows), quality_gaps=quality_gaps)
+            _limitations(
+                rows,
+                fund,
+                fvz,
+                analysis.mode,
+                quality_gaps=quality_gaps,
+                repaired_gaps=repaired_gaps,
+                technical_gaps=technical_gaps,
+            )
         ),
         quotes={ticker: _quote_to_dict(quote) for ticker, quote in market.quotes.items()},
         themes=dict(themes),
         sectors=dict(sectors or {}),
         fundamentals=fundamentals_used,
         commodities=commodity_rows,
+        market=market_rows,
+        panel=panel,
+        notes=(
+            "RS vs SPY = retorno relativo contra SPY (1M = 21 sesiones, 3M = 63 sesiones, "
+            f"6M = {rs_lookback} sesiones; ``gates.rs_lookback_days``).",
+        ),
+        briefing=(
+            build_briefing(
+                enriched,
+                panel=panel,
+                patrimonio_clp=_as_number(panel.get("patrimonio_clp")),
+                policy=strategy.briefing,
+                review=strategy.review,
+            )
+            if strategy.briefing is not None
+            else None
+        ),
     )
 
 
 def _series(
     provider: YahooDataProvider, ticker: str, today: dt.date, window_days: int
-) -> tuple[PriceSeries | None, bool]:
-    """``(serie, hubo_vela_incoherente)``.
+) -> tuple[PriceSeries | None, str]:
+    """``(serie, motivo)`` con ``motivo`` en ``""``/``"repaired"``/``"incoherent"``/``"unavailable"``.
 
-    Best effort a proposito: sin rango que descargar o sin dato devuelve ``(None, False)``;
-    una vela incoherente de Yahoo (p. ej. un open fuera del rango) devuelve ``(None, True)``
-    para declarar el gap de calidad en vez de tumbar el informe completo. El detalle del
-    fallo se ve en 'Limites de esta evaluacion'.
+    Best effort a proposito: sin dato devuelve ``(serie vacia, "")``; una vela incoherente
+    de Yahoo (p. ej. un open fuera del rango) se descarta y devuelve ``"repaired"``; si la
+    serie entera queda inservible, ``"incoherent"``; y un fallo de descarga, ``"unavailable"``.
+    Distinguirlos importa: "la fuente no tiene el dato", "no se pudo descargar" y "habia un
+    dato contraditorio que se descarto" son problemas distintos y el informe los declara en
+    'Limites de esta evaluacion' en vez de dejar la fila muda.
     """
     try:
-        return provider.daily_bars(ticker, start=today - dt.timedelta(days=window_days), end=today), False
+        series, repaired = provider.daily_bars_report(
+            ticker, start=today - dt.timedelta(days=window_days), end=today
+        )
     except ValueError:
-        return None, True
+        return None, "incoherent"
     except (CacheError, DataUnavailable):
-        return None, False
+        return None, "unavailable"
+    return series, "repaired" if repaired else ""
 
 
 def _context(view: PositionView) -> dict[str, object]:
@@ -181,73 +230,42 @@ def _context(view: PositionView) -> dict[str, object]:
         "sessions_open": view.sessions_open,
         "stop_usd": view.stop_usd,
         "earnings": _earnings_text(view),
+        "earnings_sessions": view.earnings_sessions if view.earnings_known else None,
+        "entry_usd": view.open_price_usd,
+        "ret_clp_pct": _ret_pct(view.value_clp, view.cost_clp),
+        "ret_usd_pct": _ret_pct(view.price_usd, view.open_price_usd),
     }
+
+
+def _ret_pct(now: float | None, then: float | None) -> float | None:
+    """Retorno porcentual ``now`` vs ``then``; ``None`` si falta alguno o el costo no es positivo."""
+    if now is None or then is None or then <= 0.0:
+        return None
+    return (now / then - 1.0) * 100.0
 
 
 def _earnings_text(view: PositionView) -> str:
     if not view.earnings_known or view.earnings_date is None:
         return "sin dato"
     sessions = "" if view.earnings_sessions is None else f" ({view.earnings_sessions} ses)"
-    return f"{view.earnings_date.isoformat()}{sessions}"
+    return f"est. {view.earnings_date.isoformat()}{sessions}"
 
 
-def _local_rows(
-    positions: Sequence[LocalPosition],
-    fundamentals: YahooFundamentalsProvider,
-    finviz: FinvizProvider,
-    bars: YahooDataProvider,
-    themes: Mapping[str, str],
-    today: dt.date,
-    window_days: int,
-    quality_gaps: list[str],
-    fundamentals_used: dict[str, Mapping[str, object]],
-    commodity_index: Mapping[str, Commodity],
-) -> list[PositionStats]:
-    """Filas de las posiciones de la hoja local (fuera de XTB), en CLP.
+def _insider_trades(finviz: FinvizProvider, ticker: str, today: dt.date) -> tuple[InsiderTrade, ...]:
+    """Transacciones de insiders de los ultimos ``INSIDER_WINDOW_DAYS`` dias, mas nuevas primero.
 
-    El ticker de la hoja es el del broker y Yahoo necesita el sufijo de mercado,
-    asi que primero se resuelve el symbol. Yahoo y los tecnicos (velas en CLP) y el
-    snapshot de Finviz se mezclan igual que en las posiciones del broker. Los tickers
-    con vela incoherente se agregan a ``quality_gaps`` (compartido con las del broker)
-    y los fundamentales usados a ``fundamentals_used`` (para el JSON).
+    Entran compras y ventas: la ventana de Form 4 es tan informativa por el lado de la
+    venta como por el de la compra, y el informe las distingue en la columna ``Tipo``.
     """
-    rows: list[PositionStats] = []
-    for position in positions:
-        symbol = _resolve_local_symbol(position.ticker, fundamentals, today)
-        fund = fundamentals.get(symbol, today=today)
-        fundamentals_used.setdefault(
-            symbol, _fundamentals_to_dict(fund or Fundamentals.missing(symbol, "sin dato", today))
-        )
-        yahoo = _yahoo_fields(fund or Fundamentals.missing(symbol, "sin dato", today))
-        snapshot = finviz.get(symbol, today=today)
-        series, incoherent = _series(bars, symbol, today, window_days)
-        if incoherent:
-            quality_gaps.append(symbol)
-        merged = merge_fields(yahoo, _technical_fields(series), snapshot.values if snapshot else {})
-        merged.update(derive_fields(merged, position.last_price_clp))
-        merged.update(_driver_fields(position.ticker, merged, commodity_index))
-        rows.append(
-            PositionStats(
-                ticker=position.ticker,
-                context=_local_context(position, themes),
-                fields=merged,
-                insider_buys=_insider_buys(finviz, symbol, today),
-            )
-        )
-    return rows
-
-
-def _insider_buys(finviz: FinvizProvider, ticker: str, today: dt.date) -> tuple[InsiderBuy, ...]:
-    """Compras de insiders de los ultimos ``INSIDER_WINDOW_DAYS`` dias, mas nuevas primero."""
     cutoff = today - dt.timedelta(days=INSIDER_WINDOW_DAYS)
-    buys = [
+    trades = [
         trade
         for trade in finviz.get_insiders(ticker, today=today)
-        if trade.is_buy and trade.date is not None and trade.date >= cutoff
+        if trade.date is not None and trade.date >= cutoff
     ]
-    buys.sort(key=lambda trade: trade.date or dt.date.min, reverse=True)
+    trades.sort(key=lambda trade: trade.date or dt.date.min, reverse=True)
     return tuple(
-        InsiderBuy(
+        InsiderTrade(
             date=trade.date,
             owner=trade.owner,
             relationship=trade.relationship,
@@ -256,66 +274,168 @@ def _insider_buys(finviz: FinvizProvider, ticker: str, today: dt.date) -> tuple[
             shares=trade.shares,
             value=trade.value,
         )
-        for trade in buys
+        for trade in trades
     )
 
 
-def _resolve_local_symbol(ticker: str, fundamentals: YahooFundamentalsProvider, today: dt.date) -> str:
-    """Symbol de Yahoo de una posicion local probando el ticker y los sufijos de mercado.
+def _market_context(bars: YahooDataProvider, today: dt.date, window_days: int) -> tuple[MarketInstrument, ...]:
+    """Benchmarks del contexto, best effort (un simbolo sin dato sale con ``None``)."""
+    return tuple(instrument(spec, _series(bars, spec.symbol, today, window_days)[0]) for spec in MARKET)
 
-    ``SQM-B`` no existe en Yahoo; ``SQM-B.SN`` si. Se prueba el ticker tal cual y
-    luego cada sufijo conocido, y gana el primero con fundamentales. Si ninguno
-    responde se devuelve el ticker base (la posicion igual sale, con campos vacios).
+
+def _enrich_panel(
+    rows: Sequence[PositionStats],
+    *,
+    equity_clp: float,
+    cash_clp: float,
+    strategy: StrategyConfig,
+) -> tuple[list[PositionStats], float]:
+    """Agrega el panel derivado al ``context`` de cada fila y devuelve el invertido.
+
+    El motor fija los numeros: peso sobre el invertido, stop de la regla
+    (``legacy.max_loss_from_cost_pct`` desde la entrada) y distancia al stop.
     """
-    base = to_yahoo_symbol(ticker)
-    if "." in base:
-        return base
-    for candidate in (base, *(f"{base}{suffix}" for suffix in _LOCAL_MARKET_SUFFIXES)):
-        if not fundamentals.get(candidate, today=today).is_empty:
-            return candidate
-    return base
+    invested = sum(value for row in rows if (value := _as_number(row.context.get("value_clp"))) is not None)
+    max_loss = strategy.legacy.max_loss_from_cost_pct
+    patrimonio = cash_clp + invested if (cash_clp + invested) > 0.0 else equity_clp
+    out: list[PositionStats] = []
+    for row in rows:
+        context = dict(row.context)
+        value = _as_number(context.get("value_clp"))
+        if "weight_pct" not in context and value is not None and equity_clp > 0.0:
+            context["weight_pct"] = value / equity_clp * 100.0
+        if value is not None and invested > 0.0:
+            context["weight_invested_pct"] = value / invested * 100.0
+        entry = _as_number(context.get("entry_usd"))
+        price = _as_number(context.get("price_usd"))
+        if entry is not None and entry > 0.0:
+            stop = entry * (1.0 - max_loss / 100.0)
+            context["stop_rule"] = stop
+            if price is not None and price > 0.0:
+                context["stop_dist_pct"] = (price - stop) / price * 100.0
+        if value is not None and price is not None and stop is not None and patrimonio > 0.0:
+            context["risk_patrimonio_pct"] = (value * (price - stop) / price) / patrimonio * 100.0
+        out.append(replace(row, context=context))
+    return out, invested
 
 
-def _local_context(position: LocalPosition, themes: Mapping[str, str]) -> dict[str, object]:
-    """Contexto de la hoja local. Precio y montos en CLP (ver limitaciones)."""
+def _portfolio_panel(
+    rows: Sequence[PositionStats],
+    *,
+    analysis: Analysis,
+    invested_clp: float,
+    strategy: StrategyConfig,
+) -> dict[str, object]:
+    """Resumen deterministico de la cartera: patrimonio, caja y pesos por tema.
+
+    El patrimonio incluye la caja y las posiciones valuadas, de modo que los pesos
+    suman 100 % sobre el capital realmente expuesto.
+    """
+    equity_clp = analysis.equity_clp
+    cash_clp = analysis.cash_clp
+    patrimonio = cash_clp + invested_clp
+    themes: dict[str, float] = {}
+    for row in rows:
+        theme = str(row.context.get("theme") or "sin_tema")
+        value = _as_number(row.context.get("value_clp")) or 0.0
+        if invested_clp > 0.0:
+            themes[theme] = themes.get(theme, 0.0) + value / invested_clp * 100.0
+    cluster_cfg = strategy.risk.clusters
+    clusters: dict[str, object] = {}
+    if cluster_cfg is not None:
+        clusters["semis"] = _cluster_panel(cluster_cfg.semis, rows, invested_clp)
+        clusters["ia_ampliada"] = _cluster_panel(cluster_cfg.ia_ampliada, rows, invested_clp)
     return {
-        "name": position.name,
-        "theme": themes.get(position.ticker, "sin_tema"),
-        "volume": position.volume,
-        "cost_clp": position.volume * position.avg_price_clp,
-        "value_clp": position.value_clp,
-        "price_usd": position.last_price_clp,
-        "price_source": "hoja local (CLP)",
-        "pl_clp": position.profit_clp,
-        "earnings": "sin dato",
+        "equity_clp": equity_clp,
+        "patrimonio_clp": patrimonio,
+        "cash_clp": cash_clp,
+        "cash_pct": (cash_clp / patrimonio * 100.0) if patrimonio > 0.0 else None,
+        "invested_clp": invested_clp,
+        "invested_pct": (invested_clp / patrimonio * 100.0) if patrimonio > 0.0 else None,
+        "themes": themes,
+        "max_theme_pct": strategy.risk.max_theme_pct,
+        "clusters": clusters,
     }
 
 
-def _commodities(bars: YahooDataProvider, today: dt.date, window_days: int) -> tuple[Commodity, ...]:
-    """Contexto de materias primas del dia (oro, plata, cobre y litio proxy).
+def _cluster_panel(cluster: Cluster, rows: Sequence[PositionStats], invested_clp: float) -> dict[str, float | None]:
+    """Peso del cluster sobre el invertido: por ticker y por tema, sin repetir fila.
 
-    Best effort: un simbolo sin dato sale con ``None`` (el informe lo muestra ``-``),
-    nunca se inventa un precio.
+    Los ``tickers`` son la lista curada (incluye a SNDK, que el antiguo filtro por
+    nombre de tema ``semicon*`` dejaba afuera); los ``themes`` son la red de arrastre.
     """
-    return tuple(_commodity(spec, _series(bars, spec.symbol, today, window_days)[0], today) for spec in COMMODITIES)
+    pct: float | None = None
+    if invested_clp > 0.0:
+        total = 0.0
+        tickers = set(cluster.tickers)
+        themes = set(cluster.themes)
+        for row in rows:
+            theme = str(row.context.get("theme") or "")
+            if row.ticker not in tickers and theme not in themes:
+                continue
+            total += _as_number(row.context.get("value_clp")) or 0.0
+        pct = total / invested_clp * 100.0
+    return {"pct": pct, "max_pct": cluster.max_pct}
 
 
-def _commodity(spec: CommoditySpec, series: PriceSeries | None, today: dt.date) -> Commodity:
-    base = Commodity(key=spec.key, name=spec.name, symbol=spec.symbol, proxy=spec.proxy)
-    if series is None or series.is_empty:
-        return base
-    window = series.tail(WEEKS_52_SESSIONS)
+def _commodities(
+    bars: YahooDataProvider,
+    te: Mapping[str, TeCommodity],
+    today: dt.date,
+    window_days: int,
+) -> tuple[Commodity, ...]:
+    """Contexto de materias primas del dia (oro, plata, cobre).
+
+    Trading Economics es la fuente primaria del precio y de las variaciones a 1 mes/YTD
+    (vienen ya calculadas); las velas de Yahoo quedan como respaldo del precio/variacion
+    y como unica fuente del maximo/minimo de 52 semanas. Best effort: lo que falte sale
+    ``None`` (el informe lo muestra ``-``), nunca se inventa un precio.
+    """
+    rows: list[Commodity] = []
+    for spec in COMMODITIES:
+        series = _series(bars, spec.symbol, today, window_days)[0] if spec.symbol else None
+        rows.append(_commodity(spec, te.get(spec.te_slug), series, today))
+    return tuple(rows)
+
+
+def _commodity(spec: CommoditySpec, te: TeCommodity | None, series: PriceSeries | None, today: dt.date) -> Commodity:
+    """Una materia prima: precio y variaciones de Trading Economics, rango de Yahoo."""
+    has_series = series is not None and not series.is_empty
+    yahoo_price = series.last_close if has_series and series is not None else None
+    window = series.tail(WEEKS_52_SESSIONS) if has_series and series is not None else None
+    price = te.price if te is not None and te.price is not None else yahoo_price
+    if te is not None and te.price is not None:
+        source = "tradingeconomics"
+    elif yahoo_price is not None:
+        source = "yahoo"
+    else:
+        source = ""
     return Commodity(
         key=spec.key,
         name=spec.name,
         symbol=spec.symbol,
-        proxy=spec.proxy,
-        price=series.last_close,
-        chg_1m_pct=_change_pct(series.closes(), 21),
-        chg_ytd_pct=_ytd_pct(series, today),
-        high_52w=max(bar.high for bar in window) if len(window) > 0 else None,
-        low_52w=min(bar.low for bar in window) if len(window) > 0 else None,
+        source=source,
+        unit=te.unit if te is not None else "",
+        price=price,
+        chg_1m_pct=te.monthly_pct if te is not None and te.monthly_pct is not None else _yahoo_change(series, 21),
+        chg_ytd_pct=te.ytd_pct if te is not None and te.ytd_pct is not None else _yahoo_ytd(series, today),
+        high_52w=max((bar.high for bar in window), default=None) if window is not None else None,
+        low_52w=min((bar.low for bar in window), default=None) if window is not None else None,
     )
+
+
+def _yahoo_change(series: PriceSeries | None, sessions: int) -> float | None:
+    """Variacion a ``sessions`` sesiones de las velas de Yahoo, o ``None`` sin serie."""
+    if series is None or series.is_empty:
+        return None
+    return _change_pct(series.closes(), sessions)
+
+
+def _yahoo_ytd(series: PriceSeries | None, today: dt.date) -> float | None:
+    """Variacion YTD de las velas de Yahoo, o ``None`` sin serie."""
+    if series is None or series.is_empty:
+        return None
+    return _ytd_pct(series, today)
 
 
 def _change_pct(closes: pd.Series, sessions: int) -> float | None:
@@ -339,7 +459,7 @@ def _ytd_pct(series: PriceSeries, today: dt.date) -> float | None:
 
 
 def _driver_fields(ticker: str, fields: Mapping[str, object], index: Mapping[str, Commodity]) -> dict[str, object]:
-    """Driver de materia prima de una posicion (SQM-B -> Litio) y su variacion a 1 mes."""
+    """Driver de materia prima de una posicion y su variacion a 1 mes."""
     key = commodity_driver(
         ticker,
         sector=str(fields.get("sector") or ""),
@@ -348,7 +468,7 @@ def _driver_fields(ticker: str, fields: Mapping[str, object], index: Mapping[str
     item = index.get(key) if key is not None else None
     if item is None:
         return {}
-    return {"driver": item.label, "driver_1m_pct": item.chg_1m_pct}
+    return {"driver": item.name, "driver_1m_pct": item.chg_1m_pct}
 
 
 def _yahoo_fields(f: Fundamentals) -> dict[str, object]:
@@ -385,7 +505,23 @@ def _yahoo_fields(f: Fundamentals) -> dict[str, object]:
     )
 
 
-def _technical_fields(series: PriceSeries | None) -> dict[str, object]:
+def _flat_tail_sessions(series: PriceSeries) -> int:
+    """Sesiones planas y sin volumen seguidas al final de la serie (0 si la ultima no lo es)."""
+    count = 0
+    for bar in reversed(series.bars):
+        if bar.volume == 0.0 and bar.high == bar.low:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _technical_fields(
+    series: PriceSeries | None,
+    *,
+    spy: PriceSeries | None = None,
+    rs_lookback: int = 126,
+) -> dict[str, object]:
     """Indicadores calculados localmente desde las velas (sin red de terceros)."""
     if series is None or series.is_empty:
         return {}
@@ -395,16 +531,39 @@ def _technical_fields(series: PriceSeries | None) -> dict[str, object]:
         value = _tail(sma(closes, period))
         if value is not None:
             out[key] = value
-    rsi_value = _tail(rsi(closes, 14))
+    rsi_series = rsi(closes, 14)
+    rsi_value = _tail(rsi_series)
     if rsi_value is not None:
         out["rsi"] = rsi_value
-    atr_value = _tail(atr(series.highs(), series.lows(), closes, 14))
+        percentile = _percentile_last(rsi_series)
+        if percentile is not None:
+            out["rsi_percentile"] = percentile
+    atr_series = atr(series.highs(), series.lows(), closes, 14)
+    atr_value = _tail(atr_series)
     if atr_value is not None:
         out["atr"] = atr_value
+        percentile = _percentile_last(atr_series / closes * 100.0)
+        if percentile is not None:
+            out["atr_pct_percentile"] = percentile
+    for period, low_key, high_key in ((20, "low_20", "high_20"), (50, "low_50", "high_50")):
+        short = series.tail(period)
+        if len(short) > 0:
+            out[low_key] = min(bar.low for bar in short)
+            out[high_key] = max(bar.high for bar in short)
     window = series.tail(WEEKS_52_SESSIONS)
     if len(window) > 0:
         out["high_52w"] = max(bar.high for bar in window)
         out["low_52w"] = min(bar.low for bar in window)
+    flat_tail = _flat_tail_sessions(series)
+    if flat_tail >= STALE_TAIL_SESSIONS:
+        out["flat_tail_sessions"] = flat_tail
+    if spy is not None and not spy.is_empty:
+        spy_closes = spy.closes()
+        for sessions, key in ((21, "rs_1m_pct"), (63, "rs_3m_pct"), (rs_lookback, "rs_pct")):
+            stock_ret = _change_pct(closes, sessions)
+            spy_ret = _change_pct(spy_closes, sessions)
+            if stock_ret is not None and spy_ret is not None:
+                out[key] = stock_ret - spy_ret
     frame = series.frame()
     if len(frame) >= SHA_MIN_SESSIONS:
         state = heikin_ashi_state(
@@ -423,8 +582,9 @@ def _limitations(
     fvz: Mapping[str, FinvizSnapshot],
     mode: str,
     *,
-    has_local: bool = False,
     quality_gaps: Sequence[str] = (),
+    repaired_gaps: Sequence[str] = (),
+    technical_gaps: Sequence[str] = (),
 ) -> list[str]:
     limitations = [
         "Finviz es scraping best effort: un bloqueo o un cambio de HTML deja campos en blanco; "
@@ -433,15 +593,30 @@ def _limitations(
     ]
     if mode != "live":
         limitations.insert(0, "modalidad offline: solo se usó cache; lo que no estaba cacheado queda en blanco.")
-    if has_local:
-        limitations.append(
-            "las posiciones de la hoja local (p. ej. SQM-B) quedan fuera de la caja y el equity de XTB; "
-            "su precio y sus montos absolutos (SMA, ATR, 52S, market cap) están en CLP, no en USD."
-        )
     if quality_gaps:
         limitations.append(
             "sin técnicos por una vela incoherente de Yahoo en " + ", ".join(sorted(set(quality_gaps))) + ": "
             "se descarta la serie completa (fail-closed) antes de promediar un dato contradictorio."
+        )
+    if repaired_gaps:
+        limitations.append(
+            "se descartó una vela contradictoria de Yahoo (sin repararla) en "
+            + ", ".join(sorted(set(repaired_gaps)))
+            + ": los técnicos y el stop se calculan con el resto de la serie; revisar el hueco antes de confiar en ellos."
+        )
+    if technical_gaps:
+        limitations.append(
+            "sin técnicos porque no se pudo descargar la serie de velas (posible fallo de red) en "
+            + ", ".join(sorted(set(technical_gaps)))
+            + ": reintentar ``swing stats`` antes de decidir sobre ellos."
+        )
+    stale = sorted(row.ticker for row in rows if row.fields.get("flat_tail_sessions") is not None)
+    if stale:
+        limitations.append(
+            "serie de velas congelada (10+ sesiones planas y sin volumen) en "
+            + ", ".join(stale)
+            + ": los técnicos y el stop salen de datos que la fuente dejó de actualizar; "
+            "contrástalos con el precio actual antes de usarlos."
         )
     no_fund = sorted(t for t, f in fund.items() if f.is_empty)
     if no_fund:
@@ -457,6 +632,20 @@ def _tail(series: pd.Series | None) -> float | None:
         return None
     value = float(series.iloc[-1])
     return None if math.isnan(value) else value
+
+
+def _percentile_last(series: pd.Series, *, window: int = WEEKS_52_SESSIONS) -> float | None:
+    """Percentil (0-100) de la ultima observacion dentro de la ventana, o ``None``.
+
+    Responde "que tan alto esta el valor de hoy contra su propio ultimo ano", que es
+    lo que un umbral fijo (``ATR % > 4``) no puede decir: 6 % de ATR es normal en SNDK
+    y extremo en LMT.
+    """
+    values = series.tail(window).dropna()
+    if len(values) < MIN_PERCENTILE_OBS:
+        return None
+    last = float(values.iloc[-1])
+    return float((values <= last).mean() * 100.0)
 
 
 def _pct(fraction: float | None) -> float | None:

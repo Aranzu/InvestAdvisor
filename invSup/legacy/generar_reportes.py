@@ -19,7 +19,6 @@ Herramienta, no parte del paquete: se ejecuta con el venv del proyecto.
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import sys
 from pathlib import Path
@@ -27,19 +26,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from swing.adapters.data_yahoo import frame_to_series, sectors_from
+from swing.adapters.data_yahoo import sectors_from
 from swing.adapters.fundamentals import provider_from_project as fundamentals_provider_from_project
 from swing.adapters.llm import LLMError, WEB_SEARCH_TOOL, _first_message, _query_of, client_from_env
 from swing.adapters.xtb_report import load_positions_report
 from swing.core.analysis import Market, analyze
-from swing.core.engine import IndicatorFrame, relative_strength_percentiles
 import swing.cli as cli
 
 CONFIG = ROOT / "config"
 POS = ROOT / "posiciones"
 REPORTS = ROOT / "reports"
 
-TOTAL_ROWS = ["SQM-B", "MELI", "AVGO", "LMT", "AMD", "MU", "NVDA", "V", "GOOGL", "UNH", "UBER", "CRM", "AMZN", "SPCX", "SNDK"]
+TOTAL_ROWS = ["MELI", "AVGO", "LMT", "AMD", "MU", "NVDA", "V", "GOOGL", "UNH", "UBER", "CRM", "AMZN", "SPCX", "SNDK"]
 
 
 def fmt(x: object, dp: int = 2) -> str:
@@ -116,31 +114,6 @@ def technical_facts(frame) -> dict[str, object]:
     return facts
 
 
-def yahoo_local_series(symbol: str, start: dt.date, end: dt.date):
-    """Velas de un ticker de bolsa local (SQM-B.SN) descargadas al vuelo.
-
-    Yahoo entrega algunas velas imposibles (open fuera del rango high/low) en la
-    serie de Santiago; el ``PriceSeries`` valida y las rechaza con ``ValueError``,
-    asi que se descartan antes de la conversion.
-    """
-    import yfinance as yf
-
-    frame = yf.Ticker(symbol).history(
-        start=start.isoformat(),
-        end=(end + dt.timedelta(days=1)).isoformat(),
-        auto_adjust=False,
-        actions=False,
-        raise_errors=False,
-    )
-    if frame is None or frame.empty:
-        return None
-    within = (
-        (frame["High"] >= frame[["Open", "Close"]].max(axis=1))
-        & (frame["Low"] <= frame[["Open", "Close"]].min(axis=1))
-    )
-    return frame_to_series(symbol, frame[within])
-
-
 def fundamental_facts(f, price: float) -> dict[str, object]:
     keys = (
         "sector", "industry", "market_cap", "trailing_pe", "forward_pe", "price_to_book",
@@ -165,7 +138,7 @@ def fundamental_facts(f, price: float) -> dict[str, object]:
             continue
         if name == "dividend_yield":
             # Yahoo entrega dividend_yield como fraccion (0.0072) en EEUU y ya en % (3.46)
-            # en algunos mercado (p. ej. SQM-B.SN): se normaliza por magnitud.
+            # en algunos mercados (p. ej. bolsas locales): se normaliza por magnitud.
             out[name] = value if abs(value) > 1.0 else value * 100.0
         elif name in as_percent:
             out[name] = value * 100.0
@@ -177,7 +150,7 @@ def fundamental_facts(f, price: float) -> dict[str, object]:
     return out
 
 
-def build_stats(model, market, analysis, snapshot, fundamentals, *, frames=None, fx=1.0) -> tuple[dict[str, dict], dict[str, object]]:
+def build_stats(model, market, analysis, snapshot, fundamentals, *, frames=None) -> tuple[dict[str, dict], dict[str, object]]:
     if frames is None:
         frames = snapshot.frames
     stats: dict[str, dict] = {}
@@ -186,7 +159,6 @@ def build_stats(model, market, analysis, snapshot, fundamentals, *, frames=None,
         fund = fundamental_facts(fundamentals.get(view.ticker), view.price_usd)
         stats[view.ticker] = {
             "nombre": view.name,
-            "plataforma": "XTB",
             "tema": view.theme,
             "tema_origen": view.theme_origin,
             "acciones": view.volume,
@@ -206,36 +178,7 @@ def build_stats(model, market, analysis, snapshot, fundamentals, *, frames=None,
             **tech,
             **fund,
         }
-    for local in analysis.local:
-        val = local.value_clp
-        tech = dict(technical_facts(frames.get(local.ticker)))
-        fund = dict(fundamental_facts(fundamentals.get(local.ticker), local.last_price_clp))
-        # SQM-B.SN cotiza en CLP: el ADV y el market cap se pasan a USD para la tabla.
-        if fund.get("market_cap") is not None:
-            fund["market_cap"] = fund["market_cap"] / fx
-        if tech.get("adv_usd") is not None:
-            tech["adv_usd"] = tech["adv_usd"] / fx
-        stats[local.ticker] = {
-            "nombre": local.name,
-            "plataforma": "Zesty",
-            "tema": "litio / material especializado",
-            "tema_origen": "local",
-            "acciones": local.volume,
-            "apertura": local.avg_price_clp,
-            "actual": local.last_price_clp,
-            "retorno_pct": retorno(local.last_price_clp, local.avg_price_clp),
-            "valor_clp": val,
-            "peso_equity_pct": val / analysis.equity_clp * 100.0 if analysis.equity_clp > 0.0 else 0.0,
-            "pl_clp": local.profit_clp,
-            "efecto_precio_clp": None,
-            "efecto_fx_clp": None,
-            "sesiones_abiertas": None,
-            "stop_broker_usd": None,
-            "moneda": "CLP",
-            **tech,
-            **fund,
-        }
-    total_posiciones = analysis.positions_value_clp + sum(local.value_clp for local in analysis.local)
+    total_posiciones = analysis.positions_value_clp
     for data in stats.values():
         data["peso_posiciones_pct"] = data["valor_clp"] / total_posiciones * 100.0 if total_posiciones > 0.0 else 0.0
     tema_pesos: dict[str, float] = {}
@@ -292,7 +235,7 @@ def render_report_1(stats: dict[str, dict], summary: dict[str, object], macro: d
     lines.append(f"| depositos | {clp(summary.get('depositos_clp'))} |")
     lines.append(f"| caja | {clp(summary.get('caja_clp'))} |")
     lines.append(f"| posiciones abiertas (XTB) | {clp(summary.get('valor_posiciones_xtb_clp'))} |")
-    lines.append(f"| total posiciones (incluye SQM-B) | {clp(summary.get('total_posiciones_clp'))} |")
+    lines.append(f"| total posiciones | {clp(summary.get('total_posiciones_clp'))} |")
     lines.append(f"| equity | {clp(summary.get('equity_clp'))} |")
     lines.append(f"| P/L realizado | {clp(summary.get('pl_realizado_clp'))} |")
     lines.append(f"| P/L no realizado | {clp(summary.get('pl_no_realizado_clp'))} |")
@@ -303,10 +246,10 @@ def render_report_1(stats: dict[str, dict], summary: dict[str, object], macro: d
 
     lines.append("## Posiciones y retornos")
     lines.append("")
-    lines.append("Pesos calculados sobre el total de posiciones (XTB + local).")
+    lines.append("Pesos calculados sobre el total de posiciones (XTB).")
     lines.append("")
-    lines.append("| activo | plat. | tema | acciones | apertura | actual | retorno % | valor CLP | peso % | P/L CLP | sesiones | stop | earnings |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("| activo | tema | acciones | apertura | actual | retorno % | valor CLP | peso % | P/L CLP | sesiones | stop | earnings |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for ticker in TOTAL_ROWS:
         data = stats.get(ticker)
         if not data:
@@ -318,9 +261,8 @@ def render_report_1(stats: dict[str, dict], summary: dict[str, object], macro: d
             ses = data.get("earnings_sesiones")
             earnings = f"{data['earnings_fecha']}" + (f" ({ses}ses)" if ses is not None else "")
         lines.append(
-            "| {t} | {p} | {th} | {v} | {a} | {c} | {r} | {val} | {w} | {pl} | {s} | {stop} | {e} |".format(
+            "| {t} | {th} | {v} | {a} | {c} | {r} | {val} | {w} | {pl} | {s} | {stop} | {e} |".format(
                 t=ticker,
-                p=data.get("plataforma", "XTB"),
                 th=data.get("tema", "-"),
                 v=fmt(data.get("acciones"), 2),
                 a=f"{fmt(data.get('apertura'))} {moneda}",
@@ -334,9 +276,6 @@ def render_report_1(stats: dict[str, dict], summary: dict[str, object], macro: d
                 e=earnings,
             )
         )
-    lines.append("")
-    lines.append("Nota: SQM-B cotiza en CLP (Zesty); para las otras, apertura y actual en USD.")
-
     lines.append("")
     lines.append("## Indicadores tecnicos")
     lines.append("")
@@ -440,7 +379,6 @@ def render_report_1(stats: dict[str, dict], summary: dict[str, object], macro: d
     lines.append("## Limites de esta fotografia")
     lines.append("")
     lines.append("- Solo estadisticas: sin analisis, sin recomendaciones, sin niveles. Fuente de datos: cache del proyecto y export XTB.")
-    lines.append("- SQM-B no viene del export XTB: es la posicion local (precios CLP de la hoja Zesty). Sus indicadores y fundamentales se toman de SQM-B.SN (Bolsa de Santiago, CLP); el ADV y el market cap se convierten a USD con el FX del dia.")
     lines.append("- No hay percentil de fuerza relativa para posiciones sin velas suficientes en el universo de referencia.")
     lines.append("")
     return "\n".join(lines)
@@ -545,14 +483,14 @@ def chat_text(client, system: str, user: str, max_rounds: int = 10) -> str:
 
 SYSTEM_PROMPT = """Eres un analista de portafolio en espanol. Redactas UN reporte Markdown completo de revision de portafolio (vender/mantener) en espanol, con la estructura EXACTA detallada abajo. Hoy es 2026-10-09.
 
-Recibes: (1) 'CUENTA:' con el resumen contable y macro determinista, y (2) una linea por activo con sus estadisticas (posicion, tecnico, fundamentales, proyecciones, earnings) preparadas por el motor del proyecto. Las cifras de esas estadisticas son LA fuente de verdad: citalas tal cual, NO las inventes ni las cambies. Unidades: las metricas en porcentaje (return_on_equity, profit_margin, operating_margin, revenue_growth, earnings_growth, dividend_yield, eps_growth_estimate, revenue_growth_estimate, upside_pct, retorno_pct, pct_vs_sma20, pct_vs_sma50, pct_vs_sma200, pct_vs_max52, pct_vs_min52, atr_pct, peso_equity_pct, peso_posiciones_pct, rs_percentil) vienen YA en PORCENTAJE; los precios de XTB en USD y los de SQM-B en CLP; mkt cap en USD, vol/adv en acciones/USD; P/E, P/B, PEG, D/E y beta son multiplos.
+Recibes: (1) 'CUENTA:' con el resumen contable y macro determinista, y (2) una linea por activo con sus estadisticas (posicion, tecnico, fundamentales, proyecciones, earnings) preparadas por el motor del proyecto. Las cifras de esas estadisticas son LA fuente de verdad: citalas tal cual, NO las inventes ni las cambies. Unidades: las metricas en porcentaje (return_on_equity, profit_margin, operating_margin, revenue_growth, earnings_growth, dividend_yield, eps_growth_estimate, revenue_growth_estimate, upside_pct, retorno_pct, pct_vs_sma20, pct_vs_sma50, pct_vs_sma200, pct_vs_max52, pct_vs_min52, atr_pct, peso_equity_pct, peso_posiciones_pct, rs_percentil) vienen YA en PORCENTAJE; los precios en USD; mkt cap en USD, vol/adv en acciones/USD; P/E, P/B, PEG, D/E y beta son multiplos.
 
-Tienes la herramienta web_search. USALA para verificar y enriquecer hechos RECIENTES (ultimos ~30 dias) cuando haga falta: proximo reporte de resultados y fecha, revisiones/objetivos de analistas con fecha, noticias relevantes, eventos (reuniones de la Fed, desbloqueos de acciones), precio del litio para SQM-B, contexto macro (Fed/tasas, dolar, inflacion, petroleo, geopolica). Cada hecho verificado se cita con su fecha y source_url (la url llega en los resultados de la busqueda). NUNCA inventes una fuente: si no hay evidencia, declara en la seccion 5 'sin verificar'. Un hecho sin fuente no se afirma como cierto.
+Tienes la herramienta web_search. USALA para verificar y enriquecer hechos RECIENTES (ultimos ~30 dias) cuando haga falta: proximo reporte de resultados y fecha, revisiones/objetivos de analistas con fecha, noticias relevantes, eventos (reuniones de la Fed, desbloqueos de acciones), contexto macro (Fed/tasas, dolar, inflacion, petroleo, geopolica). Cada hecho verificado se cita con su fecha y source_url (la url llega en los resultados de la busqueda). NUNCA inventes una fuente: si no hay evidencia, declara en la seccion 5 'sin verificar'. Un hecho sin fuente no se afirma como cierto.
 
 Reglas de la recomendacion:
 - Recomienda VENDER (total o parcial) solo con motivo concreto: valorizacion extendida con crecimiento debil, catalizador negativo con fuente, tesis rota, riesgo de evento binario (earnings) con colchon pequeno, o sobre-concentracion. El precio por si solo no es motivo (nadie vende por el numero). Puedes proponer 'Vender X%' (X multiplo de 5) o 'Vender' total; indica en el fundamento el CLP aproximado que se libera (usa valor_clp) y el % del portafolio que baja.
-- El resto: 'Mantener'. 'Mantener sin aumentar' si un catalizador/valorizacion justifica no sumar. SQM-B no se aumenta (pesa ~10%).
-- 'Conf' es un entero 1-7 (7 = maxima conviccion). Calibra con datos: 6-7 si fundamentales+tecnico+proyecciones+noticias apuntan al mismo lado; 4-5 si hay contradiccion o datos parciales; 3 o menos con datos muy faltantes (por ejemplo SQM-B sin tecnico/fundamentales).
+- El resto: 'Mantener'. 'Mantener sin aumentar' si un catalizador/valorizacion justifica no sumar.
+- 'Conf' es un entero 1-7 (7 = maxima conviccion). Calibra con datos: 6-7 si fundamentales+tecnico+proyecciones+noticias apuntan al mismo lado; 4-5 si hay contradiccion o datos parciales; 3 o menos con datos muy faltantes (por ejemplo un ticker sin tecnico ni fundamentales).
 - Stop y TP de la tabla 'Mantener' y 'Vender' son BANDAS DE RIESGO sobre el precio actual (derivalas del precio, el ATR en USD, el maximo/minimo de 52 semanas y el RSI; dales valores redondos en la moneda del activo). NO son niveles tecnicos verificados ni los fija el motor. En 'Decisiones' deja claro en una nota que no son niveles verificados.
 - En la Conclusión, los montos de las ventas parciales se suman y se expresan en CLP y como % del total de posiciones. Usa total_posiciones_clp para el denominador.
 - Concentracion: agrupa por tema/sector. El bloque de semiconductores/IA (AVGO, AMD, MU, NVDA, SNDK) y el bloque tecnologico ampliado (suma GOOGL, AMZN, CRM, SPCX) se reportan como grupos correlacionados en % del portafolio.
@@ -561,20 +499,20 @@ Reglas de la recomendacion:
 ESTRUCTURA EXACTA del reporte (Markdown):
 
 # Revisión de portafolio: vender / mantener
-9 de octubre de 2026 · XTB (14 acciones) + Zesty (SQM-B) · Perfil: crecimiento con riesgo controlado · No es asesoría financiera personalizada
+9 de octubre de 2026 · XTB (14 acciones) · Perfil: crecimiento con riesgo controlado · No es asesoría financiera personalizada
 
 ## 1. Conclusión
 (bullets:
  - 'Vender parcial: <ticker> <X>%, <ticker> <X>%...' con lo que suman en CLP y como % del portafolio de CLP <total>.
- - 'Mantener las otras <N> posiciones, sin aumentar SQM-B (pesa ~<peso>%).'
+ - 'Mantener las otras <N> posiciones.'
  - 'Concentración: ...' bloque semis y tecnologico, y que pasa tras las ventas (queda bajo/acima de X%).
  - 'Eventos próximos: ...' earnings y desbloqueos con fecha y movimiento implicito si lo sabes.
- - Nota: 'Los precios, volumenes y retornos son los de tu archivo XTB y tu captura de Zesty. Los stop loss y take profit son bandas de riesgo sobre tu precio actual, no niveles tecnicos verificados.')
+ - Nota: 'Los precios, volumenes y retornos son los de tu archivo XTB. Los stop loss y take profit son bandas de riesgo sobre tu precio actual, no niveles tecnicos verificados.')
 
 ## 2. Posiciones normalizadas
-(frase: 'Precios en USD (XTB) y CLP (SQM-B). Peso calculado sobre CLP <total_posiciones_clp>.')
-Tabla Markdown: | Activo | Plat. | Apertura / promedio | Actual | Retorno % | Peso % |
-(ordenada por peso descendente, SQM-B primero o entre los mayores segun su peso)
+(frase: 'Precios en USD. Peso calculado sobre CLP <total_posiciones_clp>.')
+Tabla Markdown: | Activo | Apertura / promedio | Actual | Retorno % | Peso % |
+(ordenada por peso descendente)
 'Grupos correlacionados:' bullets con los bloques y su %.
 
 ## 3. Decisiones
@@ -588,7 +526,7 @@ Nota final: stop/tp son bandas de riesgo sobre el precio actual, no niveles veri
 ## 4. Alertas
 '### Eventos de los próximos días' (bullets con fechas concretas: earnings, desbloqueos, Fed, etc.)
 '### Concentración' (bullets: top pesos y los bloques correlacionados, con el % tras vender)
-'### Macro' (bullets: tasas, mercado, petroleo, dolar/CLP efecto FX, litio si aplica)
+'### Macro' (bullets: tasas, mercado, petroleo, dolar/CLP efecto FX)
 
 ## 5. Cobertura de datos
 Tabla: | Activo | Último reporte (fecha) | Analistas (fecha) | Confianza |
@@ -626,20 +564,8 @@ def main() -> None:
 
     frames = dict(m.snapshot.frames)
     rs = m.snapshot.rs
-    fx_usd = fx or 1.0
-    for local in analysis.local:
-        symbol = f"{local.ticker}.SN"  # SQM-B -> SQM-B.SN (Bolsa de Santiago)
-        series = yahoo_local_series(symbol, m.today - dt.timedelta(days=cli.BACKTEST_WARMUP_DAYS), m.today)
-        if series is not None and not series.is_empty:
-            frame = IndicatorFrame.build(series, strategy)
-            if frame is not None:
-                frames[local.ticker] = frame
-                rs = relative_strength_percentiles(frames, strategy.gates.rs_lookback_days)
-        extra = fundamentals_provider_from_project(None, offline=False).get_many([symbol], today=m.today)
-        if extra.get(symbol) is not None:
-            fundamentals[local.ticker] = extra[symbol]
 
-    stats, summary = build_stats(model, market, analysis, m.snapshot, fundamentals, frames=frames, fx=fx_usd)
+    stats, summary = build_stats(model, market, analysis, m.snapshot, fundamentals, frames=frames)
     render_rs_percentiles(stats, rs)
 
     fecha = m.today.isoformat()

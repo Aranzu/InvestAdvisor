@@ -22,6 +22,7 @@ Reglas de este modulo:
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -405,6 +406,7 @@ def decide(
     universe: tuple[str, ...] | None = None,
     last_exit_by_ticker: dict[str, dt.date] | None = None,
     thesis_broken: dict[str, bool] | None = None,
+    llm_sell: Mapping[str, float] | None = None,
     kill: KillState = KillState.OK,
 ) -> NightPlan:
     """Decide que hacer esta noche, una vez, con datos ya resueltos.
@@ -417,7 +419,10 @@ def decide(
     Efectos de ``kill``: en modo defensivo no se proponen entradas (solo
     salidas). ``last_exit_by_ticker`` alimenta el enfriamiento de re-entrada
     (seccion 5.7): pasar una fecha de hoy implica que el ticker esta en
-    cooldown. ``thesis_broken`` alimenta la regla 10 (THESIS_EXIT).
+    cooldown. ``thesis_broken`` alimenta la regla 10 (THESIS_EXIT) y ``llm_sell``
+    la regla 11 (LLM_SELL, ``veto_only=false``): la IA decide vender y el motor
+    fija el volumen. Ambas tienen precedencia baja: una regla mecanica que se
+    cumpla manda sobre la opinion de la IA.
     """
     calendar_ctx = calendar
 
@@ -438,6 +443,7 @@ def decide(
     # --- Salidas (seccion 5.7) ---
     trims_by_ticker = {trim.ticker: trim for trim in plan_cap_trims(state, limits)}
     break30 = thesis_broken or {}
+    sells30 = llm_sell or {}
     judgments: list[TradeExitJudgment] = []
     earnings_source_available = bool(snapshot.earnings)
     for ticker in sorted(open_trades):
@@ -452,6 +458,7 @@ def decide(
             earnings_known=earnings_source_available,
             cap_trim=trims_by_ticker.get(ticker),
             thesis_broken=break30.get(ticker, False),
+            llm_sell_fraction=sells30.get(ticker, 0.0),
         )
         evaluation = evaluate_exits(trade, ctx)
         state_after = apply_exits(trade, evaluation)

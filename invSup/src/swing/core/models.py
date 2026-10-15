@@ -18,8 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 
 from swing.core.reasons import Reason
 
-#: Alcance de equity por defecto: el broker de las acciones y el archivo local.
-EQUITY_SCOPE_DEFAULT: list[Literal["xtb", "local"]] = ["xtb", "local"]
+#: Alcance de equity por defecto: el broker de las acciones.
+EQUITY_SCOPE_DEFAULT: list[Literal["xtb"]] = ["xtb"]
 
 
 class StrictModel(BaseModel):
@@ -109,10 +109,8 @@ class Rejected(StrictModel):
 
 class AccountConfig(StrictModel):
     base_currency: Literal["CLP"] = "CLP"
-    equity_scope: list[Literal["xtb", "local"]] = Field(default_factory=lambda: list(EQUITY_SCOPE_DEFAULT))
+    equity_scope: list[Literal["xtb"]] = Field(default_factory=lambda: list(EQUITY_SCOPE_DEFAULT))
     trade_unit: Literal["ticker"] = "ticker"
-    local_platform: str = Field(default="Local", min_length=1)
-    """Etiqueta de la hoja local (columna ``Plat.`` de la tabla de acciones, p. ej. Zesty)."""
 
 
 class CostsConfig(StrictModel):
@@ -165,6 +163,192 @@ class DataConfig(StrictModel):
         return False
 
 
+class Cluster(StrictModel):
+    max_pct: float = Field(gt=0.0, le=100.0)
+    themes: tuple[str, ...] = ()
+    tickers: tuple[str, ...] = ()
+
+
+class Clusters(StrictModel):
+    semis: Cluster
+    ia_ampliada: Cluster
+
+
+class BriefingStopConfig(StrictModel):
+    """Regla del stop tecnico del bloque determinista (revision manual).
+
+    No reemplaza al stop del motor (``legacy.max_loss_from_cost_pct``): es el numero
+    con el que el usuario revisa a mano. Ver ``config/strategy.yaml`` para la regla.
+    """
+
+    buffer_atr: float = Field(ge=0.0, le=10.0)
+    """Multiplicador de ATR que se resta bajo el soporte mas cercano (``0.5``)."""
+    min_atr_mult: float = Field(ge=0.0, le=10.0)
+    """Piso del clamp: el stop nunca queda a menos de esto por debajo del precio."""
+    max_distance_pct: float = Field(gt=0.0, le=100.0)
+    """Techo del clamp: el stop nunca queda a mas de esto por debajo del precio."""
+    fallback_atr_mult: float = Field(ge=0.0, le=10.0)
+    """Stop de respaldo (``precio - n*ATR``) cuando ningun soporte esta dentro del techo."""
+
+
+class BriefingConfig(StrictModel):
+    """Politica de la revision manual que alimenta el bloque "Resumen determinista".
+
+    Es **solo informativa**: no cambia las reglas del motor (``risk.*``). Vive aca
+    porque son parametros y la politica del portafolio es del usuario, no del codigo.
+    """
+
+    position_max_pct: float = Field(gt=0.0, le=100.0)
+    theme_max_pct: float = Field(gt=0.0, le=100.0)
+    ia_ampliada_max_pct: float = Field(gt=0.0, le=100.0)
+    cash_min_pct: float = Field(ge=0.0, le=100.0)
+    cash_max_pct: float = Field(ge=0.0, le=100.0)
+    gain_flag_pct: float = Field(gt=0.0, le=1000.0)
+    loss_flag_pct: float = Field(gt=0.0, le=100.0)
+    rsi_overbought: float = Field(gt=50.0, le=100.0)
+    rsi_oversold: float = Field(gt=0.0, le=50.0)
+    atr_flag_pct: float = Field(gt=0.0, le=100.0)
+    upside_flag_pct: float = Field(gt=0.0, le=100.0)
+    earnings_flag_sessions: int = Field(ge=0, le=250)
+    take_profit_min_upside_pct: float = Field(ge=0.0, le=100.0)
+    """Recorrido minimo sobre el precio para aceptar un nivel como take profit.
+
+    Evita etiquetar como "objetivo" una resistencia a 0.02 % del precio (p. ej. el
+    maximo de 20 sesiones cuando el activo cotiza pegado a su techo). Un nivel que
+    no llega a este recorrido no se ofrece: sale ``sin techo claro``.
+    """
+    stop: BriefingStopConfig
+
+    @model_validator(mode="after")
+    def _check(self) -> BriefingConfig:
+        if self.cash_min_pct >= self.cash_max_pct:
+            raise ValueError(
+                f"briefing.cash_min_pct ({self.cash_min_pct} %) tiene que ser menor que "
+                f"briefing.cash_max_pct ({self.cash_max_pct} %)"
+            )
+        return self
+
+
+class ReviewLevelsConfig(StrictModel):
+    """Reglas de niveles de la revision (nivel de revision y nivel de alarma).
+
+    Son **alertas**, no ordenes: obligan a reevaluar, no venden. El motor sigue
+    fijando el stop con el que opera; estos niveles son los de la revision manual
+    (``PROMPT PORTAFOLIO``).
+    """
+
+    review_atr_mult: float = Field(ge=0.0, le=10.0)
+    """ATR que se resta bajo la SMA50 para el nivel de revision (``0.5``)."""
+    alarm_atr_mult: float = Field(ge=0.0, le=10.0)
+    """ATR que se resta al maximo de 20 sesiones para el nivel de alarma (``3.0``)."""
+    alarm_floor_atr: float = Field(ge=0.0, le=10.0)
+    """Piso: la alarma nunca queda mas cerca que esto bajo el precio (``2.5`` ATR)."""
+    alarm_max_distance_pct: float = Field(gt=0.0, le=100.0)
+    """Tope: la alarma nunca queda mas lejos que esto bajo el precio (``15`` %)."""
+    catastrophe_min_pct: float = Field(ge=0.0, le=100.0)
+    """Piso de catastrofe: borde cercano del rango bajo el precio (``15`` %)."""
+    catastrophe_max_pct: float = Field(ge=0.0, le=100.0)
+    """Piso de catastrofe: borde lejano del rango bajo el precio (``20`` %)."""
+    tactical_min_rr: float = Field(ge=0.0, le=10.0)
+    """R:R minimo para ofrecer una zona tactica (``1.5``)."""
+    level_raise_r: float = Field(ge=0.0, le=10.0)
+    """R (en multiplos de riesgo) a partir del cual el nivel sube a breakeven (``2``)."""
+    objective_min_analysts: int = Field(ge=0, le=1000)
+    """N analistas minimos para que el objetivo medio sea objetivo de referencia (``10``)."""
+
+    @model_validator(mode="after")
+    def _check(self) -> ReviewLevelsConfig:
+        if self.catastrophe_min_pct > self.catastrophe_max_pct:
+            raise ValueError(
+                f"review.levels.catastrophe_min_pct ({self.catastrophe_min_pct}) no puede superar "
+                f"catastrophe_max_pct ({self.catastrophe_max_pct})"
+            )
+        return self
+
+
+class ReviewTriggersConfig(StrictModel):
+    """Umbrales de los disparadores T medibles hoy en el ``stats`` (T6).
+
+    T1-T5 (guia, desaceleracion a/a, margen a/a, revisiones de EPS a 60 dias, evento
+    binario) exigen fuente primaria o historia que el ``stats`` no trae: se declaran no
+    evaluables en vez de inventarlos. Ver ``docs/DECISIONES.md`` D33.
+    """
+
+    current_ratio_max: float = Field(ge=0.0, le=100.0)
+    """T6: liquidez corriente por debajo de este valor alerta el balance (``1``)."""
+    debt_to_equity_max: float = Field(ge=0.0, le=100.0)
+    """T6: deuda/equity sobre este valor se considera deterioro (``2.5``)."""
+
+
+class ReviewAxesConfig(StrictModel):
+    """Anclas de los ejes E1-E4 y su mapeo a accion (``PROMPT PORTAFOLIO``)."""
+
+    upside_plus2_pct: float = Field(ge=0.0, le=200.0)
+    """E2: potencial al objetivo para +2 (``25`` %)."""
+    upside_plus1_pct: float = Field(ge=0.0, le=200.0)
+    """E2: potencial al objetivo para +1 (``15`` %)."""
+    upside_zero_pct: float = Field(ge=0.0, le=200.0)
+    """E2: potencial al objetivo para 0 (``5`` %); bajo eso es objetivo alcanzado."""
+    earnings_plus1_sessions: int = Field(ge=0, le=250)
+    """E4: sin earnings dentro de estas sesiones y regimen bajo (``15``)."""
+    earnings_minus1_sessions: int = Field(ge=0, le=250)
+    """E4: earnings dentro de estas sesiones resta (``10``)."""
+    earnings_cushion_pct: float = Field(ge=0.0, le=100.0)
+    """E4: colchon sobre el minimo de 20 sesiones pedido con earnings a <=10 sesiones (``8`` %)."""
+    earnings_cushion_loose_pct: float = Field(ge=0.0, le=100.0)
+    """E4: colchon pedido con earnings a 11-15 sesiones (``5`` %)."""
+    near_low_20_pct: float = Field(ge=0.0, le=100.0)
+    """E3: margen sobre el minimo de 20 sesiones para considerar el precio "cerca del minimo" (``3`` %)."""
+    rsi_momentum_low: float = Field(gt=0.0, le=100.0)
+    """E3: RSI minimo del tramo "momentum sano" (``40``)."""
+    rsi_momentum_high: float = Field(gt=0.0, le=100.0)
+    """E3: RSI maximo del tramo "momentum sano" (``70``)."""
+    cycle_oper_margin_pct: float = Field(ge=0.0, le=100.0)
+    """E2/M5: margen operativo sobre el que un crecimiento en baja sugiere pico de ciclo (``60`` %)."""
+    demanding_forward_pe: float = Field(ge=0.0, le=1000.0)
+    """M4: forward P/E sobre el que la valorizacion exige respaldo de EPS (``35``)."""
+    weak_fundamentals_min: int = Field(ge=0, le=10)
+    """M3: minimo de fundamentales debiles medibles para admitir la ruptura tecnica (``2``)."""
+    action_maintain_total: int = Field(ge=-8, le=8)
+    """Total desde el cual la accion implicita es MANTENER (``2``)."""
+    action_sell_total: int = Field(ge=-8, le=8)
+    """Total hasta el cual la accion implicita es candidato a vender (``-2``)."""
+
+    @model_validator(mode="after")
+    def _check(self) -> ReviewAxesConfig:
+        if not (self.upside_plus2_pct >= self.upside_plus1_pct >= self.upside_zero_pct):
+            raise ValueError(
+                "review.axes requiere upside_plus2_pct >= upside_plus1_pct >= upside_zero_pct; recibio "
+                f"{self.upside_plus2_pct}/{self.upside_plus1_pct}/{self.upside_zero_pct}"
+            )
+        if self.earnings_plus1_sessions < self.earnings_minus1_sessions:
+            raise ValueError(
+                "review.axes.earnings_plus1_sessions no puede ser menor que earnings_minus1_sessions"
+            )
+        if self.rsi_momentum_low >= self.rsi_momentum_high:
+            raise ValueError("review.axes requiere rsi_momentum_low < rsi_momentum_high")
+        if self.action_maintain_total <= self.action_sell_total:
+            raise ValueError(
+                "review.axes requiere action_maintain_total > action_sell_total"
+            )
+        return self
+
+
+class ReviewConfig(StrictModel):
+    """Politica de la revision de ``PROMPT PORTAFOLIO`` implementada como codigo puro.
+
+    Los cuatro bloques (``levels``, ``triggers``, ``axes``) traducen a numeros lo que
+    el prompt pedia calcular a mano, para que la IA no gaste tokens en aritmetica.
+    Es **informativo**: no cambia las reglas del motor ni dispara ordenes.
+    """
+
+    levels: ReviewLevelsConfig
+    triggers: ReviewTriggersConfig
+    axes: ReviewAxesConfig
+    registry_name: str = "decisions.json"
+    """Archivo del registro de decisiones dentro de ``state/``."""
+
+
 class RiskConfig(StrictModel):
     risk_per_trade_pct: float = Field(gt=0.0, le=5.0)
     max_position_pct: float = Field(gt=0.0, le=100.0)
@@ -179,6 +363,7 @@ class RiskConfig(StrictModel):
     """Puntos porcentuales sobre ``max_theme_pct`` que disparan un ``CAP_TRIM``."""
     theme_trim_target_pp: float = Field(ge=0.0, le=100.0)
     """Puntos porcentuales sobre ``max_theme_pct`` a los que se baja con el trim."""
+    clusters: Clusters | None = None
 
     @model_validator(mode="after")
     def _check(self) -> RiskConfig:
@@ -576,6 +761,11 @@ class StrategyConfig(StrictModel):
     llm: LlmConfig
     safety: SafetyConfig
     validation: ValidationConfig
+    briefing: BriefingConfig | None = None
+    """Politica de la revision manual. Si falta, el informe omite el bloque determinista."""
+    review: ReviewConfig | None = None
+    """Reglas de ``PROMPT PORTAFOLIO`` (niveles, disparadores T y ejes E). Si falta,
+    el informe de ``review`` conserva el formato minimo y omite esos bloques."""
 
     @model_validator(mode="after")
     def _check(self) -> StrategyConfig:

@@ -1,22 +1,18 @@
 """Lector del export de XTB (reporte de posiciones) -> ``PositionReport`` puro.
 
 El xlsx que baja de xStation llega con tres hojas (``Closed Positions``,
-``Cash Operations`` y ``Open Positions``) y a veces una hoja local (``Hoja1``) con
-la posicion fuera del broker. Este adapter hace una sola cosa: lleva las celdas al
-modelo de ``core/report.py``. Todo lo que es decision de negocio (agregar tramos,
-valuar, comparar contra topes) vive en ``core``; aca no se decide nada, se lee.
+``Cash Operations`` y ``Open Positions``). Este adapter hace una sola cosa: lleva las
+celdas al modelo de ``core/report.py``. Todo lo que es decision de negocio (agregar
+tramos, valuar, comparar contra topes) vive en ``core``; aca no se decide nada, se lee.
 
-Dos detalles del formato que el export usa y que facilitan errores:
+Un detalle del formato que el export usa y que facilita errores:
 
-- **Numeros chilenos.** Las celdas CLP vienen como texto ``CLP $75.508,16`` (punto
-  de miles, coma decimal). El adapter las normaliza; un ``CLP $63.000`` sin ese
-  cuidado se leeria 63, no 63.000.
 - **Sufijo de mercado.** XTB entrega ``NVDA.US``; el modelo puro y el resto del
   proyecto hablan de ``NVDA``. El sufijo se quita aca, en la frontera.
 
-Politica de fallas: **cerrado**. Si falta una hoja, un encabezado, una etiqueta de
-la hoja local o el total, se levanta ``ReportFormatError`` con el motivo en
-español en vez de devolver un reporte con columnas corridas.
+Politica de fallas: **cerrado**. Si falta una hoja, un encabezado o el total, se
+levanta ``ReportFormatError`` con el motivo en español en vez de devolver un reporte
+con columnas corridas.
 """
 
 from __future__ import annotations
@@ -29,13 +25,10 @@ from pathlib import Path
 import openpyxl
 
 from swing.adapters.data_yahoo import MARKET_TZ
-from swing.core.report import CashOp, ClosedRow, LocalPosition, OpenLot, PositionReport
+from swing.core.report import CashOp, ClosedRow, OpenLot, PositionReport
 
 #: Las tres hojas obligatorias del export de XTB.
 REQUIRED_SHEETS = ("Closed Positions", "Cash Operations", "Open Positions")
-
-#: Etiquetas que la hoja local debe traer para no leer los montos como texto.
-LOCAL_LABELS = ("Cantidad de acciones", "Precio promedio", "Ultimo precio")
 
 
 class ReportFormatError(ValueError):
@@ -61,7 +54,11 @@ def load_positions_report(path: str | Path) -> PositionReport:
 
 @contextmanager
 def _open_workbook(path: Path) -> Iterator[openpyxl.Workbook]:
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    # Se abre en modo normal (no ``read_only``): algunos export de xStation declaran
+    # ``<dimension ref="A1"/>`` aunque la hoja traiga decenas de filas, y el modo
+    # ``read_only`` respeta esa dimension y leeria solo la celda A1. Los archivos son
+    # de decenas de KB, asi que el costo de leer todo en memoria es irrelevante.
+    wb = openpyxl.load_workbook(path, read_only=False, data_only=True)
     try:
         yield wb
     finally:
@@ -76,7 +73,6 @@ def _load(wb: openpyxl.Workbook, path: Path) -> PositionReport:
     closed, realized = _closed(wb["Closed Positions"])
     cash, cash_balance = _cash_operations(wb["Cash Operations"])
     lots, open_value, open_profit, generated = _open_positions(wb["Open Positions"])
-    local = _local_sheet(wb["Hoja1"]) if "Hoja1" in wb.sheetnames else ()
     account = _account(wb["Closed Positions"])
 
     return PositionReport(
@@ -89,7 +85,6 @@ def _load(wb: openpyxl.Workbook, path: Path) -> PositionReport:
         open_profit_clp=open_profit,
         realized_clp=realized,
         cash_balance_clp=cash_balance,
-        local=local,
     )
 
 
@@ -269,46 +264,6 @@ def _open_lot(data: dict[str, object], names: dict[str, str]) -> OpenLot:
 
 
 # --------------------------------------------------------------------------- #
-# Hoja local (opcional)
-# --------------------------------------------------------------------------- #
-
-
-def _local_sheet(ws: openpyxl.WorkSheet) -> tuple[LocalPosition, ...]:
-    rows = _rows(ws)
-    labels: dict[str, object] = {}
-    for index, row in enumerate(rows):
-        label = row[0] if row else None
-        if isinstance(label, str) and label in LOCAL_LABELS:
-            labels[label] = rows[index + 1][0] if index + 1 < len(rows) else None
-    if not rows or not any(row[0] for row in rows):
-        raise ReportFormatError(f"{_name(ws, 'la hoja local esta vacia')}")
-    missing = [label for label in LOCAL_LABELS if label not in labels]
-    if missing:
-        raise ReportFormatError(f"{_name(ws, 'la hoja local esta incompleta')}: faltan {missing}")
-    volume = _parse_clp(labels["Cantidad de acciones"])
-    average = _parse_clp(labels["Precio promedio"])
-    last = _parse_clp(labels["Ultimo precio"])
-    if volume is None or average is None or last is None:
-        raise ReportFormatError(
-            f"{_name(ws, 'montos de la hoja local no legibles')}: "
-            + ", ".join(label for label in LOCAL_LABELS if _parse_clp(labels[label]) is None)
-        )
-    name = str(rows[0][0] or "") if rows else ""
-    ticker = str(rows[1][0] or "") if len(rows) > 1 else ""
-    if not ticker:
-        raise ReportFormatError(f"{_name(ws, 'falta el ticker de la posicion local')}")
-    return (
-        LocalPosition(
-            name=name,
-            ticker=ticker.strip().upper(),
-            volume=volume,
-            avg_price_clp=average,
-            last_price_clp=last,
-        ),
-    )
-
-
-# --------------------------------------------------------------------------- #
 # Normalizacion de celdas
 # --------------------------------------------------------------------------- #
 
@@ -335,25 +290,6 @@ def _to_float(value: object) -> float | None:
             return None
         try:
             return float(text)
-        except ValueError:
-            return None
-    return None
-
-
-def _parse_clp(value: object) -> float | None:
-    """Monto CLP desde texto ``CLP $75.508,16`` (punto de miles, coma decimal)."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        text = value.strip()
-        text = text.removeprefix("CLP").strip().lstrip("$").strip().replace(" ", "")
-        if not text:
-            return None
-        try:
-            # ``75.508,16`` -> ``75508.16``; ``-850.555`` -> ``-850555``.
-            return float(text.replace(".", "").replace(",", "."))
         except ValueError:
             return None
     return None

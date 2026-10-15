@@ -25,6 +25,11 @@ def candidate_path() -> Path:
     return report_dir().parent / "state" / "candidates.json"
 
 
+def registry_path(name: str = "decisions.json") -> Path:
+    """Ruta del registro de decisiones de ``review`` (``state/decisions.json``)."""
+    return report_dir().parent / "state" / name
+
+
 def _stamp(when: dt.datetime) -> str:
     """Sello de tiempo legible y ordenable para el nombre de los informes."""
     return when.strftime("%Y%m%d-%H%M%S")

@@ -21,7 +21,7 @@ Las dos funciones del producto:
 
 ```powershell
 # Funcion 1 - que hacer con lo que ya tenes (el motor fija el stop; la IA narra y decide):
-swing review                          # informe de 7 secciones (con --web-search agrega la busqueda)
+swing review                          # informe de 10 secciones (con --web-search agrega la busqueda)
 swing review --formato detalle        # bloque por posicion, como lo deja `nightly`
 
 # Funcion 2 - que comprar (screener dinamico: tecnico + fundamentales + proyecciones):
@@ -44,12 +44,14 @@ esta en `docs/PROGRAMACION.md`.
 ## Salida
 
 `review` escribe en `output/`:
-- `review_<fecha>.md` — recomendacion por posicion (o `--out`).
+- `review_<reporte>_<marca>.md` — recomendacion por posicion (o `--out`).
 - `contexto_<fecha>.md` / `.json` — resumen macro (se reutiliza; `--refresh-contexto` lo regenera).
 
-`stats` escribe `output/stats_<fecha>.md` (o `--out`) y, junto a él, un
-`stats_<fecha>.json` con el mismo contenido en forma estructurada (contrato
-`schema: 1`). `analyze-positions` y `review` **consumen** ese JSON si es de hoy y
+`stats` escribe `output/stats_<reporte>_<marca>.md` (o `--out`) y, junto a él, un
+`stats_<reporte>_<marca>.json` con el mismo contenido en forma estructurada (contrato
+`schema: 1`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
+sello de la corrida (`AAAAMMDD-HHMMSS`), para que dos corridas del mismo día o de cuentas
+distintas no se pisen. `analyze-positions` y `review` **consumen** ese JSON si es de hoy y
 de la misma cuenta, para no volver a pedir a Yahoo los fundamentales y las
 cotizaciones ya capturados; lo que falte se completa con el proveedor.
 
@@ -63,23 +65,33 @@ swing stats                      # ficha por posicion con todos los campos (tipo
 ```
 
 `stats` no recomienda nada: reúne la mayor cantidad de campos posible de cada posición
-abierta (empresa, valoración, rentabilidad, salud financiera, crecimiento, dividendos,
-técnico, desempeño, liquidez/propiedad y analistas), más una tabla de **compras de insiders**
-recientes (Form 4, vía Finviz), para un análisis posterior. También incluye la posición local
-de la hoja `Hoja1` del export (p. ej. SQM-B), resuelta por sufijo de mercado y con sus montos
-en CLP. Yahoo es la base, los técnicos se calculan localmente y Finviz aporta lo que Yahoo no
-publica; escribe `output/stats_<fecha>.md` (o `--out`). Un `-` es "sin dato"; la sección
+abierta (empresa, valoración, rentabilidad, salud financiera, crecimiento, técnico,
+liquidez/propiedad y analistas), más un cuadro con el **neto y el detalle de compras y
+ventas de insiders** recientes (Form 4, vía Finviz), para un análisis posterior.
+Yahoo es la base, los técnicos se calculan localmente y Finviz aporta lo que Yahoo no
+publica; escribe `output/stats_<reporte>_<marca>.md` (o `--out`). Un `-` es "sin dato"; la sección
 **Cobertura de datos** dice cuántos campos llegaron y cuáles faltan por ticker, y
 **Límites de esta evaluación** declara offline, montos en CLP y velas incoherentes de Yahoo.
-Con `--offline` solo lee cache.
+Por defecto el informe **oculta el contexto informativo** (dividendos, desempeño,
+liquidez/propiedad, insiders, driver, mercado y materias primas) y deja solo lo que decide
+(decisión, niveles y puntaje); `--contexto` muestra la ficha completa. La IA de `review`
+recibe el contexto igual. Con `--offline` solo lee cache.
 
 ## Como leer el informe
 
-`review --formato informe` (por defecto) trae **7 secciones**: 1. Veredicto, 2. Cobertura,
-3. Decisiones, 4. Niveles, 5. Alertas, 6. Supuestos y vacíos, 7. Fuentes clave. El motor
-resuelve decisiones, el puntaje por ejes (V/C/G/P, suma `-8..+8`), los niveles y las
-alertas; la IA aporta una narrativa en una sola llamada (sin búsquedas nuevas) que llena
+`review --formato informe` (por defecto) trae **10 secciones**: 1. Veredicto, 2. Cobertura,
+3. Decisiones, 4. Niveles, 5. Alertas, 6. Supuestos y vacíos, 7. Fuentes clave, 8. Auditoría
+de ventas, 9. Registro de decisiones, 10. Qué cambió. El motor resuelve decisiones, el puntaje
+por ejes (V/C/G/P, suma `-8..+8`), los niveles y las alertas; con la política `review` de
+`config/strategy.yaml` agrega el **veredicto de `PROMPT PORTAFOLIO`**: niveles de revisión y
+alarma, disparadores T1-T6, motivos M1-M7 y ejes E1-E4 (con subtotales F y M) y su acción
+implícita. La IA aporta una narrativa en una sola llamada (sin búsquedas nuevas) que llena
 el veredicto, la cobertura y los supuestos.
+
+Las secciones 8-10 se guardan en `state/decisions.json`: la **auditoría de ventas** exige
+motivo admitido y hechos con fuente antes de vender; el **registro de decisiones** deja una
+línea por activo para medir a 30/90 días; y **qué cambió** compara la corrida con la anterior
+(vigila que el nivel de alarma no baje sin motivo).
 
 `review --formato detalle` (el que usa `nightly`) repite la lectura de siempre:
 

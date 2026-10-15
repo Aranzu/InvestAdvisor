@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from pathlib import Path
 
 import typer
 
 from swing.adapters.cache import CacheError
-from swing.adapters.data_yahoo import DataUnavailable, YahooDataProvider
+from swing.adapters.data_yahoo import DataUnavailable, YahooDataProvider, to_yahoo_symbol
 from swing.adapters.llm import LLMClient, LLMError
 from swing.core.calendar import SessionCalendar
 from swing.core.dataquality import sessions_to_earnings
@@ -29,7 +31,7 @@ from swing.core.llm import (
     parse_review,
 )
 from swing.core.models import ThemesConfig
-from swing.core.report import LocalPosition
+from swing.core.stats import StatsReport
 
 
 def num(value: float | None, ndigits: int = 1) -> str:
@@ -135,6 +137,94 @@ def candidate_earnings(provider: YahooDataProvider, tickers: Sequence[str], offl
     return out
 
 
+def stats_facts(stats: StatsReport | None, ticker: str) -> dict[str, object]:
+    """Ficha completa de ``stats`` para una posicion, lista para el prompt.
+
+    Devuelve el contexto de la cuenta y **todos** los campos de la fila (con ``None``
+    donde no hay dato, para que la IA no invente), mas el contexto de mercado del dia,
+    el resumen de cartera (``cartera``) y las materias primas. Diccionario vacio si no
+    hay informe o si el ticker no tiene fila.
+    """
+    if stats is None:
+        return {}
+    # El plan usa el ticker del broker (``TEST``) y stats conserva el sufijo del export
+    # (``TEST.US``): se cruzan con el mismo criterio que Yahoo, no por igualdad cruda.
+    key = to_yahoo_symbol(ticker)
+    row = next((candidate for candidate in stats.rows if to_yahoo_symbol(candidate.ticker) == key), None)
+    if row is None:
+        return {}
+    out: dict[str, object] = {"stats": {"context": dict(row.context), "fields": dict(row.fields)}}
+    if stats.market:
+        out["mercado"] = [asdict(item) for item in stats.market]
+    if stats.panel:
+        out["cartera"] = dict(stats.panel)
+    if stats.commodities:
+        out["materias_primas"] = [asdict(item) for item in stats.commodities]
+    return out
+
+
+#: Hecho del motor -> campo de la ficha de ``stats`` que ya lo cubre (mismo dato, otra clave).
+_ENGINE_ALIASES: dict[str, str] = {
+    "entry": "entry_usd",
+    "close": "price_usd",
+    "retorno_pct": "ret_usd_pct",
+    "days_open": "sessions_open",
+    "stop": "stop_usd",
+    "pct_hasta_stop": "stop_dist_pct",
+    "pct_sobre_sma50": "price_vs_sma50_pct",
+    "pct_sobre_sma200": "price_vs_sma200_pct",
+    "pct_vs_max_52s": "pct_to_52w_high",
+}
+
+#: Fundamental -> campo de la ficha de ``stats`` que ya lo cubre.
+_FUNDAMENTAL_ALIASES: dict[str, str] = {
+    "trailing_pe": "pe",
+    "price_to_book": "pb",
+    "peg_ratio": "peg",
+    "return_on_equity": "roe",
+    "target_mean": "target_price",
+    "recommendation_mean": "recom",
+}
+
+
+def position_facts(
+    engine_facts: Mapping[str, object],
+    fundamentals: Fundamentals | None,
+    stats: StatsReport | None,
+    ticker: str,
+    price: float,
+    *,
+    macro_context: str = "",
+) -> dict[str, object]:
+    """Hechos de una posicion para el prompt, sin mandar dos veces el mismo dato.
+
+    ``stats_facts`` aporta la ficha completa (``stats``) y el contexto de la corrida
+    (``mercado``, ``cartera``, ``materias_primas``), que **siguen entrando**. Los hechos
+    del motor (R, dias, stop, tecnico, earnings) y los fundamentales se agregan solo si la
+    ficha no trae ya ese dato, por clave o por alias (``trailing_pe`` -> ``pe``, etc.).
+    Sin ``stats`` el payload es el de siempre: nada se pierde, solo se deja de repetir.
+    """
+    block = stats_facts(stats, ticker)
+    known: set[str] = set()
+    stats_block = block.get("stats")
+    if isinstance(stats_block, Mapping):
+        for source in (stats_block.get("context"), stats_block.get("fields")):
+            if isinstance(source, Mapping):
+                known.update(key for key, value in source.items() if value is not None)
+    out: dict[str, object] = {}
+    if fundamentals is not None and not fundamentals.is_empty:
+        for key, value in fundamental_fields(fundamentals, price).items():
+            if key not in known and _FUNDAMENTAL_ALIASES.get(key) not in known:
+                out[key] = value
+    for key, value in engine_facts.items():
+        if key not in known and _ENGINE_ALIASES.get(key) not in known:
+            out[key] = value
+    if macro_context:
+        out["contexto_macro"] = macro_context
+    out.update(block)
+    return out
+
+
 def portfolio_narrative(
     client: LLMClient,
     facts: Mapping[str, object],
@@ -165,46 +255,69 @@ def review_fields(review: LLMReview | None) -> dict[str, object]:
     }
 
 
+def _short_error(exc: LLMError) -> str:
+    """Motivo legible de un fallo de la IA, para el aviso del CLI (sin el cuerpo entero).
+
+    El mensaje completo trae hasta 300 caracteres del proveedor y ensuciaria la linea
+    de aviso; aca queda en ``HTTP 503``, ``red``, ``busqueda web`` o ``respuesta invalida``.
+    """
+    text = str(exc)
+    match = re.search(r"HTTP (\d+)", text)
+    if match is not None:
+        return f"HTTP {match.group(1)}"
+    if "de red" in text:
+        return "red"
+    if "busqueda web" in text:
+        return "busqueda web"
+    if "JSON" in text:
+        return "respuesta invalida"
+    return text[:60]
+
+
 def review_positions(
     client: LLMClient,
     plan: NightPlan,
     themes: ThemesConfig,
     today: dt.date,
-    local: Sequence[LocalPosition] = (),
     macro_context: str = "",
     fundamentals: Mapping[str, Fundamentals] | None = None,
     *,
     snapshot: MarketSnapshot | None = None,
     calendar: SessionCalendar | None = None,
     blackout: int = 0,
+    stats: StatsReport | None = None,
 ) -> tuple[list[LLMReview], list[str]]:
     """Segunda opinion de la IA por posicion; la IA decide mantener o vender.
 
-    Incluye las posiciones locales (p. ej. SQM-B), que no pasan por el motor pero si
-    se buscan con noticias. ``macro_context`` (el resumen macro de la corrida) y los
+    ``macro_context`` (el resumen macro de la corrida) y los
     ``fundamentals`` (valoracion, proyecciones) se inyectan en cada consulta para que
     el fundamento pondere todo. Con ``snapshot`` se agregan el tecnico (RSI,
     distancia a medias y al maximo de 52 semanas) y el proximo reporte de
     resultados. Un fallo puntual de la IA en un ticker no tira la revision de los
-    demas: se reintenta una vez y, si vuelve a fallar, ese ticker queda sin opinion.
+    demas: se reintenta una vez y, si vuelve a fallar, ese ticker queda sin opinion
+    con el motivo (``TICKER (HTTP 503)``) para que el aviso del CLI lo declare.
+    Con ``stats`` se inyecta la ficha completa de la posicion (contexto y todos los
+    campos) mas el contexto de materias primas, para que la IA pondere todo.
     """
     reviews: list[LLMReview] = []
     failed: list[str] = []
 
     def _consult(ticker: str, price: float, facts: dict[str, object]) -> None:
-        if macro_context:
-            facts = {**facts, "contexto_macro": macro_context}
-        if fundamentals is not None:
-            f = fundamentals.get(ticker)
-            if f is not None and not f.is_empty:
-                facts = {**fundamental_fields(f, price), **facts}
+        payload = position_facts(
+            facts,
+            fundamentals.get(ticker) if fundamentals is not None else None,
+            stats,
+            ticker,
+            price,
+            macro_context=macro_context,
+        )
         for attempt in range(2):
             try:
-                reviews.append(client.review(ticker, ReviewContext.POSITION_REVIEW, facts, today))
+                reviews.append(client.review(ticker, ReviewContext.POSITION_REVIEW, payload, today))
                 return
-            except LLMError:
+            except LLMError as exc:
                 if attempt == 1:
-                    failed.append(ticker)
+                    failed.append(f"{ticker} ({_short_error(exc)})")
 
     for judgment in sorted(plan.exits, key=lambda j: j.ticker):
         trade = judgment.trade
@@ -231,23 +344,6 @@ def review_positions(
                 "stop": trade.stop,
                 "pct_hasta_stop": round((trade.stop / trade.close - 1.0) * 100.0, 2) if trade.close > 0 else None,
                 **context,
-            },
-        )
-    for position in local:
-        retorno = (
-            (position.last_price_clp / position.avg_price_clp - 1.0) * 100.0 if position.avg_price_clp > 0 else 0.0
-        )
-        _consult(
-            position.ticker,
-            position.last_price_clp,
-            {
-                "name": position.name,
-                "ticker": position.ticker,
-                "moneda": "CLP",
-                "promedio": round(position.avg_price_clp, 2),
-                "ultimo": round(position.last_price_clp, 2),
-                "retorno_pct": round(retorno, 2),
-                "nota": "posicion local (bolsa de Santiago); busca noticias recientes de la empresa y del litio",
             },
         )
     return reviews, failed

@@ -6,10 +6,8 @@
 
 account:
   base_currency: CLP
-  equity_scope: [xtb, local]
+  equity_scope: [xtb]
   trade_unit: ticker
-  # Etiqueta de la hoja local (fuera de XTB) en la tabla de acciones de `review`.
-  local_platform: Zesty
 
 costs:
   # 0.5 por pierna. Con un round-trip de 1.0 y un R tipico de 8 (seccion 16.2),
@@ -49,6 +47,86 @@ risk:
   # hasta max_theme_pct + 2 pp (seccion 5.8). Una sola vez por tema y noche.
   theme_trim_trigger_pp: 5
   theme_trim_target_pp: 2
+  clusters:
+    semis:
+      max_pct: 35
+      themes: ["semiconductors", "semiconductors_ai"]
+      tickers: ["AVGO", "AMD", "MU", "NVDA", "SNDK"]
+    ia_ampliada:
+      max_pct: 45
+      themes: ["semiconductors", "semiconductors_ai", "Technology", "Communication Services"]
+      tickers: ["AVGO", "AMD", "MU", "NVDA", "SNDK", "GOOGL", "AMZN", "CRM", "SPCX"]
+
+# Politica de la REVISION MANUAL, no del motor: define el bloque "Resumen
+# determinista" de `stats` (banderas, stop tecnico y alertas de concentracion).
+# Es solo informativa: no dispara ordenes ni cambia `risk.*`. El stop tecnico no
+# reemplaza al del motor (`legacy.max_loss_from_cost_pct`).
+briefing:
+  position_max_pct: 12
+  theme_max_pct: 35
+  ia_ampliada_max_pct: 45
+  cash_min_pct: 15
+  cash_max_pct: 20
+  gain_flag_pct: 25
+  loss_flag_pct: 10
+  rsi_overbought: 70
+  rsi_oversold: 30
+  atr_flag_pct: 4
+  upside_flag_pct: 10
+  earnings_flag_sessions: 10
+  # Recorrido minimo sobre el precio para aceptar un nivel como take profit. Un
+  # nivel mas cercano no es un objetivo: sale "sin techo claro" en vez de un
+  # "objetivo" a 0.02 % que empujaria a tomar utilidades en el primer techo.
+  take_profit_min_upside_pct: 5
+  # Stop = soporte mas cercano por debajo del precio - buffer_atr*ATR; sin soporte
+  # dentro de max_distance_pct, precio - fallback_atr_mult*ATR. Se acota a
+  # [min_atr_mult*ATR, max_distance_pct] bajo el precio. min_atr_mult es piso de
+  # distancia (no acerca el stop al ruido); si un ATR muy alto lo empuja mas alla
+  # del tope de riesgo, manda max_distance_pct.
+  stop:
+    buffer_atr: 0.5
+    min_atr_mult: 2.0
+    max_distance_pct: 15
+    fallback_atr_mult: 3.0
+
+# Politica de `PROMPT PORTAFOLIO` implementada como codigo puro. Traduce a numeros
+# lo que el prompt pedia calcular a mano (niveles, disparadores T1-T6 y ejes E1-E4)
+# para que la IA no gaste tokens en aritmetica. Es informativa: no dispara ordenes.
+# El nivel de alarma usa el maximo de 20 sesiones como aproximacion del "maximo
+# cierre de 22 sesiones" (el stats no trae esa serie); el informe lo declara.
+review:
+  levels:
+    review_atr_mult: 0.5
+    alarm_atr_mult: 3.0
+    alarm_floor_atr: 2.5
+    alarm_max_distance_pct: 15
+    catastrophe_min_pct: 15
+    catastrophe_max_pct: 20
+    tactical_min_rr: 1.5
+    level_raise_r: 2.0
+    objective_min_analysts: 10
+  triggers:
+    # T6 (balance) es el unico disparador medible con el stats actual; el resto exige
+    # fuente primaria o historia (ver docs/DECISIONES.md D33).
+    current_ratio_max: 1.0
+    debt_to_equity_max: 2.5
+  axes:
+    upside_plus2_pct: 25
+    upside_plus1_pct: 15
+    upside_zero_pct: 5
+    earnings_plus1_sessions: 15
+    earnings_minus1_sessions: 10
+    earnings_cushion_pct: 8
+    earnings_cushion_loose_pct: 5
+    near_low_20_pct: 3
+    rsi_momentum_low: 40
+    rsi_momentum_high: 70
+    cycle_oper_margin_pct: 60
+    demanding_forward_pe: 35
+    weak_fundamentals_min: 2
+    action_maintain_total: 2
+    action_sell_total: -2
+  registry_name: decisions.json
 
 gates:
   rs_lookback_days: 126

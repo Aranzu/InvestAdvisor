@@ -404,9 +404,9 @@ no fija niveles.
 hago con lo que tengo?" faltaba un comando que mire **solo** lo abierto.
 
 **Decision.** `review` corre `decide(universe=())` (sin entradas) sobre las posiciones
-adoptadas + la local (SQM-B). Tres formatos: `informe` (por defecto; ver D32), `detalle`
+adoptadas. Tres formatos: `informe` (por defecto; ver D32), `detalle`
 (bloque por posicion con que hacer / que mas aplica / tesis, el que usa `nightly`) y
-`tabla` (`Activo·Plat.·Retorno%·Accion·Conf.·Fundamento·Stop·TP·Catalizador`). El **stop y
+`tabla` (`Activo·Retorno%·Accion·Conf.·Fundamento·Stop·TP·Catalizador`). El **stop y
 el TP los fija el motor**; la accion/fundamento/catalizador los aporta la IA. `WEAKENED`
 sale como `TESIS DEBILITADA` (vigilar) y un `BROKEN` confirmado entra al motor como
 `THESIS_EXIT` y aparece en Alertas.
@@ -518,8 +518,7 @@ P/B, PEG, deuda), calidad (ROE, margen), crecimiento (rev/eps, estimados +1y) y
 proyecciones (objetivo medio/alto/bajo, recomendacion, cobertura de analistas). El dato se
 cachea en `cache/fundamentals/<ticker>.json` con TTL (7 dias en vivo, infinito en
 offline) y se guarda con `source`. Nunca se inventa un cero: un campo ausente es `None` y
-el informe declara la cobertura. SQM-B (bolsa local) queda sin fundamentales hasta que
-haya fuente chilena: se declara, no se adivina.
+el informe declara la cobertura.
 
 ## D27. La IA decide, el motor fija los niveles
 
@@ -626,8 +625,7 @@ anclas de P/E y P/B).
 ## D31. `swing stats`: informe por posicion, best effort y auditable
 
 **Que estaba abierto.** Reunir en un solo Markdown la mayor cantidad de campos de cada
-posicion abierta (tipo Finviz) para analisis posterior, sumando las posiciones fuera de
-XTB y sin inventar datos.
+posicion abierta (tipo Finviz) para analisis posterior, sin inventar datos.
 
 **Decision.**
 
@@ -636,10 +634,6 @@ XTB y sin inventar datos.
   para no depender de Finviz; Finviz rellena lo que Yahoo no publica (float y short,
   propiedad, ROA/ROIC, payout, desempeno). `merge_fields` deja ganar a la primera fuente
   con dato.
-- **Posiciones locales.** La hoja `Hoja1` del export (hoy SQM-B) entra como una fila mas.
-  Como Yahoo no conoce `SQM-B`, el servicio prueba el ticker y los sufijos de mercado
-  (`.SN`) y usa el primero con fundamentales. Precio y montos absolutos de esa fila van
-  en **CLP**; la limitacion se declara (queda fuera de la caja/equity de XTB).
 - **Compras de insiders.** Nueva seccion con las compras (Form 4, `Buy`/`Purchase`) de los
   ultimos 90 dias, via la tabla `insider-table` de Finviz, con cache propio
   (`<T>.insiders.json`) y modo offline. Solo interesan compras; ventas y ejercicios no se
@@ -648,7 +642,7 @@ XTB y sin inventar datos.
   seccion **Cobertura de datos** cuenta campos y lista faltantes. Una **vela incoherente**
   de Yahoo (fail-closed en `frame_to_series`) degrada a ese ticker **sin tecnicos** en vez
   de tumbar el informe, y se declara en **Limites de esta evaluacion**.
-- **Contrato JSON y consumo.** Junto al `.md`, `stats` escribe `stats_<fecha>.json`
+- **Contrato JSON y consumo.** Junto al `.md`, `stats` escribe `stats_<reporte>_<marca>.json`
   (`schema: 1`) con el mismo contenido (posiciones, cotizaciones, fundamentales, temas,
   sectores, insiders). `analyze-positions` y `review` lo **reutilizan** si es de hoy y de la
   misma cuenta, para no repetir las consultas a Yahoo ya hechas; lo que falte se completa con
@@ -690,9 +684,10 @@ acotada a lo narrativo, sin sumar costo de tokens.
 
 **Decision.**
 
-- **Formato `informe` (por defecto).** Siete secciones: 1. Veredicto, 2. Cobertura,
-  3. Decisiones, 4. Niveles, 5. Alertas, 6. Supuestos y vacios, 7. Fuentes clave. `detalle`
-  y `tabla` siguen disponibles (`nightly` usa `detalle`).
+- **Formato `informe` (por defecto).** Siete secciones base: 1. Veredicto, 2. Cobertura,
+  3. Decisiones, 4. Niveles, 5. Alertas, 6. Supuestos y vacios, 7. Fuentes clave (D33 agrega
+  8. Auditoria de ventas, 9. Registro de decisiones y 10. Que cambio con el bloque `review`).
+  `detalle` y `tabla` siguen disponibles (`nightly` usa `detalle`).
 - **El motor manda.** Decision, puntaje por ejes, niveles (stop/meta) y alertas salen del
   motor y del `stats`. El **puntaje** de cada activo es la suma de cuatro ejes —valor,
   calidad, crecimiento, proyecciones— en rango `-8..+8`; los cortes viven en
@@ -712,3 +707,136 @@ antes.
 **Alternativa descartada.** Investigacion web por activo para la cobertura: se descarto por
 costo de tokens; la cobertura sale determinista de `stats` y de los `key_facts` ya
 recolectados.
+
+---
+
+## D33. `PROMPT PORTAFOLIO` v4 se implementa como codigo puro (bloque `review`)
+
+**Que estaba abierto.** El usuario corria `docs/PROMPT_PORTAFOLIO_v4.md` a mano con Claude y
+se quedaba sin tokens: el prompt le pide calcular a la IA niveles, R:R, disparadores T1-T6,
+motivos M1-M7 y ejes E1-E4, ademas de investigar la web por activo. Nada de esa aritmetica es
+criterio; es calculo, y no era reproducible entre corridas.
+
+**Decision.** Se agrega el bloque `review` en `config/strategy.yaml` y el modulo puro
+`core/verdict.py`, que traduce el prompt a hechos:
+
+- **Niveles (informe de `review` y bloque determinista de `stats`).** Nivel de revision =
+  SMA50 − `review_atr_mult`×ATR; nivel de alarma = maximo de 20 sesiones − `alarm_atr_mult`×ATR
+  (aproximacion del maximo cierre de 22 sesiones, que el `stats` no trae), acotado por el piso
+  (`alarm_floor_atr`) y el tope (`alarm_max_distance_pct`). Mas zona tactica con R:R minimo,
+  estado del objetivo y piso de catastrofe. Son **alertas**, no ordenes; el unico nivel que
+  admite orden es el piso de catastrofe.
+- **Disparadores T1-T6 y motivos M1-M7.** Solo se calculan los que el `stats` alcanza a medir
+  (hoy T6 de balance; M2/M3/M4/M5). Lo que necesita fuente primaria (T1 guia, T2 desaceleracion
+  a/a, T3 margen a/a, T4 revisiones de EPS a 60 dias, T5 evento) se declara **no evaluable** en
+  vez de inventarse; la seccion de auditoria lo lista como cobertura pendiente.
+- **Ejes E1-E4 con F/M y accion implicita.** E1 tesis/fundamental (calidad+crecimiento y los
+  disparadores), E2 valorizacion/objetivo, E3 tecnico, E4 riesgo de evento; `F = E1+E2`,
+  `M = E3+E4`, y de ahi una accion **candidata** (Mantener / Mantener con vigilancia /
+  Candidato a vender / Vender parcial por veto `E1 = -2`). El motor sigue fijando los niveles y
+  los tickets: los ejes generan candidatos, no ordenes.
+- **Auditoria de ventas, registro y "que cambio".** El informe pasa a 10 secciones. La
+  auditoria exige motivo admitido, disparador y hechos con fuente (fail-safe: sin motivo, no se
+  vende); el registro guarda una linea por activo en `state/decisions.json` (historia) para
+  medir a 30/90 dias y comparar niveles entre corridas.
+
+**Por que.** El prompt pedia calculo disfrazado de criterio. Llevarlo a codigo hace el
+resultado **reproducible**, saca la aritmetica del presupuesto de tokens del modelo caro y deja
+a la IA solo lo que si requiere juicio o web. Ningun umbral vive en el codigo: todos salen de
+`strategy.review`.
+
+**Desviaciones conscientes respecto del prompt.** (1) El maximo cierre de 22 sesiones se
+aproxima con el maximo de 20 sesiones del `stats`. (2) Los motivos que exigen web (M6 evento
+binario, M7 regulatorio) no se inventan; la IA los cubre con `--web-search`. (3) La
+concentracion sigue siendo alerta informativa del `briefing`, no motivo de venta del veredicto.
+
+**Alternativa descartada.** Dejar el prompt como estaba y ampliar `--web-search`: se descarto
+porque no arregla el consumo de tokens (lo aumenta) ni la falta de reproducibilidad.
+
+---
+
+## D34. `veto_only` deja de ser config muerta; la IA decide y el contexto se separa
+
+**Que estaba abierto.** Tres cosas quedaban a medias. (1) `llm.veto_only` estaba en
+`strategy.yaml`, en el modelo y en los tests, pero **ningun modulo lo leia**: la IA nunca decidia
+de verdad y su `accion` ("Vender 40 %") era solo texto de informe, sin ticket. (2) El informe de
+`stats` y el prompt de la IA mezclaban los campos que deciden (stop, R, ATR, puntaje) con
+contexto informativo (dividendos, desempeño, liquidez/propiedad, insiders, driver, mercado,
+materias primas), y el prompt mandaba **el mismo dato dos veces**: en plano y dentro de `stats`.
+(3) El informe de `review` mostraba dos tablas de niveles (motor y `PROMPT PORTAFOLIO`) sin
+dejar claro cual es una orden.
+
+**Decision.** Cuatro movimientos, sin tocar el motor de decision ni los niveles reales:
+
+- **La IA decide (`veto_only=false`).** La `accion` de la IA sobre una posicion entra al motor
+  como regla nueva, `LLM_SELL` (regla 11, ultima en precedencia): la IA fija la **direccion y la
+  fraccion** ("Vender 40 %" -> `0.4`; "Vender" sin % o `verdict=SELL` -> salida completa) y el
+  **motor calcula el volumen** (`fraccion × open_volume`), el stop y la meta. Las reglas mecanicas
+  conservan la precedencia: si un stop se rompio o una meta se alcanzo, esa regla manda y la IA
+  queda suprimida. Con `veto_only=true` la IA vuelve a solo degradar: su venta **no** genera
+  ticket (queda como opinion) y solo una tesis `BROKEN` con evidencia entra como `THESIS_EXIT`. El
+  informe deja de inventar un % que no se ejecuta: la accion muestra la orden del motor cuando el
+  motor actua.
+- **Contexto separado en el informe (`stats` y `review`).** Cada `FieldSpec` gana un `role`
+  (`decision`, `levels`, `score`, `context`). Por defecto se **ocultan** los campos de rol
+  `context` (dividendos, desempeño, liquidez/propiedad, insiders, driver, mercado, materias
+  primas) y quedan los que deciden, puntuan o fijan niveles; `--contexto` (`--sin-contexto` es el
+  defecto) muestra la ficha completa. Los niveles de `PROMPT PORTAFOLIO` pasan a rotularse
+  **"Niveles de vigilancia (no son ordenes)"**, separados de la tabla del motor.
+- **El prompt de la IA no repite datos.** `position_facts` arma un solo payload: la ficha de
+  `stats` y el contexto de la corrida (`mercado`, `cartera`, `materias_primas`, `contexto_macro`)
+  **siguen entrando**, pero los hechos del motor y los fundamentales se agregan solo **si la ficha
+  no los trae ya**, por clave o por alias (`trailing_pe` -> `pe`, `entry` -> `entry_usd`,
+  `target_mean` -> `target_price`). Nada se pierde; se deja de mandar dos veces.
+- **`veto_only` cableado, no retirado.** El CLI (`review`) lee el campo y decide si la accion de
+  la IA entra al motor; el comentario de `models.py` describe lo que hace.
+
+**Por que.** La autoridad asimetrica del LLM era una promesa de D27 que el codigo no cumplia:
+`veto_only` no tenia lector. Cablearlo es lo que hace cierta la frase "la IA decide mantener o
+vender, el motor fija los niveles". Separar el contexto no cambia **que** se vende ni **donde**
+va el stop: solo ordena el informe y el prompt.
+
+**Limite declarado.** `LLM_SELL` es tan auditable como la IA que lo produce: si el modelo decide
+vender sin fundamento, el motor lo ejecuta. La evidencia (`key_facts` con fuente) sigue siendo
+obligatoria solo para `BROKEN`; para la venta directa la garantia es que la IA pondere el contexto
+que recibe, no una regla de evidencia adicional. `veto_only=true` restaura el comportamiento
+conservador.
+
+---
+
+## D35. El stop del motor protege la ganancia abierta (trail antes de asegurar)
+
+**Que estaba abierto.** El stop de una posicion adoptada era `entrada x (1 -
+legacy.max_loss_from_cost_pct/100)` = **-18 % del costo**, y no subia nunca: el trail del runner
+(regla 6) solo corria con `trade.locked`, que recien se pone al vender el tramo A (+25 %). Una
+posicion +19 % seguia con el stop a -18 %, sin cubrir nada. Ademas, al adoptar, `highest_n` era
+`max(entrada, cierre)`, no el maximo real de la ventana del Chandelier, asi que el trail no tenia
+el pico.
+
+**Decision.** El mismo Chandelier del runner cubre la ganancia **antes** de asegurar, sin numero
+magico nuevo:
+
+- **`protect_gain` (`core/stops.py`).** Sube el stop al Chandelier solo si este queda **sobre el
+  costo** (asegura utilidad) y **bajo el precio** (es un stop colocable). Fuera de esa ventana
+  devuelve el stop sin cambios: no aprieta a una posicion que aun no gana ni fija un stop por
+  encima del mercado. La regla 6 lo usa cuando el trade aun no esta asegurado; con el trade
+  asegurado sigue rigiendo `max(breakeven, Chandelier)`.
+- **`highest_n` es el maximo real.** `adopt_positions` toma el maximo de
+  `exits.runner_trail.lookback_days` ruedas (`_recent_high`), con piso en `max(entrada, cierre)`
+  cuando no hay serie. Sin esto el trail arrancaba del cierre y no cubria nada.
+- **El stop objetivo ya incluye el trail.** La regla 2 (`STOP_MISSING`) tiene mas precedencia que
+  la 6 (`RAISE_STOP`), asi que la reparacion de un stop ausente tiene que colocar el nivel que
+  protege la ganancia, no el piso de perdida. `adopt_positions` arma `stop` con `protect_gain`.
+- **El stop de ganancia del broker no se descarta.** Un Sell Stop por encima del costo pasa a ser
+  el `stop` vigente (antes se ignoraba por el filtro `broker_stop < entry` y el motor podia
+  *bajar* el nivel que el usuario ya habia colocado). `initial_stop` —que define la R— sigue
+  saliendo del piso, nunca de un stop sobre la entrada.
+
+**Por que.** Pedido del usuario: "el SL tecnico no me sirve, prefiero un SL que proteja
+ganancias". El trail por ATR se adapta a la volatilidad de cada nombre (la cartera mezcla ATR % de
+<1 % con >4 %), ya estaba configurado y no agrega umbrales.
+
+**Limite declarado.** El stop se revisa una vez por noche. Si el precio cae por debajo del trail
+en una sola sesion (hueco grande) no se fuerza la venta —no se fija un stop sobre el mercado—; el
+`STOP_BREACH` de la noche siguiente, con el stop ya elevado en la corrida anterior, es el que
+ejecuta. `protect_gain` no cambia la R, la meta ni el tamano: solo el nivel del stop.

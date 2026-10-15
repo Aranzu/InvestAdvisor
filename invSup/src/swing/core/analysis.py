@@ -36,7 +36,6 @@ from swing.core.reasons import Action, Reason
 from swing.core.report import (
     BookPosition,
     ClosedStats,
-    LocalPosition,
     PositionReport,
     closed_stats,
     deposits_clp,
@@ -133,7 +132,6 @@ class Analysis:
     findings: tuple[Rejected, ...]
     actions: tuple[SuggestedAction, ...]
     trims: tuple[CapTrim, ...]
-    local: tuple[LocalPosition, ...]
     notes: tuple[str, ...]
     limitations: tuple[str, ...]
 
@@ -347,7 +345,6 @@ def analyze(
         findings=tuple(findings),
         actions=tuple(actions),
         trims=trims,
-        local=report.local,
         notes=tuple(notes),
         limitations=tuple(limitations),
     )
@@ -613,16 +610,6 @@ def render_markdown(analysis: Analysis) -> str:
 
     if analysis.positions:
         _md_positions(lines, analysis)
-    if analysis.local:
-        lines.append("")
-        lines.append("## Posicion local (fuera de XTB)")
-    lines.append("")
-    for position in analysis.local:
-        lines.append(
-            f"- **{position.name}** ({position.ticker}): {position.volume:g} acciones, "
-            f"promedio {position.avg_price_clp:,.0f}, ultimo {position.last_price_clp:,.0f} - "
-            f"P/L {position.profit_clp:,.0f} CLP"
-        )
 
     if analysis.positions:
         lines.append("")

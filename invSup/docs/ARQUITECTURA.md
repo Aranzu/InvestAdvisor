@@ -45,7 +45,7 @@ opcional → tickets e informe (`output/plan_<fecha>.md`).
 
 Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantiene o se vende:
 1. Reporte → adopción → `decide(universe=())` (solo salidas).
-2. **Stats por posición** (`services/stats`): escribe `output/stats_<fecha>.md` y `.json` (con
+2. **Stats por posición** (`services/stats`): escribe `output/stats_<reporte>_<marca>.md` y `.json` (con
    materias primas y el driver de cada posición) y
    reutiliza sus fundamentales, para no volver a pedir todo a Yahoo.
 3. **Fundamentales y proyecciones** (por posición): `adapters/fundamentals` inyecta
@@ -60,11 +60,14 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
 6. **Narrativa de cartera** (una sola llamada `PORTFOLIO_REVIEW`, sin búsquedas nuevas) que
    llena el veredicto, la cobertura y los supuestos del informe.
 6. Informe con `--formato`:
-   - `informe` (por defecto): **7 secciones** — Veredicto, Cobertura, Decisiones, Niveles,
-     Alertas, Supuestos y vacíos, Fuentes clave. Puntaje por ejes V/C/G/P (`-8..+8`).
+   - `informe` (por defecto): **10 secciones** — Veredicto, Cobertura, Decisiones, Niveles,
+     Alertas, Supuestos y vacíos, Fuentes clave, Auditoría de ventas, Registro de decisiones y
+     Qué cambió. Puntaje por ejes V/C/G/P (`-8..+8`). Con la política `review` agrega el
+     veredicto de `PROMPT PORTAFOLIO` (niveles de revisión/alarma, disparadores T1-T6, motivos
+     M1-M7, ejes E1-E4 con F/M y acción implícita) y guarda el registro en `state/`.
    - `detalle` (el de `nightly`): bloques explicados.
-   - `tabla`: `Activo · Plat. · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`.
-   - `acciones`: una sola tabla `Activo · Plat. · Retorno · Peso (actual → post) · Acción ·
+   - `tabla`: `Activo · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`.
+   - `acciones`: una sola tabla `Activo · Retorno · Peso (actual → post) · Acción ·
      Puntaje · Conf. · Fundamento`, sin secciones ni tickets y sin narrativa de cartera
      (ahorra una consulta). Peso sobre el capital invertido (suma 100 %); `post` renormaliza
      tras aplicar las ventas. El porcentaje/volumen lo fija el motor.
@@ -182,8 +185,8 @@ El CLI expone **tres comandos**: `stats`, `review` y `screen`. El resto está **
 | `verify-broker` (oculto) | campos de `broker.yaml` sin verificar |
 | `data-health` (oculto) | frescura/huecos/earnings por ticker |
 | `analyze-positions` (oculto) | valúa la cartera y hallazgos (sin reglas de salida completas) |
-| `stats` | ficha por posición con todos los campos posibles (tipo Finviz) + posición local (CLP), compras de insiders y materias primas (oro/plata/cobre/litio proxy); emite `stats_<fecha>.md` y `.json` (`schema: 2`), que `analyze-positions` y `review` reutilizan |
-| `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto. `--formato informe` (7 secciones, por defecto), `detalle` o `tabla` |
+| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), insiders (compras y ventas, Form 4), resumen determinista (banderas/stops/alertas según `briefing`, más los niveles de `PROMPT PORTAFOLIO` según `review`) y materias primas (oro/plata/cobre, precio y variación de Trading Economics con respaldo de Yahoo); oculta el contexto informativo por defecto (`--contexto` lo incluye); emite `stats_<reporte>_<marca>.md` y `.json` (`schema: 6`), que `analyze-positions` y `review` reutilizan |
+| `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto. `--formato informe` (10 secciones, por defecto), `detalle` o `tabla` |
 | `screen` (alias `discover`) | **funcion 2**: screener de compra (técnico + fundamentales + proyecciones) |
 | `nightly` (oculto) | **fase 8**: `screen` + `review --formato detalle` en una corrida, resumen y notificación opcional |
 | `schedule` (oculto) | **fase 8**: hora local del cierre + margen y comando `schtasks` |
@@ -198,7 +201,9 @@ Códigos de salida: `0` limpio, `1` error de config/datos, `2` hallazgos/accione
 
 - No hay datos fundamentales point-in-time; cualquier medición histórica arrastraría el
   sesgo de supervivencia del índice de hoy.
-- El stop inicial de posiciones adoptadas se deriva del 18 % (no siempre el real).
+- El stop inicial de posiciones adoptadas se deriva del 18 % (no siempre el real); el stop
+  **vigente** puede ser el del broker (incluido uno de ganancia) o el Chandelier que protege la
+  utilidad abierta (D35).
 - El régimen determinista solo mira SPY + VIX; el macro global viene de la IA (con fuentes).
 - La IA decide (mantener/vender/comprar) pero nunca ejecuta órdenes ni fija niveles; su
   `verdict`/`accion`/`fundamento` son opinión sobre niveles que calcula el motor.

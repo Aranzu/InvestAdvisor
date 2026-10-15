@@ -3,8 +3,8 @@
 Los tests del reporte y del CLI necesitan un export realista. Como no se puede
 depender de que el usuario tenga un export con X posiciones, se arma un xlsx
 sintetico con la misma forma del que baja xStation: tres hojas (Closed Positions,
-Cash Operations, Open Positions) y opcional la Hoja1 local, con las etiquetas y el
-formato de numeros chilenos que el parser espera.
+Cash Operations, Open Positions), con las etiquetas y el formato de numeros
+chilenos que el parser espera.
 """
 
 from __future__ import annotations
@@ -184,38 +184,16 @@ def _default_open() -> list[tuple[object, ...]]:
     ]
 
 
-def _default_local() -> list[tuple[object, ...]]:
-    return [
-        ("SOCIEDAD QUIMICA Y MINERA DE CHILE",),
-        ("SQM-B",),
-        ("Ultimo precio",),
-        ("CLP $63.000",),
-        ("Tu posicion",),
-        ("Cantidad de acciones",),
-        (68,),
-        ("Precio promedio",),
-        ("CLP $75.508,16",),
-        ("Retorno hoy",),
-        ("CLP $-129.200",),
-        ("(-2.93%)",),
-        ("Retorno total",),
-        ("CLP $-850.555",),
-        ("(-16.57%)",),
-    ]
-
-
 def build_positions_workbook(
     path: Path | str,
     *,
     closed: list[tuple[object, ...]] | None = None,
     cash: list[tuple[object, ...]] | None = None,
     open_rows: list[tuple[object, ...]] | None = None,
-    local: list[tuple[object, ...]] | None = None,
     realized: float = 50_000.0,
     cash_balance: float = 5_000_000.0,
     open_value: float = 990_000.0,
     open_profit: float = 90_000.0,
-    include_local: bool = True,
 ) -> Path:
     """Escribe el xlsx sintetico y devuelve la ruta."""
     path = Path(path)
@@ -254,11 +232,6 @@ def build_positions_workbook(
     _append(ws, OPEN_HEADER)
     for row in _default_open() if open_rows is None else open_rows:
         _append(ws, _pad(row, len(OPEN_HEADER)))
-
-    if include_local:
-        ws = wb.create_sheet("Hoja1")
-        for row in _default_local() if local is None else local:
-            _append(ws, row)
 
     wb.save(path)
     return path

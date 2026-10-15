@@ -71,6 +71,8 @@ class Reason(StrEnum):
     HORIZON_TIGHTEN = "HORIZON_TIGHTEN"
     CAP_TRIM = "CAP_TRIM"
     THESIS_EXIT = "THESIS_EXIT"
+    LLM_SELL = "LLM_SELL"
+    """Venta que decide la IA con ``veto_only=false`` (el motor fija el volumen)."""
     SUPPRESSED = "SUPPRESSED"
 
     # --- Estado y reconciliacion (seccion 9) ---
@@ -120,4 +122,6 @@ class ExitCause(StrEnum):
     HORIZON = "HORIZON"
     CAP_TRIM = "CAP_TRIM"
     THESIS = "THESIS"
+    LLM = "LLM"
+    """Cierre decidido por la IA (``veto_only=false``); distinto de ``THESIS`` rota."""
     OPEN_END = "OPEN_END"

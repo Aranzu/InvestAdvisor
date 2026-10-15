@@ -16,7 +16,6 @@ from swing.core.calendar import SessionCalendar
 from swing.core.report import (
     CashOp,
     ClosedRow,
-    LocalPosition,
     OpenLot,
     PositionReport,
     closed_stats,
@@ -67,7 +66,6 @@ def report(*, lots=(), closed=(), cash=(), balance: float = 0.0) -> PositionRepo
         open_profit_clp=sum(lot.profit_clp for lot in lots),
         realized_clp=0.0,
         cash_balance_clp=balance,
-        local=(),
     )
 
 
@@ -201,9 +199,3 @@ def test_depositos_y_dividendos_netos() -> None:
     model = report(cash=cash, balance=600_400.0)
     assert deposits_clp(model) == pytest.approx(1_500_000.0)
     assert dividends_net_clp(model) == pytest.approx(3_400.0)
-
-
-def test_local_position_pl() -> None:
-    local = LocalPosition("Minera", "MIN-B", 100, 5_000.0, 4_500.0)
-    assert local.value_clp == pytest.approx(450_000.0)
-    assert local.profit_clp == pytest.approx(-50_000.0)

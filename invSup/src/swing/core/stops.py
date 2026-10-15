@@ -142,6 +142,41 @@ def chandelier_stop(
     return highest_n - mult * atr
 
 
+def protect_gain(
+    stop: float,
+    *,
+    entry: float,
+    price: float,
+    highest_n: float,
+    atr: float,
+    atr_mult: float,
+    days_open: int,
+    tighten_after_days: int,
+    tightened_atr_mult: float,
+) -> float:
+    """Sube ``stop`` al Chandelier cuando este ya protege ganancia abierta.
+
+    Es el mismo trail del runner, aplicado **antes** de asegurar el trade: solo
+    mueve el stop si el Chandelier queda **sobre el costo** (asegura utilidad) y
+    **bajo el precio** (es un stop colocable). Fuera de esa ventana devuelve
+    ``stop`` sin cambios: no aprieta una posicion que aun no gana ni fija un stop
+    por encima del mercado.
+    """
+    if atr <= 0.0:
+        return stop
+    trail = chandelier_stop(
+        highest_n=highest_n,
+        atr=atr,
+        atr_mult=atr_mult,
+        days_open=days_open,
+        tighten_after_days=tighten_after_days,
+        tightened_atr_mult=tightened_atr_mult,
+    )
+    if entry < trail < price:
+        return max(stop, trail)
+    return stop
+
+
 def should_raise_stop(
     current_stop: float,
     candidate_stop: float,

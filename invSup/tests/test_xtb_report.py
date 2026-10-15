@@ -24,7 +24,7 @@ from swing.adapters.xtb_report import ReportFormatError, load_positions_report
 from swing.core.report import deposits_clp, dividends_net_clp, group_closed, group_open
 
 
-def test_lee_las_tres_hojas_y_la_local(tmp_path: Path) -> None:
+def test_lee_las_tres_hojas(tmp_path: Path) -> None:
     report = load_positions_report(build_positions_workbook(tmp_path / "export.xlsx"))
 
     assert report.account == "123456"
@@ -56,15 +56,6 @@ def test_lee_las_tres_hojas_y_la_local(tmp_path: Path) -> None:
     assert report.lots[0].open_price_usd == pytest.approx(100.0)
     assert report.lots[0].stop_usd is None
     assert report.lots[0].open_date == UTC_OPEN.date()
-
-    assert len(report.local) == 1
-    local = report.local[0]
-    assert local.ticker == "SQM-B"
-    assert local.volume == pytest.approx(68)
-    assert local.avg_price_clp == pytest.approx(75_508.16)
-    assert local.last_price_clp == pytest.approx(63_000.0)
-    assert local.profit_clp == pytest.approx(-850_555.0)
-    assert local.value_clp == pytest.approx(4_284_000.0)
 
 
 def test_dividendos_netos(tmp_path: Path) -> None:
@@ -156,44 +147,13 @@ def test_cierre_parcial_agrupa_por_posicion(tmp_path: Path) -> None:
 def test_falta_una_hoja_falla(tmp_path: Path) -> None:
     path = build_positions_workbook(tmp_path / "export.xlsx")
     wb = __import__("openpyxl").load_workbook(path)
-    del wb["Hoja1"]
+    del wb["Closed Positions"]
     wb.save(path)
-    # Sin Hoja1 el export sigue siendo valido: la local es opcional.
-    report = load_positions_report(path)
-    assert report.local == ()
-
-    path2 = tmp_path / "roto.xlsx"
-    path2.write_bytes(b"no soy un excel")
     with pytest.raises(ReportFormatError):
-        load_positions_report(path2)
-
-
-def test_hoja_local_sin_etiquetas_falla(tmp_path: Path) -> None:
-    local = [
-        ("EMPRESA",),
-        ("EMP-A",),
-        ("Otro texto",),
-        ("CLP $1.000",),
-    ]
-    path = build_positions_workbook(tmp_path / "export.xlsx", local=local)
-    with pytest.raises(ReportFormatError, match="incompleta"):
         load_positions_report(path)
 
 
-def test_hoja_local_sin_ticker_falla(tmp_path: Path) -> None:
-    local = [
-        ("EMPRESA",),
-        ("",),
-        ("Ultimo precio",),
-        ("CLP $63.000",),
-        ("Cantidad de acciones",),
-        (68,),
-        ("Precio promedio",),
-        ("CLP $75.508,16",),
-    ]
-    path = build_positions_workbook(tmp_path / "export.xlsx", local=local)
-    with pytest.raises(ReportFormatError, match="ticker"):
-        load_positions_report(path)
+
 
 
 def test_encabezado_faltante_falla(tmp_path: Path) -> None:
@@ -228,9 +188,6 @@ def test_encabezado_faltante_falla(tmp_path: Path) -> None:
     wb.save(path)
     with pytest.raises(ReportFormatError, match="encabezado"):
         load_positions_report(path)
-
-
-def test_parse_ignora_filas_resumen_del_instrumento(tmp_path: Path) -> None:
     open_rows = [
         (
             "My Trades",
@@ -350,3 +307,36 @@ def test_sin_cega_con_cero_columnas_de_soporte_pero_limpias(tmp_path: Path) -> N
     wb.save(path)
     report = load_positions_report(path)
     assert report.closed[0].ticker == "TEST"
+
+
+def _falsify_dimension(path: Path) -> None:
+    """Reescribe el xlsx con ``<dimension ref="A1"/>`` en cada hoja.
+
+    Algunos export de xStation declaran esa dimension aunque traigan decenas de
+    filas; el modo ``read_only`` de openpyxl la respeta y leeria solo A1. El test
+    fija que el adapter abra el libro de forma que no dependa de esa dimension.
+    """
+    import re
+    import zipfile
+
+    with zipfile.ZipFile(path) as zf:
+        items = [(info, zf.read(info.filename)) for info in zf.infolist()]
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for info, data in items:
+            if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml"):
+                data = re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1"/>', data)
+            zf.writestr(info, data)
+
+
+def test_lee_export_con_dimension_mentida(tmp_path: Path) -> None:
+    path = build_positions_workbook(tmp_path / "export.xlsx")
+    _falsify_dimension(path)
+
+    report = load_positions_report(path)
+
+    assert report.account == "123456"
+    assert len(report.closed) == 1
+    assert report.closed[0].ticker == "TEST"
+    assert len(report.lots) == 1
+    assert report.lots[0].ticker == "TEST"

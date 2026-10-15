@@ -1,7 +1,7 @@
 """Materias primas de ``stats``: mapeo de driver y specs del contexto.
 
-El litio se referencia con un proxy explicito (LIT y el par ALB); el resto son futuros.
-El mapeo ticker -> driver es dato, no parametro: un ticker sin driver conocido no inventa.
+La fuente primaria es Trading Economics; Yahoo queda como respaldo. El mapeo
+ticker -> driver es dato, no parametro: un ticker sin driver conocido no inventa.
 """
 
 from __future__ import annotations
@@ -10,8 +10,6 @@ from swing.core.commodities import COMMODITIES, Commodity, commodity_by_key, com
 
 
 def test_driver_por_ticker() -> None:
-    assert commodity_driver("SQM-B") == "litio"
-    assert commodity_driver("ALB") == "litio"
     assert commodity_driver("FCX") == "cobre"
     assert commodity_driver("NEM") == "oro"
     assert commodity_driver("PAAS") == "plata"
@@ -27,15 +25,15 @@ def test_sin_driver_devuelve_none() -> None:
     assert commodity_driver("AAPL", industry="Consumer Electronics") is None
 
 
-def test_label_marca_los_proxy() -> None:
-    assert Commodity(key="litio", name="Litio", symbol="LIT", proxy=True).label == "Litio (proxy)"
-    assert Commodity(key="oro", name="Oro", symbol="GC=F", proxy=False).label == "Oro"
+def test_commodity_guarda_fuente_y_unidad() -> None:
+    item = Commodity(key="oro", name="Oro", symbol="GC=F", source="tradingeconomics", unit="USD/t.oz")
+    assert item.source == "tradingeconomics"
+    assert item.unit == "USD/t.oz"
 
 
-def test_specs_cubren_los_drivers_y_el_par_del_litio() -> None:
+def test_specs_cubren_los_drivers_y_el_slug_de_trading_economics() -> None:
     keys = [spec.key for spec in COMMODITIES]
-    assert {"oro", "plata", "cobre", "litio"} <= set(keys)
-    assert commodity_by_key("litio").proxy is True
-    assert commodity_by_key("litio_alb").symbol == "ALB"
-    assert commodity_by_key("oro").proxy is False
+    assert {"oro", "plata", "cobre"} <= set(keys)
+    assert commodity_by_key("oro").te_slug == "gold"
+    assert commodity_by_key("oro").symbol == "GC=F"
     assert commodity_by_key("nope") is None

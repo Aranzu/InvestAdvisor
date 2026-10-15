@@ -14,13 +14,19 @@ from dataclasses import replace
 import pytest
 
 from swing.core.commodities import Commodity
+from swing.core.market_context import MarketInstrument
 from swing.core.stats import (
-    InsiderBuy,
+    PANEL_FIELDS,
+    POSITION_FIELDS,
+    ROLES,
+    SECTIONS,
+    InsiderTrade,
     PositionStats,
     StatsReport,
     all_field_keys,
     coverage,
     derive_fields,
+    insider_net,
     merge_fields,
     render_stats,
 )
@@ -122,8 +128,8 @@ def test_render_campo_sin_dato_es_guion() -> None:
     assert "-" in text
 
 
-def test_render_incluye_compras_de_insiders() -> None:
-    buy = InsiderBuy(
+def test_render_incluye_insiders_y_su_neto() -> None:
+    buy = InsiderTrade(
         date=dt.date(2026, 9, 21),
         owner="Teter Timothy S.",
         relationship="EVP, General Counsel",
@@ -132,22 +138,53 @@ def test_render_incluye_compras_de_insiders() -> None:
         shares=1000.0,
         value=110_500.0,
     )
-    row = PositionStats(ticker="NVDA", context={}, fields={}, insider_buys=(buy,))
-    text = render_stats(_report((row,)))
-    assert "## Compras de insiders (Finviz)" in text
+    sale = InsiderTrade(
+        date=dt.date(2026, 9, 18),
+        owner="Stevens Mark A.",
+        relationship="Director",
+        transaction="Sale",
+        price=100.0,
+        shares=400.0,
+        value=40_000.0,
+    )
+    row = PositionStats(ticker="NVDA", context={}, fields={}, insider_trades=(buy, sale))
+    text = render_stats(_report((row,)), show_context=True)
+    assert "## Insiders (Finviz)" in text
+    assert "| Ticker | Compras | Ventas | Neto USD |" in text
+    assert "| NVDA | 1 | 1 | 70.50K |" in text
     assert "Teter Timothy S." in text
     assert "2026-09-21" in text
     assert "110.50K" in text
 
 
-def test_render_sin_compras_no_muestra_la_seccion() -> None:
+def test_insider_net_suma_compras_menos_ventas() -> None:
+    trades = (
+        InsiderTrade(date=None, owner="A", relationship="", transaction="Buy", price=1.0, shares=1.0, value=100.0),
+        InsiderTrade(date=None, owner="B", relationship="", transaction="Sale", price=1.0, shares=1.0, value=40.0),
+        InsiderTrade(
+            date=None,
+            owner="C",
+            relationship="",
+            transaction="Option Exercise",
+            price=1.0,
+            shares=1.0,
+            value=999.0,
+        ),
+    )
+    net = insider_net(trades)
+    assert net.buys == 1
+    assert net.sells == 1
+    assert net.net_value == pytest.approx(60.0)
+
+
+def test_render_sin_insiders_no_muestra_la_seccion() -> None:
     row = PositionStats(ticker="AAA", context={}, fields={})
-    text = render_stats(_report((row,)))
-    assert "## Compras de insiders" not in text
+    text = render_stats(_report((row,)), show_context=True)
+    assert "## Insiders (Finviz)" not in text
 
 
 def test_stats_report_json_round_trip() -> None:
-    buy = InsiderBuy(
+    trade = InsiderTrade(
         date=dt.date(2026, 9, 21),
         owner="X",
         relationship="Director",
@@ -160,7 +197,7 @@ def test_stats_report_json_round_trip() -> None:
         ticker="NVDA",
         context={"name": "Nvidia", "value_clp": 1.0},
         fields={"pe": 10.0, "sma20": None},
-        insider_buys=(buy,),
+        insider_trades=(trade,),
     )
     report = StatsReport(
         account="1",
@@ -182,6 +219,29 @@ def test_stats_report_json_round_trip() -> None:
     assert restored == report
 
 
+def test_stats_report_json_round_trip_con_briefing() -> None:
+    from swing.core.briefing import Briefing, PositionBrief
+
+    briefing = Briefing(
+        positions=(PositionBrief(ticker="NVDA", flags=("RSI>70",), stop=100.0, stop_rule="precio - 3xATR"),),
+        alerts=("caja 10.00 % bajo el piso 15 %",),
+        position_max_pct=12.0,
+        theme_max_pct=35.0,
+        cash_pct=10.0,
+        cash_min_pct=15.0,
+        cash_max_pct=20.0,
+        semis_pct=30.0,
+        semis_max_pct=35.0,
+        ia_pct=44.0,
+        ia_max_pct=45.0,
+    )
+    report = replace(_report(()), briefing=briefing)
+    restored = StatsReport.from_dict(json.loads(json.dumps(report.to_dict())))
+    assert restored == report
+    assert restored.briefing is not None
+    assert restored.briefing.positions[0].flags == ("RSI>70",)
+
+
 def test_stats_report_from_dict_schema_inesperado() -> None:
     with pytest.raises(ValueError, match="schema"):
         StatsReport.from_dict({"schema": 999})
@@ -193,28 +253,194 @@ def test_materias_primas_en_el_informe_y_en_el_json() -> None:
             key="oro",
             name="Oro",
             symbol="GC=F",
-            proxy=False,
+            source="tradingeconomics",
+            unit="USD/t.oz",
             price=2400.0,
             chg_1m_pct=3.5,
             chg_ytd_pct=12.0,
             high_52w=2500.0,
             low_52w=2000.0,
         ),
-        Commodity(key="litio", name="Litio", symbol="LIT", proxy=True, price=45.0, chg_1m_pct=-2.0),
+        Commodity(
+            key="cobre",
+            name="Cobre",
+            symbol="",
+            source="tradingeconomics",
+            unit="CNY/T",
+            price=115400.0,
+            chg_1m_pct=-16.77,
+        ),
     )
-    row = PositionStats(ticker="SQM-B", context={}, fields={"driver": "Litio (proxy)", "driver_1m_pct": -2.0})
+    row = PositionStats(ticker="FCX", context={}, fields={"driver": "Cobre", "driver_1m_pct": -16.77})
     report = replace(_report((row,)), commodities=commodities)
-    text = render_stats(report)
+    text = render_stats(report, show_context=True)
     assert "## Materias primas" in text
-    assert "| Oro | GC=F | 2,400.00 | +3.50 % | +12.00 % | 2,500.00 | 2,000.00 |" in text
-    assert "| Litio (proxy) | LIT | 45.00 | -2.00 % | - | - | - |" in text
-    # La fila de SQM-B trae su driver de materia prima.
-    assert "| SQM-B | Litio (proxy) | -2.00 % |" in text
+    assert "| Oro | Trading Economics (USD/t.oz) | 2,400.00 | +3.50 % | +12.00 % | 2,500.00 | 2,000.00 |" in text
+    assert "| Cobre | Trading Economics (CNY/T) | 115,400.00 | -16.77 % | - | - | - |" in text
+    # La fila de FCX trae su driver de materia prima.
+    assert "| FCX | Cobre | -16.77 % |" in text
     assert StatsReport.from_dict(json.loads(json.dumps(report.to_dict()))).commodities == commodities
 
 
 def test_materias_primas_sin_datos_no_inventa_precio() -> None:
-    empty = Commodity(key="cobre", name="Cobre", symbol="HG=F", proxy=False)
+    empty = Commodity(key="cobre", name="Cobre", symbol="HG=F")
     row = PositionStats(ticker="AAA", context={}, fields={})
-    text = render_stats(replace(_report((row,)), commodities=(empty,)))
-    assert "| Cobre | HG=F | - | - | - | - | - |" in text
+    text = render_stats(replace(_report((row,)), commodities=(empty,)), show_context=True)
+    assert "| Cobre | - | - | - | - | - | - |" in text
+
+
+def test_render_panel_derivado_y_resumen_de_cartera() -> None:
+    row = PositionStats(
+        ticker="AAA",
+        context={
+            "name": "Acorp",
+            "value_clp": 800_000.0,
+            "weight_pct": 80.0,
+            "weight_invested_pct": 100.0,
+            "ret_clp_pct": 12.5,
+            "ret_usd_pct": 9.0,
+            "entry_usd": 100.0,
+            "stop_rule": 90.0,
+            "risk_pct": 12.0,
+        },
+        fields={},
+    )
+    report = replace(
+        _report((row,)),
+        panel={
+            "patrimonio_clp": 1_000_000.0,
+            "cash_clp": 200_000.0,
+            "cash_pct": 20.0,
+            "invested_clp": 800_000.0,
+            "invested_pct": 80.0,
+            "themes": {"IA": 60.0, "semiconductores": 25.0},
+            "max_theme_pct": 30.0,
+            "clusters": {"semis": {"pct": 25.0, "max_pct": 35.0}},
+        },
+    )
+    text = render_stats(report)
+    assert "## Panel de posicion (derivado)" in text
+    assert "## Resumen de cartera (derivado)" in text
+    assert "| patrimonio | 1,000,000 CLP |" in text
+    assert "| caja | 200,000 CLP (20.00 %) |" in text
+    assert "| invertido | 800,000 CLP (80.00 %) |" in text
+    assert "| tope por tema | 30.00 % |" in text
+    # El tema sobre el tope se marca; el cluster se suma aparte.
+    assert "| IA | 60.00 % **+** | 30.00 % |" in text
+    assert "| semiconductores | 25.00 % | 30.00 % |" in text
+    assert "| semis | 25.00 % | 35.00 % |" in text
+    # Los campos derivados de la fila salen en la tabla del panel.
+    assert "+12.50 %" in text
+
+
+def test_render_resumen_determinista() -> None:
+    from swing.core.briefing import Briefing, PositionBrief
+
+    row = PositionStats(ticker="AAA", context={}, fields={})
+    report = replace(
+        _report((row,)),
+        briefing=Briefing(
+            positions=(
+                PositionBrief(
+                    ticker="AAA",
+                    flags=("ganancia>25%", "bajo SMA200"),
+                    stop=85.0,
+                    stop_dist_pct=4.0,
+                    stop_rule="Min 20 ses - 0.5xATR",
+                    risk_pct=1.2,
+                    take_profit=120.0,
+                    tp_label="max 52S",
+                ),
+            ),
+            alerts=("caja 14.00 % bajo el piso 15 %",),
+            cash_pct=14.0,
+            cash_min_pct=15.0,
+            cash_max_pct=20.0,
+            semis_pct=30.0,
+            semis_max_pct=35.0,
+            ia_pct=44.0,
+            ia_max_pct=45.0,
+        ),
+    )
+    text = render_stats(report)
+    assert "## Resumen determinista (calculado por el motor)" in text
+    assert "- Caja 14.00 % (banda 15.00 % - 20.00 %)." in text
+    assert "semis 30.00 % (tope 35.00 %)" in text
+    assert "caja 14.00 % bajo el piso 15 %" in text
+    assert (
+        "| AAA | ganancia>25%, bajo SMA200 | 85.00 | 4.00 % | Min 20 ses - 0.5xATR | 1.20 % | 120.00 (max 52S) |"
+    ) in text
+
+
+def test_render_cantidad_con_decimales() -> None:
+    row = PositionStats(ticker="MELI", context={"volume": 2.0771}, fields={})
+    text = render_stats(_report((row,)))
+    assert "2.0771" in text
+
+
+def test_render_contexto_de_mercado() -> None:
+    row = PositionStats(ticker="AAA", context={}, fields={})
+    market = (
+        MarketInstrument(
+            symbol="^VIX",
+            label="VIX (volatilidad)",
+            price=18.5,
+            chg_1m_pct=10.0,
+            sma200=16.0,
+            vs_sma200_pct=15.625,
+        ),
+        MarketInstrument(symbol="SPY", label="S&P 500 (SPY)", price=500.0),
+    )
+    text = render_stats(replace(_report((row,)), market=market), show_context=True)
+    assert "## Contexto de mercado" in text
+    assert "| VIX (volatilidad) | 18.50 | +10.00 % | 16.00 | +15.62 % |" in text
+    assert "| S&P 500 (SPY) | 500.00 | - | - | - |" in text
+
+
+def test_stats_report_json_round_trip_mercado_y_panel() -> None:
+    market = (MarketInstrument(symbol="^VIX", label="VIX (volatilidad)", price=18.5, chg_1m_pct=10.0, sma200=16.0),)
+    panel = {"patrimonio_clp": 1.0, "themes": {"IA": 100.0}, "max_theme_pct": 30.0}
+    report = replace(_report((PositionStats(ticker="AAA", context={}, fields={}),)), market=market, panel=panel)
+    restored = StatsReport.from_dict(json.loads(json.dumps(report.to_dict())))
+    assert restored.market == market
+    assert restored.panel == panel
+    assert restored == report
+
+
+def test_render_oculta_el_contexto_por_defecto() -> None:
+    row = PositionStats(
+        ticker="AAA",
+        context={"name": "Acorp", "price_usd": 10.0},
+        fields={"pe": 12.5, "dividend_yield": 3.0, "perf_month": -5.0, "short_float": 8.0},
+    )
+    curado = render_stats(_report((row,)))
+    assert "## Dividendos" not in curado
+    assert "## Desempeno" not in curado
+    assert "Contexto oculto" in curado
+    # El dato sigue existiendo; solo se oculta en el render curado.
+    assert "3.00 %" not in curado
+    completo = render_stats(_report((row,)), show_context=True)
+    assert "## Dividendos" in completo
+    assert "## Desempeno" in completo
+    assert "3.00 %" in completo
+    assert "8.00 %" in completo
+
+
+def test_render_conserva_los_campos_que_deciden() -> None:
+    row = PositionStats(
+        ticker="AAA",
+        context={"name": "Acorp", "price_usd": 10.0},
+        fields={"pe": 12.5, "atr": 1.1, "sma20": 11.0},
+    )
+    text = render_stats(_report((row,)))
+    assert "## Valoracion" in text
+    assert "## Tecnico" in text
+    assert "12.50" in text
+    assert "1.10" in text
+    assert "11.00" in text
+
+
+def test_todos_los_campos_tienen_un_rol_valido() -> None:
+    specs = [*POSITION_FIELDS, *PANEL_FIELDS, *(spec for _, group in SECTIONS for spec in group)]
+    assert specs
+    assert {spec.role for spec in specs} <= ROLES

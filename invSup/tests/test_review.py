@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
 
+from swing.adapters.config_loader import load_strategy
 from swing.core.engine import ExitEvaluation, NightPlan, TradeExitJudgment
 from swing.core.exits import ExitSignal
 from swing.core.fundamentals import AxisRatings
@@ -17,9 +19,9 @@ from swing.core.planner import (
     render_table,
 )
 from swing.core.reasons import Action, Reason
-from swing.core.report import LocalPosition
 from swing.core.state import TradeState, TrancheState
 from swing.core.stats import PositionStats, StatsReport
+from swing.core.verdict import DecisionRecord
 
 
 def _trade(ticker: str, *, close: float = 110.0, days: int = 10) -> TradeState:
@@ -103,19 +105,6 @@ def test_dictamina_vender_o_mantener_por_regla() -> None:
     assert "puede subir el stop (tapada)" in informe
     assert "### BBB:" in informe
     assert "nada por ahora; mantener" in informe
-
-
-def test_incluye_la_posicion_local_declarada_fuera_del_motor() -> None:
-    informe = render_review(
-        _plan(),
-        account="123",
-        fx=900.0,
-        today=dt.date(2026, 10, 7),
-        local=(LocalPosition("Minera", "SQM-B", 68, 75_508.16, 63_000.0),),
-    )
-    assert "SQM-B" in informe
-    assert "fuera del motor" in informe
-    assert "Sin posiciones abiertas" in informe
 
 
 def test_incluye_la_segunda_opinion_de_la_ia_sin_cambiar_la_regla() -> None:
@@ -225,8 +214,8 @@ def test_tabla_usa_la_accion_y_fundamento_de_la_ia() -> None:
         reviews=(review,),
         earnings={"AAA": dt.date(2026, 11, 2)},
     )
-    assert "| Activo | Plat." in informe
-    assert "| AAA | XTB |" in informe
+    assert "| Activo | Retorno %" in informe
+    assert "| AAA |" in informe
     assert "Vender 40%" in informe
     assert "~80x utilidades." in informe
     assert "Resultados 2-nov" in informe  # catalizador de la IA
@@ -306,7 +295,7 @@ def test_informe_de_review_usa_la_narrativa_de_la_ia() -> None:
 
 
 def test_tabla_de_acciones_con_peso_post_y_volumen() -> None:
-    # AAA vende 50 % por el motor; BBB mantiene; ZZZ (local) vende 50 % por la IA.
+    # AAA vende 50 % por el motor; BBB mantiene.
     vender = TradeExitJudgment(
         trade=_trade("AAA", close=120.0),
         evaluation=ExitEvaluation(
@@ -325,26 +314,9 @@ def test_tabla_de_acciones_con_peso_post_y_volumen() -> None:
         evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
         state_after=_trade("BBB"),
     )
-    zzz = LLMReview(
-        ticker="ZZZ",
-        context=ReviewContext.POSITION_REVIEW,
-        thesis_status=ThesisStatus.INTACT,
-        veto=False,
-        veto_reason=None,
-        key_facts=(),
-        search_conclusive=True,
-        confidence=Confidence.HIGH,
-        requested_info=(),
-        accion="Vender 50%",
-        fundamento="Bajo el promedio; tesis debil.",
-    )
     rows = (
         PositionStats(ticker="AAA", context={"theme": "semis", "value_clp": 300_000.0}, fields={}),
         PositionStats(ticker="BBB", context={"theme": "semis", "value_clp": 300_000.0}, fields={}),
-        PositionStats(ticker="ZZZ", context={"theme": "mineria", "value_clp": 300_000.0}, fields={}),
-    )
-    local = (
-        LocalPosition(name="Sociedad Quimica", ticker="ZZZ", volume=68.0, avg_price_clp=500.0, last_price_clp=400.0),
     )
     report = build_review_report(
         _plan(vender, mantener),
@@ -353,23 +325,18 @@ def test_tabla_de_acciones_con_peso_post_y_volumen() -> None:
             "AAA": AxisRatings(value=2, quality=1, growth=1, projections=0, available=(True, True, True, False)),
             "BBB": AxisRatings(value=0, quality=0, growth=0, projections=0),
         },
-        reviews=(zzz,),
-        local=local,
-        local_platform="Zesty",
     )
     tabla = render_action_table(report)
     # Cabecera exacta de la tabla de acciones.
-    assert "| Activo | Plat. | Retorno | Peso (actual -> post) | Accion | Puntaje | Conf. | Fundamento |" in tabla
+    assert "| Activo | Retorno | Peso (actual -> post) | Accion | Puntaje | Conf. | Fundamento |" in tabla
     # El volumen de venta lo fija el motor (5 de 10 acciones).
     assert "Vender 50% (5 acc.)" in tabla
-    # La hoja local lleva su etiqueta y anota CLP en el retorno.
-    assert "| ZZZ | Zesty |" in tabla
-    assert "(CLP)" in tabla
-    assert "Vender 50% (34 acc.)" in tabla  # 50 % de 68 acciones (IA, fuera del motor)
     # Eje sin datos: n.p. no puntua, pero el total suma los demas.
     assert "+2 / +1 / +1 / n.p. -> +4" in tabla
-    # Peso renormalizado: BBB mantiene y pasa de 33.3 % a 50.0 % del invertido.
-    assert "33.3 -> 50.0" in tabla
+    # Peso renormalizado sobre el invertido: AAA vende la mitad (50.0 -> 33.3) y BBB
+    # mantiene (50.0 -> 66.7): la venta de uno sube el peso del otro.
+    assert "50.0 -> 33.3" in tabla
+    assert "50.0 -> 66.7" in tabla
     # La tabla de acciones no trae tickets.
     assert "Ticket" not in tabla
 
@@ -401,3 +368,81 @@ def test_incluye_el_contexto_macro() -> None:
     assert "VIX 18.20" in informe
     assert "Fed 12-nov" in informe
     assert "https://fed" in informe
+
+
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+_REVIEW_POLICY = load_strategy(CONFIG_DIR / "strategy.yaml").review
+
+
+def test_informe_v4_agrega_ejes_niveles_auditoria_registro_y_cambios() -> None:
+    assert _REVIEW_POLICY is not None
+    mantener = TradeExitJudgment(
+        trade=_trade("AAA", close=110.0),
+        evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
+        state_after=_trade("AAA"),
+    )
+    row = PositionStats(
+        ticker="AAA",
+        context={
+            "theme": "semis",
+            "weight_pct": 10.0,
+            "value_clp": 900_000.0,
+            "price_usd": 110.0,
+            "earnings_sessions": 8.0,
+        },
+        fields={
+            "atr": 3.0,
+            "sma50": 107.0,
+            "sma200": 100.0,
+            "high_20": 114.0,
+            "low_20": 98.0,
+            "rsi": 55.0,
+            "target_price": 140.0,
+            "target_upside_pct": 27.0,
+            "analyst_count": 12.0,
+            "oper_margin": 62.0,
+            "debt_to_equity": 3.0,
+            "current_ratio": 0.8,
+            "revenue_growth": -1.0,
+            "earnings_growth": -2.0,
+        },
+    )
+    report = build_review_report(
+        _plan(mantener),
+        _stats(row),
+        axes_by_ticker={"AAA": AxisRatings(value=2, quality=-1, growth=1, projections=0)},
+        review=_REVIEW_POLICY,
+        previous={"AAA": DecisionRecord(date="2026-10-01", ticker="AAA", action="Mantener", alarm_level=90.0)},
+        position_max_pct=12.0,
+    )
+    informe = render_review_report(report)
+    # Secciones nuevas de v4.
+    assert "## 8. Auditoria de ventas" in informe
+    assert "## 9. Registro de decisiones" in informe
+    assert "## 10. Que cambio" in informe
+    # Ejes E1-E4 y los niveles de vigilancia (no son ordenes).
+    assert "### Ejes E1-E4 y accion de PROMPT PORTAFOLIO" in informe
+    assert "### Niveles de vigilancia (no son ordenes)" in informe
+    assert "Nivel alarma" in informe
+    # El registro guarda la linea del activo.
+    assert [record.ticker for record in report.records] == ["AAA"]
+    assert report.records[0].alarm_level is not None
+    # El nivel de alarma subio de 90.0 a 108.5 (114 - 3x... ) -> se reporta el cambio.
+    assert "el nivel de alarma subio" in informe
+    # Disparador T6 por balance debil, y motivo M5 por margen de semis.
+    assert "T6" in informe
+    assert "M5" in informe
+
+
+def test_sin_politica_el_informe_conserva_el_formato_minimo() -> None:
+    mantener = TradeExitJudgment(
+        trade=_trade("AAA"),
+        evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
+        state_after=_trade("AAA"),
+    )
+    report = build_review_report(_plan(mantener), _stats(), axes_by_ticker={})
+    informe = render_review_report(report)
+    assert "## 8." not in informe
+    assert "PROMPT PORTAFOLIO" not in informe
+    assert report.records == ()
+

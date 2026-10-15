@@ -1,10 +1,9 @@
-"""Modelo puro del reporte de posiciones (export de XTB + hoja local).
+"""Modelo puro del reporte de posiciones (export de XTB).
 
 El export de XTB entrega tres hojas (``Closed Positions``, ``Cash Operations`` y
-``Open Positions``) y a veces una hoja suelta con la posicion local. Este modulo
-define **que es** un reporte y como se agrega; el parser que lo lee del disco
-vive en ``adapters/xtb_report.py``. ``core/`` no importa a ``adapters/``, asi que
-las filas llegan aqui ya como datos.
+``Open Positions``). Este modulo define **que es** un reporte y como se agrega; el
+parser que lo lee del disco vive en ``adapters/xtb_report.py``. ``core/`` no importa
+a ``adapters/``, asi que las filas llegan aqui ya como datos.
 
 La agregacion (una posicion = un ticker, tramos fraccionarios sumados) tambien es
 pura: es la diferencia entre mirar el reporte del broker y mirar la cartera.
@@ -71,30 +70,6 @@ class OpenLot:
 
 
 @dataclass(frozen=True, slots=True)
-class LocalPosition:
-    """Posicion fuera del broker (hoja local). Precios en CLP.
-
-    ``last_price_clp`` es el precio de la hoja, no el de hoy: el analisis la
-    reporta como dato del reporte y el CLP la puede actualizar, pero el dato duro
-    es este.
-    """
-
-    name: str
-    ticker: str
-    volume: float
-    avg_price_clp: float
-    last_price_clp: float
-
-    @property
-    def value_clp(self) -> float:
-        return self.volume * self.last_price_clp
-
-    @property
-    def profit_clp(self) -> float:
-        return self.volume * (self.last_price_clp - self.avg_price_clp)
-
-
-@dataclass(frozen=True, slots=True)
 class PositionReport:
     """Todo lo que el export de XTB dice sobre la cuenta."""
 
@@ -107,7 +82,6 @@ class PositionReport:
     open_profit_clp: float
     realized_clp: float
     cash_balance_clp: float
-    local: tuple[LocalPosition, ...] = ()
 
 
 # --------------------------------------------------------------------------- #

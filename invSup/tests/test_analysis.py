@@ -45,7 +45,6 @@ def make_report(
         open_profit_clp=sum(lot.profit_clp for lot in lots),
         realized_clp=0.0,
         cash_balance_clp=balance,
-        local=(),
     )
 
 

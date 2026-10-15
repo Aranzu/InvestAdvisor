@@ -1,13 +1,12 @@
-"""Materias primas como contexto del informe de ``stats`` (oro, plata, cobre y litio).
+"""Materias primas como contexto del informe de ``stats`` (oro, plata, cobre).
 
-El litio no tiene futuro liquido en Yahoo, asi que se usa un **proxy** explicito (``LIT``,
-el ETF de Global X) y un par (``ALB``, Albemarle), etiquetados como proxy para no
-confundirlos con el precio del carbonato. El oro, la plata y el cobre si son futuros
-(COMEX). Los simbolos son datos, no parametros: viven aca y no en ``strategy.yaml``,
-igual que ``^VIX`` o ``CLP=X``.
+La fuente primaria es **Trading Economics** (``/commodities``): publica el precio y las
+variaciones mensual y YTD. Las velas de Yahoo quedan como **respaldo** del precio y la
+variacion, y como unica fuente del maximo/minimo de 52 semanas. Los simbolos son datos,
+no parametros: viven aca y no en ``strategy.yaml``, igual que ``^VIX`` o ``CLP=X``.
 
-Tambien mapea cada posicion a su driver de materia prima (SQM -> litio, FCX -> cobre,
-NEM -> oro). Un ticker sin driver conocido simplemente sale sin driver.
+Tambien mapea cada posicion a su driver de materia prima (FCX -> cobre, NEM -> oro).
+Un ticker sin driver conocido simplemente sale sin driver.
 """
 
 from __future__ import annotations
@@ -25,50 +24,43 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class CommoditySpec:
-    """Referencia de una materia prima: clave, nombre visible y simbolo de Yahoo."""
+    """Referencia de una materia prima: clave, nombre, slug de Trading Economics y simbolo de Yahoo."""
 
     key: str
     name: str
     symbol: str
-    proxy: bool = False
+    te_slug: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class Commodity:
-    """Una materia prima valuada al dia del informe. ``None`` es "sin dato", no cero."""
+    """Una materia prima valuada al dia del informe. ``None`` es "sin dato", no cero.
+
+    ``source`` dice de donde salio el precio (``tradingeconomics`` o ``yahoo``) y ``unit``
+    la unidad de la cotizacion (p. ej. ``USD/t.oz``).
+    """
 
     key: str
     name: str
     symbol: str
-    proxy: bool
+    source: str = ""
+    unit: str = ""
     price: float | None = None
     chg_1m_pct: float | None = None
     chg_ytd_pct: float | None = None
     high_52w: float | None = None
     low_52w: float | None = None
 
-    @property
-    def label(self) -> str:
-        return f"{self.name} (proxy)" if self.proxy else self.name
-
 
 #: Referencias que entran al informe, en orden de lectura.
 COMMODITIES: tuple[CommoditySpec, ...] = (
-    CommoditySpec("oro", "Oro", "GC=F"),
-    CommoditySpec("plata", "Plata", "SI=F"),
-    CommoditySpec("cobre", "Cobre", "HG=F"),
-    CommoditySpec("litio", "Litio", "LIT", proxy=True),
-    CommoditySpec("litio_alb", "Litio par", "ALB", proxy=True),
+    CommoditySpec("oro", "Oro", "GC=F", "gold"),
+    CommoditySpec("plata", "Plata", "SI=F", "silver"),
+    CommoditySpec("cobre", "Cobre", "HG=F", "copper"),
 )
 
-#: Driver de materia prima por ticker. Los pares cuentan: ALB tambien es litio.
+#: Driver de materia prima por ticker.
 DRIVER_BY_TICKER: dict[str, str] = {
-    "SQM": "litio",
-    "SQM-B": "litio",
-    "ALB": "litio",
-    "LAC": "litio",
-    "LTHM": "litio",
-    "ALTM": "litio",
     "FCX": "cobre",
     "SCCO": "cobre",
     "HBM": "cobre",
@@ -89,7 +81,6 @@ DRIVER_BY_TICKER: dict[str, str] = {
 
 #: Palabras del sector/industria que caen al mismo driver cuando el ticker no esta.
 DRIVER_BY_INDUSTRY: tuple[tuple[str, str], ...] = (
-    ("lithium", "litio"),
     ("copper", "cobre"),
     ("gold", "oro"),
     ("silver", "plata"),

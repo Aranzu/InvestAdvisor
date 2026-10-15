@@ -29,6 +29,8 @@ from swing.adapters.data_yahoo import (
     EarningsFetcher,
     FetchRequest,
     YahooDataProvider,
+    _yf_timestamp,
+    _yfinance_bars,
     frame_to_series,
     symbols_from,
     to_yahoo_symbol,
@@ -170,6 +172,37 @@ def test_lo_que_falta_de_la_cache_se_conserva_al_ampliar(tmp_path: Path) -> None
     assert completa.last_date == JUEVES
 
 
+def test_daily_bars_report_cachea_la_serie_coherente(tmp_path: Path) -> None:
+    fetcher = FakeFetcher()
+    p = provider(tmp_path, fetcher)
+    serie, repaired = p.daily_bars_report("AMD", start=LUNES, end=MIERCOLES)
+    assert repaired is False
+    assert len(serie) == 3
+    p.daily_bars_report("AMD", start=LUNES, end=MIERCOLES)
+    assert len(fetcher.requests) == 1
+
+
+def test_daily_bars_report_descarta_la_vela_sin_cachearla(tmp_path: Path) -> None:
+    calls: list[FetchRequest] = []
+
+    def fetcher(request: FetchRequest) -> pd.DataFrame:
+        calls.append(request)
+        crudo = frame(*_sessions(request.start, request.end))
+        crudo.loc[pd.to_datetime(request.start), "High"] = 1.0
+        return crudo
+
+    p = YahooDataProvider(BarsCache(tmp_path / "bars"), bars_fetcher=fetcher)
+    serie, repaired = p.daily_bars_report("AMD", start=LUNES, end=MIERCOLES)
+    assert repaired is True
+    assert [bar.date for bar in serie.bars] == [MARTES, MIERCOLES]
+    # La vista recortada no se guarda: la cache queda sin el symbol y la proxima
+    # corrida vuelve a bajar y a declarar el descarte (no se "arregla" en silencio).
+    assert not (tmp_path / "bars" / "AMD.csv").exists()
+    _, repaired_otra_vez = p.daily_bars_report("AMD", start=LUNES, end=MIERCOLES)
+    assert repaired_otra_vez is True
+    assert len(calls) == 2
+
+
 def test_un_frame_vacio_no_inventa_velas(tmp_path: Path) -> None:
     fetcher = FakeFetcher(rows={})
     serie = provider(tmp_path, fetcher).daily_bars("AMD", start=LUNES, end=MIERCOLES)
@@ -209,6 +242,15 @@ def test_una_vela_imposible_falla_la_conversion() -> None:
         frame_to_series("AMD", crudo)
 
 
+def test_la_vela_imposible_se_descarta_si_se_pide() -> None:
+    # La vista best effort del informe descarta la vela contraditoria (no la repara)
+    # y sigue con las demas, en vez de tirar la serie completa.
+    crudo = frame(MARTES, MIERCOLES)
+    crudo.loc[pd.to_datetime(MARTES), "High"] = 1.0
+    serie = frame_to_series("AMD", crudo, skip_incoherent=True)
+    assert [b.date for b in serie.bars] == [MIERCOLES]
+
+
 def test_el_indice_en_utc_no_adelanta_el_dia() -> None:
     # Una corrida a las 23:00 de Chile con index en UTC trae la fecha del dia
     # siguiente: el motor tiene que ver la fecha de la sesion de NYSE.
@@ -216,6 +258,40 @@ def test_el_indice_en_utc_no_adelanta_el_dia() -> None:
     crudo.index = pd.DatetimeIndex(["2026-11-04 01:00:00+00:00"])
     serie = frame_to_series("AMD", crudo)
     assert serie.bars[0].date == MARTES
+
+
+# --------------------------------------------------------------------------- #
+# Pedido a Yahoo: la medianoche que no existe en el cambio de hora
+# --------------------------------------------------------------------------- #
+
+
+def test_el_pedido_usa_mediodia_para_esquivar_la_medianoche_inexistente() -> None:
+    # El cambio de horario de Santiago hace que el 2025-09-07 00:00 no exista; yfinance
+    # localiza la fecha a la zona del mercado y revienta. Al pedir un datetime al
+    # mediodia el instante existe y la sesion pedida no cambia.
+    start = _yf_timestamp(dt.date(2025, 9, 7))
+    assert start == dt.datetime(2025, 9, 7, 12, 0)
+
+
+def test_yfinance_bars_pasa_datetimes_al_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    import yfinance as yf
+
+    captured: dict[str, object] = {}
+
+    class FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+
+        def history(self, **kwargs: object) -> pd.DataFrame:
+            captured.update(kwargs)
+            return frame(MARTES)
+
+    monkeypatch.setattr(yf, "Ticker", FakeTicker)
+    request = FetchRequest("FCX", dt.date(2025, 9, 7), dt.date(2026, 10, 12))
+    result = _yfinance_bars(request)
+    assert list(result.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert captured["start"] == dt.datetime(2025, 9, 7, 12, 0)
+    assert captured["end"] == dt.datetime(2026, 10, 13, 12, 0)
 
 
 # --------------------------------------------------------------------------- #

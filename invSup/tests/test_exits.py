@@ -133,12 +133,13 @@ def test_el_orden_de_las_reglas_es_el_del_spec() -> None:
         Reason.HORIZON_TIGHTEN,
         Reason.CAP_TRIM,
         Reason.THESIS_EXIT,
+        Reason.LLM_SELL,
     )
 
 
 def test_todas_las_reglas_que_se_cumplen_se_reportan() -> None:
-    # Meta alcanzada + earnings + maximo de vida + tesis rota: las cuatro se ven,
-    # una sola manda.
+    # Meta alcanzada + earnings + maximo de vida + tesis rota + trail de ganancia:
+    # todas se ven, una sola manda.
     out = evaluate_exits(
         trade(close=108.0, days_open=95),
         ctx(earnings_date=EARNINGS, thesis_broken=True),
@@ -148,6 +149,7 @@ def test_todas_las_reglas_que_se_cumplen_se_reportan() -> None:
         Reason.TP_HIT,
         Reason.EARNINGS_DERISK,
         Reason.MAX_HOLD,
+        Reason.RAISE_STOP,
         Reason.THESIS_EXIT,
     }
     assert out.should_exit is True
@@ -341,10 +343,30 @@ def test_la_histeresis_evita_editar_el_stop_todas_las_noches() -> None:
     assert "menor que" in note(out, Reason.RAISE_STOP).detail
 
 
-def test_trade_no_asegurado_no_tiene_trail() -> None:
-    # Antes de vender el tramo A el stop es el inicial: moverlo seria inventar
-    # proteccion que la estrategia no pidio.
+def test_el_trail_protege_ganancia_antes_de_asegurar() -> None:
+    # Sin vender aun el tramo A, el Chandelier ya sube el stop si asegura utilidad:
+    # maximo 105, ATR 3 -> 96. Ese 96 no protege (esta bajo el costo 100).
+    sin_ganancia = evaluate_exits(trade(close=106.0, highest_n=105.0), ctx())
+    assert Reason.RAISE_STOP not in sin_ganancia.reasons
+
+    # Con el maximo en 115 el Chandelier queda en 106: sobre el costo y bajo el
+    # precio, asi que protege la ganancia abierta (cierre 107, aun bajo la meta 108).
+    out = evaluate_exits(trade(close=107.0, highest_n=115.0), ctx())
+    assert out.primary_cause is Reason.RAISE_STOP
+    assert out.stop_target == pytest.approx(106.0)
+    assert "protege ganancia" in out.primary.detail
+
+
+def test_el_trail_no_fija_un_stop_sobre_el_precio() -> None:
+    # Maximo 130 pero cierre 100: el Chandelier (121) quedaria sobre el mercado y no
+    # es un stop colocable, asi que no se toca nada.
     out = evaluate_exits(trade(highest_n=130.0), ctx())
+    assert Reason.RAISE_STOP not in out.reasons
+
+
+def test_una_posicion_sin_ganancia_no_recibe_trail() -> None:
+    # Perdiendo (cierre 96 bajo el costo 100): el trail no aprieta el stop.
+    out = evaluate_exits(trade(close=96.0, highest_n=99.0), ctx())
     assert Reason.RAISE_STOP not in out.reasons
 
 
@@ -401,6 +423,26 @@ def test_thesis_exit() -> None:
     out = evaluate_exits(trade(), ctx(thesis_broken=True))
     assert out.primary_cause is Reason.THESIS_EXIT
     assert out.exit_volume == VOLUME
+
+
+def test_llm_sell_vende_la_fraccion_que_decide_la_ia() -> None:
+    # veto_only=false: la IA decide vender 40 % y el motor calcula el volumen.
+    out = evaluate_exits(trade(), ctx(llm_sell_fraction=0.4))
+    assert out.primary_cause is Reason.LLM_SELL
+    assert out.primary is not None
+    assert out.primary.exit_cause is ExitCause.LLM
+    assert out.exit_volume == pytest.approx(VOLUME * 0.4)
+
+
+def test_llm_sell_en_cero_no_dispara() -> None:
+    assert evaluate_exits(trade(), ctx(llm_sell_fraction=0.0)).primary_cause is None
+
+
+def test_una_regla_mecanica_manda_sobre_la_ia() -> None:
+    # La tesis rota (regla 10) tiene mas precedencia que la venta decidida por la IA.
+    out = evaluate_exits(trade(), ctx(thesis_broken=True, llm_sell_fraction=0.4))
+    assert out.primary_cause is Reason.THESIS_EXIT
+    assert note(out, Reason.LLM_SELL).suppressed_by is Reason.THESIS_EXIT
 
 
 def test_el_tope_no_pisaria_a_un_stop_breach() -> None:

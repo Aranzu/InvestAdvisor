@@ -7,14 +7,17 @@ Es la capa pura entre ``decide()`` (que decide) y la CLI (que lee disco y red):
   legacy, ``legacy.adopt``). Lo que el reporte no dice no se inventa: sin Sell Stop
   en el broker, el stop inicial sale de ``legacy.max_loss_from_cost_pct`` y la
   posicion queda con ``broker_stop=None``, que es exactamente el ``STOP_MISSING``
-  que el plan tiene que reparar.
+  que el plan tiene que reparar. El stop **objetivo** ya incluye el trail de
+  proteccion de ganancia (``protect_gain``), para que la reparacion coloque el
+  nivel que cuida la utilidad y no el piso de perdida.
 - ``plan_tickets`` traduce un ``NightPlan`` a tickets de orden (seccion 9). El
   sistema recomienda; nunca envia.
 - ``render_tickets`` presenta esos tickets para copiar en el broker.
 - ``render_review`` y ``render_table`` arman los informes de posiciones en Markdown.
-- ``build_review_report`` y ``render_review_report`` arman el informe de 7 secciones
-  del comando ``review`` (veredicto, cobertura, decisiones, niveles, alertas,
-  supuestos y fuentes).
+- ``build_review_report`` y ``render_review_report`` arman el informe del comando
+  ``review``: con la politica ``review`` y narrativa de la IA son diez secciones
+  (veredicto, cobertura, decisiones, niveles, alertas, supuestos, fuentes, auditoria
+  de ventas, registro y que cambio); sin IA, las siete del motor.
 - ``render_action_table`` resume ese mismo informe en una tabla unica de acciones
   (``review --formato acciones``): peso actual -> post, accion con volumen, puntaje
   por ejes y fundamento, sin tickets.
@@ -25,23 +28,24 @@ Todo es puro: los datos llegan resueltos y ninguna funcion toca disco ni red.
 from __future__ import annotations
 
 import datetime as dt
-import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from swing.core.calendar import SessionCalendar
 from swing.core.engine import IndicatorFrame, NightPlan, TradeExitJudgment
 from swing.core.exits import ExitEvaluation, ExitSignal
 from swing.core.fundamentals import AxisRatings, format_rating
 from swing.core.llm import KeyFact, LLMReview, ThesisStatus
-from swing.core.models import BrokerConfig, StrategyConfig
+from swing.core.models import BrokerConfig, ReviewConfig, StrategyConfig
 from swing.core.orders import OrderExpiry, OrderKind, Ticket, expiry_from_config
 from swing.core.reasons import Action, Reason
 from swing.core.reconcile import BrokerPosition
-from swing.core.report import LocalPosition
 from swing.core.state import TradeState, TrancheState
 from swing.core.stats import StatsReport, all_field_keys
 from swing.core.stats import coverage as field_coverage
+from swing.core.stops import protect_gain
+from swing.core.verdict import DecisionRecord, PositionVerdict
+from swing.core.verdict import compute as compute_verdict
 
 #: Tolerancia de volumen para no dejar un tramo residual por redondeo.
 VOLUME_EPSILON = 1e-9
@@ -60,12 +64,17 @@ def adopt_positions(
     """Reconstruye el libro del motor a partir del reporte (adopcion, seccion 9).
 
     El precio de entrada es el promedio ponderado del broker; el ATR y el cierre
-    se toman de la serie cacheada. El stop inicial es el del broker si existe; si
-    no, ``entry x (1 - legacy.max_loss_from_cost_pct/100)`` y ``broker_stop=None``
-    (la falta de stop se declara y el plan la repara, no se esconde).
+    se toman de la serie cacheada. ``initial_stop`` (que define la R) es el del
+    broker si es un stop de perdida; si no, ``entry x (1 -
+    legacy.max_loss_from_cost_pct/100)``. El stop **objetivo** (``stop``) es el del
+    broker cuando es un precio valido —incluido uno de ganancia— y si no lo hay, el
+    ``initial_stop``, ya pasado por ``protect_gain`` para que el Chandelier cubra la
+    utilidad abierta. ``highest_n`` es el maximo real de ``runner_trail.lookback_days``
+    ruedas, que es la ventana del trail.
     """
     book: dict[str, TradeState] = {}
     floor = 1.0 - strategy.legacy.max_loss_from_cost_pct / 100.0
+    trail = strategy.exits.runner_trail
     for position in broker_positions:
         entry = position.avg_open_price
         if entry <= 0.0 or position.volume <= 0.0:
@@ -79,13 +88,25 @@ def adopt_positions(
         atr = features.atr if (features is not None and features.atr is not None) else 0.0
         open_date = min((lot.open_time.date() for lot in position.lots), default=today)
         days_open = calendar.sessions_between(open_date, today)
-        highest_n = max(entry, close)
+        highest_n = _recent_high(frame, max(entry, close), trail.lookback_days)
+        stop = broker_stop if (broker_stop is not None and broker_stop > 0.0) else initial_stop
+        stop = protect_gain(
+            stop,
+            entry=entry,
+            price=close,
+            highest_n=highest_n,
+            atr=atr,
+            atr_mult=trail.atr_mult,
+            days_open=days_open,
+            tighten_after_days=trail.tighten_after_days,
+            tightened_atr_mult=trail.tightened_atr_mult,
+        )
         risk = entry - initial_stop
         book[position.ticker] = TradeState(
             ticker=position.ticker,
             entry_price=entry,
             initial_stop=initial_stop,
-            stop=initial_stop,
+            stop=stop,
             broker_stop=broker_stop,
             volume=position.volume,
             close=close,
@@ -96,6 +117,23 @@ def adopt_positions(
             tranches=_adopted_tranches(position.volume, entry, risk, strategy),
         )
     return book
+
+
+def _recent_high(frame: IndicatorFrame | None, floor_value: float, lookback: int) -> float:
+    """Maximo real de las ultimas ``lookback`` ruedas, nunca por debajo de ``floor_value``.
+
+    Es la ventana del Chandelier (``runner_trail.lookback_days``). Sin serie, o con
+    la ventana vacia, queda el piso (``max(entrada, cierre)``), que es lo que habia
+    antes de mirar la serie.
+    """
+    if frame is None or frame.n <= 0:
+        return floor_value
+    idx = frame.last_index
+    start = max(0, idx - lookback + 1)
+    window = frame.high.iloc[start : idx + 1]
+    if len(window) == 0 or not bool(window.notna().any()):
+        return floor_value
+    return max(floor_value, float(window.max()))
 
 
 def _adopted_tranches(volume: float, entry: float, risk: float, strategy: StrategyConfig) -> tuple[TrancheState, ...]:
@@ -294,6 +332,7 @@ _SHORT_RULE: dict[Reason, str] = {
     Reason.HORIZON_TIGHTEN: "fin del horizonte cerca",
     Reason.CAP_TRIM: "tema sobre el tope",
     Reason.THESIS_EXIT: "tesis rota (IA)",
+    Reason.LLM_SELL: "venta que decide la IA",
 }
 
 
@@ -348,6 +387,8 @@ def _action_sentence(signal: ExitSignal, trade: TradeState) -> str:
         return f"El tema concentra demasiado: **vender {volume:.4f}** para bajar al tope."
     if reason is Reason.THESIS_EXIT:
         return "La IA marco la tesis como **rota** (con fuentes): **revisar la salida**."
+    if reason is Reason.LLM_SELL:
+        return f"La IA decide vender esa parte: **salir de {volume:.4f}** acciones."
     return signal.detail or _short_rule(reason)
 
 
@@ -378,7 +419,6 @@ def render_review(
     account: str,
     fx: float,
     today: dt.date,
-    local: Sequence[LocalPosition] = (),
     reviews: Sequence[LLMReview] = (),
     macro: LLMReview | None = None,
     macro_data: Mapping[str, str] | None = None,
@@ -485,18 +525,6 @@ def render_review(
                 lines.append(f"    - {fact.date.isoformat()}: {fact.fact}{source}")
         lines.append("")
 
-    if local:
-        lines.append("## Posicion local (fuera del motor)")
-        lines.append("")
-        for position in local:
-            lines.append(
-                f"- **{position.name}** ({position.ticker}): {position.volume:g} acciones, "
-                f"promedio {position.avg_price_clp:,.0f}, ultimo {position.last_price_clp:,.0f} - "
-                f"P/L {position.profit_clp:,.0f} CLP. No la evalua el motor (sin stop ni fecha de "
-                f"apertura): solo valuacion."
-            )
-        lines.append("")
-
     lines.append("## Como leer esto")
     lines.append("")
     lines.append(
@@ -525,7 +553,6 @@ def render_table(
     account: str,
     fx: float,
     today: dt.date,
-    local: Sequence[LocalPosition] = (),
     reviews: Sequence[LLMReview] = (),
     earnings: Mapping[str, dt.date] | None = None,
     macro: LLMReview | None = None,
@@ -546,8 +573,8 @@ def render_table(
     lines.append(f"Datos al {today} - regimen {plan.regime.value} - FX {fx:.2f} - equity {plan.equity_clp:,.0f} CLP")
     lines.append("")
     lines.extend(_macro_lines(macro, macro_data))
-    lines.append("| Activo | Plat. | Retorno % | Accion | Conf. | Fundamento | Stop | TP | Proximo catalizador |")
-    lines.append("|---|---|---:|---|---:|---|---:|---:|---|")
+    lines.append("| Activo | Retorno % | Accion | Conf. | Fundamento | Stop | TP | Proximo catalizador |")
+    lines.append("|---|---:|---|---:|---|---:|---:|---|")
     for judgment in sorted(plan.exits, key=lambda j: j.ticker):
         trade = judgment.trade
         review = by_ticker.get(trade.ticker)
@@ -562,22 +589,8 @@ def render_table(
         tp = f"{trade.entry_price + target * trade.risk_per_share:.2f} (motor)" if target is not None else "-"
         catalyst = _catalyst(review, gains.get(trade.ticker))
         lines.append(
-            f"| {trade.ticker} | XTB | {ret:+.2f}% | {accion} | {confidence} | {fundamento} | "
+            f"| {trade.ticker} | {ret:+.2f}% | {accion} | {confidence} | {fundamento} | "
             f"{stop} | {tp} | {catalyst} |"
-        )
-    for position in local:
-        ret = (position.last_price_clp / position.avg_price_clp - 1.0) * 100.0 if position.avg_price_clp > 0 else 0.0
-        review = by_ticker.get(position.ticker)
-        confidence = review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE
-        accion = review.accion if (review is not None and review.accion) else "Revisar (fuera del motor)"
-        fundamento = (
-            review.fundamento
-            if (review is not None and review.fundamento)
-            else "Fuera del motor (sin stop ni fecha); solo valuacion."
-        )
-        catalyst = _catalyst(review, gains.get(position.ticker))
-        lines.append(
-            f"| {position.ticker} | Local | {ret:+.2f}% | {accion} | {confidence} | {fundamento} | - | - | {catalyst} |"
         )
     lines.append("")
     lines.append(
@@ -621,7 +634,7 @@ def _catalyst(review: LLMReview | None, earnings: dt.date | None) -> str:
 # --------------------------------------------------------------------------- #
 
 #: Decisiones que no son una accion de cambio (para contar cuantas requieren algo).
-_NEUTRAL_DECISIONS = frozenset({"Mantener", "Revisar (fuera del motor)"})
+_NEUTRAL_DECISIONS = frozenset({"Mantener"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -646,16 +659,14 @@ class AssetReview:
     catalyst: str
     thesis: ThesisStatus | None
     facts: tuple[KeyFact, ...]
-    platform: str = "XTB"
-    """Plataforma/hoja donde vive la posicion (``XTB`` o la hoja local, p. ej. ``Zesty``)."""
-    is_local: bool = False
-    """``True`` si es una posicion de la hoja local (fuera del motor, montos en CLP)."""
     shares: float = 0.0
     """Acciones abiertas de la posicion (para expresar la accion en volumen)."""
     sell_fraction: float = 0.0
     """Fraccion de la posicion que la accion vende (``0..1``); ``0`` si no vende."""
     weight_invested_pct: float = 0.0
     """Peso sobre el capital invertido (suma 100 %), no sobre el equity."""
+    verdict: PositionVerdict | None = None
+    """Veredicto determinista de ``PROMPT PORTAFOLIO`` (niveles, T, M, E, accion)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,7 +690,13 @@ class ReviewReport:
     macro: LLMReview | None
     macro_data: Mapping[str, str]
     invested_clp: float = 0.0
-    """Capital invertido (posiciones del broker + hoja local) usado como base del peso."""
+    """Capital invertido (posiciones abiertas) usado como base del peso."""
+    review: ReviewConfig | None = None
+    """Politica de ``PROMPT PORTAFOLIO``; sin ella se omiten los bloques de v4."""
+    records: tuple[DecisionRecord, ...] = ()
+    """Registro de decisiones de esta corrida (una linea por activo)."""
+    previous: Mapping[str, DecisionRecord] = field(default_factory=dict)
+    """Registro de la corrida anterior, para la seccion "Que cambio"."""
 
 
 def _as_float(value: object) -> float | None:
@@ -726,11 +743,9 @@ def _theme_weights(stats: StatsReport) -> dict[str, float]:
 
 
 def _invested_clp(stats: StatsReport) -> float:
-    """Capital invertido: la suma del ``value_clp`` de todas las filas (broker + local).
+    """Capital invertido: la suma del ``value_clp`` de todas las filas.
 
-    ``stats.positions_value_clp`` solo cubre el broker; la hoja local queda fuera de
-    su caja y su equity, asi que se suman los valores de las filas (que traen ambos).
-    Sin filas valuadas se cae al total del broker.
+    Sin filas valuadas se cae al total del broker (``stats.positions_value_clp``).
     """
     total = 0.0
     for row in stats.rows:
@@ -746,20 +761,13 @@ def _invested_weight(row: object, invested: float) -> float:
     return value / invested * 100.0
 
 
-#: ``Vender 50%`` en el texto de la IA -> la fraccion ``0.5``.
-_SELL_PCT = re.compile(r"vender\s+(\d+(?:[.,]\d+)?)\s*%", re.IGNORECASE)
-
-
-def _sell_fraction_from_text(text: str) -> float:
-    """Fraccion de venta que anuncia el texto de la IA (``Vender 50%`` -> ``0.5``)."""
-    match = _SELL_PCT.search(text or "")
-    if match is None:
-        return 0.0
-    return min(1.0, float(match.group(1).replace(",", ".")) / 100.0)
-
-
 def _engine_sell_fraction(judgment: TradeExitJudgment) -> float:
-    """Fraccion que vende la regla primaria del motor (``0`` si no vende)."""
+    """Fraccion que vende la regla primaria del motor (``0`` si no vende).
+
+    Incluye la venta que decide la IA (``LLM_SELL``, ``veto_only=false``): el
+    volumen ya viene calculado por el motor, con la fraccion de la IA aplicada
+    sobre ``open_volume``.
+    """
     primary = judgment.evaluation.primary
     if primary is None or not primary.execute or primary.action is not Action.SELL:
         return 0.0
@@ -774,42 +782,45 @@ def build_review_report(
     axes_by_ticker: Mapping[str, AxisRatings],
     reviews: Sequence[LLMReview] = (),
     narrative: LLMReview | None = None,
-    local: Sequence[LocalPosition] = (),
     macro: LLMReview | None = None,
     macro_data: Mapping[str, str] | None = None,
-    local_platform: str = "Local",
+    review: ReviewConfig | None = None,
+    previous: Mapping[str, DecisionRecord] | None = None,
+    regime_low: bool = False,
+    position_max_pct: float | None = None,
 ) -> ReviewReport:
     """Ensambla el informe de review desde el plan, el stats y las opiniones de la IA.
 
-    Las posiciones del motor y las locales se cruzan con la fila de ``stats`` (peso,
+    Las posiciones del motor se cruzan con la fila de ``stats`` (peso,
     tema, cobertura, analistas, earnings) y con la opinion de la IA (fundamento,
     catalizador, tesis, hechos). Nada se recalcula dos veces: el puntaje por eje
     llega resuelto en ``axes_by_ticker`` y los niveles salen del ``TradeState``.
 
-    ``local_platform`` es la etiqueta de la hoja local (``Plat.`` en la tabla de
-    acciones); las posiciones del broker van siempre como ``XTB``.
+    Con la politica ``review`` (``strategy.review``) se agrega el veredicto de
+    ``PROMPT PORTAFOLIO``: niveles de revision/alarma, disparadores T, motivos M y
+    ejes E1-E4. Sin ella el informe conserva el formato minimo.
     """
-    by_ticker = {review.ticker: review for review in reviews}
+    by_ticker = {review_item.ticker: review_item for review_item in reviews}
     rows = {row.ticker: row for row in stats.rows}
     invested = _invested_clp(stats)
     assets: list[AssetReview] = []
     for judgment in sorted(plan.exits, key=lambda item: item.trade.ticker):
         assets.append(
-            _asset_from_trade(judgment, rows.get(judgment.trade.ticker), by_ticker, axes_by_ticker, invested=invested)
-        )
-    for position in local:
-        assets.append(
-            _asset_from_local(
-                position,
-                rows.get(position.ticker),
+            _asset_from_trade(
+                judgment,
+                rows.get(judgment.trade.ticker),
                 by_ticker,
                 axes_by_ticker,
                 invested=invested,
-                platform=local_platform,
+                review=review,
+                regime_low=regime_low,
+                patrimonio_clp=stats.equity_clp,
+                position_max_pct=position_max_pct,
             )
         )
 
     cash_pct = stats.cash_clp / stats.equity_clp * 100.0 if stats.equity_clp > 0.0 else 0.0
+    records = tuple(_decision_record(asset, stats.today) for asset in assets) if review is not None else ()
     return ReviewReport(
         account=stats.account,
         today=stats.today,
@@ -828,6 +839,9 @@ def build_review_report(
         macro=macro,
         macro_data=dict(macro_data or {}),
         invested_clp=invested,
+        review=review,
+        records=records,
+        previous=dict(previous or {}),
     )
 
 
@@ -838,17 +852,49 @@ def _asset_from_trade(
     axes_by_ticker: Mapping[str, AxisRatings],
     *,
     invested: float = 0.0,
+    review: ReviewConfig | None = None,
+    regime_low: bool = False,
+    patrimonio_clp: float | None = None,
+    position_max_pct: float | None = None,
 ) -> AssetReview:
     trade = judgment.trade
-    review = by_ticker.get(trade.ticker)
+    review_ia = by_ticker.get(trade.ticker)
     coverage_pct, upside_pct, analysts = _row_metrics(row)
     target = trade.next_target_r
     retorno = (trade.close / trade.entry_price - 1.0) * 100.0 if trade.entry_price > 0.0 else 0.0
-    decision = review.accion if (review is not None and review.accion) else _table_engine_action(judgment, trade)
-    # La fraccion la manda el motor; si no vende, se acepta el % que proponga la IA.
+    # La accion del motor manda cuando ejecuta algo: es la orden real. La IA
+    # propone solo cuando el motor no tiene nada que hacer (o no hay IA).
+    engine_action = _table_engine_action(judgment, trade)
+    primary = judgment.evaluation.primary
+    engine_acts = primary is not None and primary.execute
+    decision = (
+        engine_action
+        if engine_acts or review_ia is None or not review_ia.accion
+        else review_ia.accion
+    )
+    # La fraccion la fija siempre el motor (incluye LLM_SELL con veto_only=false);
+    # ya no se deduce del texto de la IA, que solo aporta la direccion.
     fraction = _engine_sell_fraction(judgment)
-    if fraction <= 0.0:
-        fraction = _sell_fraction_from_text(decision)
+    thesis = review_ia.thesis_status if review_ia is not None else None
+    weight_invested = _invested_weight(row, invested)
+    verdict = None
+    if review is not None:
+        fields = getattr(row, "fields", None)
+        verdict = compute_verdict(
+            fields if isinstance(fields, Mapping) else {},
+            price=trade.close,
+            fundamental=axes_by_ticker.get(trade.ticker),
+            value_clp=_as_float(_row_context(row, "value_clp")),
+            patrimonio_clp=patrimonio_clp,
+            weight_invested_pct=weight_invested,
+            position_max_pct=position_max_pct,
+            earnings_sessions=_as_float(_row_context(row, "earnings_sessions")),
+            progress_r=trade.max_progress_r,
+            thesis_broken=thesis is ThesisStatus.BROKEN,
+            thesis_weak=thesis is ThesisStatus.WEAKENED,
+            regime_low=regime_low,
+            policy=review,
+        )
     return AssetReview(
         ticker=trade.ticker,
         theme=str(_row_context(row, "theme") or "sin_tema"),
@@ -860,63 +906,42 @@ def _asset_from_trade(
         upside_pct=upside_pct,
         analysts=analysts,
         decision=decision,
-        confidence=review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE,
+        confidence=review_ia.confidence_score if review_ia is not None else DEFAULT_CONFIDENCE_SCORE,
         stop=trade.stop,
         target=trade.entry_price + target * trade.risk_per_share if target is not None else None,
         earnings=str(_row_context(row, "earnings") or "-"),
-        fundamento=review.fundamento
-        if (review is not None and review.fundamento)
+        fundamento=review_ia.fundamento
+        if (review_ia is not None and review_ia.fundamento)
         else _engine_fundamento(judgment, trade),
-        catalyst=_catalyst(review, None),
-        thesis=review.thesis_status if review is not None else None,
-        facts=review.key_facts if review is not None else (),
-        platform="XTB",
-        is_local=False,
+        catalyst=_catalyst(review_ia, None),
+        thesis=thesis,
+        facts=review_ia.key_facts if review_ia is not None else (),
         shares=trade.open_volume,
         sell_fraction=fraction,
-        weight_invested_pct=_invested_weight(row, invested),
+        weight_invested_pct=weight_invested,
+        verdict=verdict,
     )
 
 
-def _asset_from_local(
-    position: LocalPosition,
-    row: object,
-    by_ticker: Mapping[str, LLMReview],
-    axes_by_ticker: Mapping[str, AxisRatings],
-    *,
-    invested: float = 0.0,
-    platform: str = "Local",
-) -> AssetReview:
-    review = by_ticker.get(position.ticker)
-    coverage_pct, upside_pct, analysts = _row_metrics(row)
-    retorno = (position.last_price_clp / position.avg_price_clp - 1.0) * 100.0 if position.avg_price_clp > 0.0 else 0.0
-    decision = review.accion if (review is not None and review.accion) else "Revisar (fuera del motor)"
-    return AssetReview(
-        ticker=position.ticker,
-        theme=str(_row_context(row, "theme") or "sin_tema"),
-        weight_pct=_as_float(_row_context(row, "weight_pct")) or 0.0,
-        price=position.last_price_clp,
-        retorno_pct=retorno,
-        axes=axes_by_ticker.get(position.ticker),
-        coverage_pct=coverage_pct,
-        upside_pct=upside_pct,
-        analysts=analysts,
-        decision=decision,
-        confidence=review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE,
-        stop=None,
-        target=None,
-        earnings=str(_row_context(row, "earnings") or "-"),
-        fundamento=review.fundamento
-        if (review is not None and review.fundamento)
-        else "Fuera del motor; solo valuacion.",
-        catalyst=_catalyst(review, None),
-        thesis=review.thesis_status if review is not None else None,
-        facts=review.key_facts if review is not None else (),
-        platform=platform,
-        is_local=True,
-        shares=position.volume,
-        sell_fraction=_sell_fraction_from_text(decision),
-        weight_invested_pct=_invested_weight(row, invested),
+def _decision_record(asset: AssetReview, today: dt.date) -> DecisionRecord:
+    """Linea del registro de decisiones para un activo de la corrida."""
+    verdict = asset.verdict
+    levels = verdict.levels if verdict is not None else None
+    entry = asset.price / (1.0 + asset.retorno_pct / 100.0) if asset.retorno_pct != -100.0 else None
+    motive = ", ".join(item.code for item in verdict.motives) if verdict is not None else ""
+    trigger = ", ".join(item.code for item in verdict.triggers) if verdict is not None else ""
+    action = verdict.action if verdict is not None and verdict.action else asset.decision
+    return DecisionRecord(
+        date=today.isoformat(),
+        ticker=asset.ticker,
+        action=action,
+        price=asset.price,
+        entry_usd=entry,
+        review_level=levels.review if levels is not None else None,
+        alarm_level=levels.alarm if levels is not None else None,
+        objective=levels.objective if levels is not None else None,
+        motive=motive,
+        trigger=trigger,
     )
 
 
@@ -929,27 +954,45 @@ def review_narrative_facts(report: ReviewReport) -> dict[str, object]:
     """
     positions: list[dict[str, object]] = []
     for asset in report.assets:
-        positions.append(
-            {
-                "ticker": asset.ticker,
-                "tema": asset.theme,
-                "peso_pct": round(asset.weight_pct, 2),
-                "puntaje": asset.axes.total if asset.axes is not None else None,
-                "ejes": list(asset.axes.as_tuple()) if asset.axes is not None else None,
-                "potencial_objetivo_pct": None if asset.upside_pct is None else round(asset.upside_pct, 2),
-                "decision_motor": asset.decision,
-                "confianza": asset.confidence,
-                "cobertura_fundamentales_pct": None if asset.coverage_pct is None else round(asset.coverage_pct, 1),
-                "analistas": asset.analysts,
-                "earnings": asset.earnings,
-                "tesis_ia": asset.thesis.value if asset.thesis is not None else None,
-                "fundamento_ia": asset.fundamento,
-                "hechos": [
-                    {"fact": fact.fact, "date": fact.date.isoformat(), "source_url": fact.source_url}
-                    for fact in asset.facts
-                ],
+        item: dict[str, object] = {
+            "ticker": asset.ticker,
+            "tema": asset.theme,
+            "peso_pct": round(asset.weight_pct, 2),
+            "puntaje": asset.axes.total if asset.axes is not None else None,
+            "ejes": list(asset.axes.as_tuple()) if asset.axes is not None else None,
+            "potencial_objetivo_pct": None if asset.upside_pct is None else round(asset.upside_pct, 2),
+            "decision_motor": asset.decision,
+            "confianza": asset.confidence,
+            "cobertura_fundamentales_pct": None if asset.coverage_pct is None else round(asset.coverage_pct, 1),
+            "analistas": asset.analysts,
+            "earnings": asset.earnings,
+            "tesis_ia": asset.thesis.value if asset.thesis is not None else None,
+            "fundamento_ia": asset.fundamento,
+            "hechos": [
+                {"fact": fact.fact, "date": fact.date.isoformat(), "source_url": fact.source_url}
+                for fact in asset.facts
+            ],
+        }
+        if asset.verdict is not None:
+            verdict = asset.verdict
+            item["veredicto_v4"] = {
+                "ejes_e1_e4": list(verdict.axes.as_tuple()),
+                "f": verdict.axes.f,
+                "m": verdict.axes.m,
+                "total": verdict.axes.total,
+                "accion_v4": verdict.action,
+                "motivos": [{"code": item_motive.code, "detail": item_motive.detail} for item_motive in verdict.motives],
+                "disparadores": [{"code": item_trigger.code, "detail": item_trigger.detail} for item_trigger in verdict.triggers],
+                "nivel_revision": verdict.levels.review,
+                "nivel_alarma": verdict.levels.alarm,
+                "regla_alarma": verdict.levels.alarm_rule,
+                "zona_tactica": verdict.levels.tactical_zone,
+                "rr": verdict.levels.tactical_rr,
+                "objetivo_estado": verdict.levels.objective_state,
+                "piso_catastrofe": verdict.levels.catastrophe_floor,
+                "disparadores_pendientes_web": list(verdict.external_pending),
             }
-        )
+        positions.append(item)
     return {
         "regimen": report.regime,
         "horizonte": report.horizon,
@@ -965,7 +1008,12 @@ def review_narrative_facts(report: ReviewReport) -> dict[str, object]:
 
 
 def render_review_report(report: ReviewReport) -> str:
-    """Informe de review en 7 secciones: motor determinista, IA solo narrativa."""
+    """Informe de review: motor determinista y, despues, narrativa de la IA.
+
+    Con la politica ``review`` y narrativa presente salen diez secciones (veredicto,
+    cobertura, decisiones, niveles, alertas, supuestos, fuentes, auditoria de ventas,
+    registro y que cambio); sin IA, las siete del motor.
+    """
     lines: list[str] = []
     lines.append(f"# Review de cartera - cuenta {report.account}")
     lines.append("")
@@ -981,13 +1029,17 @@ def render_review_report(report: ReviewReport) -> str:
     lines.extend(_section_alertas(report))
     lines.extend(_section_supuestos(report))
     lines.extend(_section_fuentes(report))
+    if report.review is not None:
+        lines.extend(_section_auditoria(report))
+        lines.extend(_section_registro(report))
+        lines.extend(_section_que_cambio(report))
     return "\n".join(lines) + "\n"
 
 
 def render_action_table(report: ReviewReport) -> str:
     """Tabla unica de acciones del review (``--formato acciones``), sin secciones ni tickets.
 
-    Columnas: activo, plataforma, retorno, peso actual -> post, accion (con el volumen
+    Columnas: activo, retorno, peso actual -> post, accion (con el volumen
     que fija el motor), puntaje por ejes y confianza. El peso es sobre el **capital
     invertido** (suma 100 %); la columna ``post`` aplica las acciones de la tabla y
     renormaliza, asi que vender una posicion sube el peso de las demas.
@@ -1000,8 +1052,8 @@ def render_action_table(report: ReviewReport) -> str:
         f"equity {report.equity_clp:,.0f} CLP - caja {report.cash_pct:.1f} %"
     )
     lines.append("")
-    lines.append("| Activo | Plat. | Retorno | Peso (actual -> post) | Accion | Puntaje | Conf. | Fundamento |")
-    lines.append("|---|---|---:|---:|---|---:|---:|---|")
+    lines.append("| Activo | Retorno | Peso (actual -> post) | Accion | Puntaje | Conf. | Fundamento |")
+    lines.append("|---|---:|---:|---|---:|---:|---|")
     remaining = sum(asset.weight_invested_pct * (1.0 - asset.sell_fraction) for asset in report.assets)
     for asset in sorted(report.assets, key=_action_order):
         lines.append(_action_row(asset, remaining))
@@ -1019,11 +1071,11 @@ def _action_order(asset: AssetReview) -> tuple[int, float]:
 
 
 def _action_row(asset: AssetReview, remaining: float) -> str:
-    retorno = f"{asset.retorno_pct:+.1f} %" + (" (CLP)" if asset.is_local else "")
+    retorno = f"{asset.retorno_pct:+.1f} %"
     post = asset.weight_invested_pct * (1.0 - asset.sell_fraction) / remaining * 100.0 if remaining > 0.0 else 0.0
     puntaje = f"{asset.axes.formatted()} -> {format_rating(asset.axes.total)}" if asset.axes is not None else "-"
     return (
-        f"| {asset.ticker} | {asset.platform} | {retorno} | {asset.weight_invested_pct:.1f} -> {post:.1f} | "
+        f"| {asset.ticker} | {retorno} | {asset.weight_invested_pct:.1f} -> {post:.1f} | "
         f"{_action_text(asset)} | {puntaje} | {asset.confidence} | {_cell(asset.fundamento)} |"
     )
 
@@ -1102,11 +1154,50 @@ def _section_decisiones(report: ReviewReport) -> list[str]:
         if asset.catalyst and asset.catalyst != "-":
             lines.append(f"    - Proximo catalizador: {asset.catalyst}")
     lines.append("")
+    if any(asset.verdict is not None for asset in report.assets):
+        lines.extend(_verdict_table(report))
     return lines
 
 
+def _verdict_table(report: ReviewReport) -> list[str]:
+    """Ejes E1-E4, F/M/total, accion implicita, motivos y disparadores (v4)."""
+    lines = ["### Ejes E1-E4 y accion de PROMPT PORTAFOLIO", ""]
+    lines.append("| Activo | E1 | E2 | E3 | E4 | F | M | Total | Accion v4 | Motivos | Disparadores |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|")
+    for asset in report.assets:
+        verdict = asset.verdict
+        if verdict is None:
+            continue
+        score = verdict.axes
+        axes = " | ".join(
+            _axis_cell(score.as_tuple()[index], score.evaluated[index]) for index in range(4)
+        )
+        motives = ", ".join(item.code for item in verdict.motives) or "-"
+        triggers = ", ".join(item.code for item in verdict.triggers) or "-"
+        lines.append(
+            f"| {asset.ticker} | {axes} | {_signed(score.f)} | {_signed(score.m)} | "
+            f"{_signed(score.total)} | {verdict.action or '-'} | {motives} | {triggers} |"
+        )
+    lines.append("")
+    lines.append(
+        "E1 tesis/fundamental, E2 valorizacion/objetivo, E3 tecnico, E4 riesgo de evento; "
+        "F = E1+E2, M = E3+E4. La accion de v4 es un **candidato**: los niveles reales y los "
+        "tickets los fija el motor. ``n.p.`` = sin datos para puntuar el eje."
+    )
+    lines.append("")
+    return lines
+
+
+def _axis_cell(value: int, evaluated: bool) -> str:
+    return _signed(value) if evaluated else "n.p."
+
+
+def _signed(value: int) -> str:
+    return f"+{value}" if value > 0 else str(value)
+
+
 def _section_niveles(report: ReviewReport) -> list[str]:
-    lines = ["## 4. Niveles (stops y metas)", ""]
+    lines = ["## 4. Niveles que fija el motor", ""]
     lines.append("| Activo | Precio | Stop (motor) | Meta (motor) | Dist. stop | Retorno |")
     lines.append("|---|---:|---:|---:|---:|---:|")
     for asset in sorted(report.assets, key=lambda item: item.ticker):
@@ -1119,7 +1210,56 @@ def _section_niveles(report: ReviewReport) -> list[str]:
     lines.append("")
     lines.append("Stop y meta los fija el motor; no la IA. La distancia al stop es negativa si el stop esta abajo.")
     lines.append("")
+    if any(asset.verdict is not None for asset in report.assets):
+        lines.extend(_levels_v4_table(report))
     return lines
+
+
+def _levels_v4_table(report: ReviewReport) -> list[str]:
+    """Niveles de ``PROMPT PORTAFOLIO``: revision, alarma, zona tactica, objetivo y piso.
+
+    Son **niveles de vigilancia**: el motor no los coloca como ordenes. Se separan de
+    la tabla de arriba para que no se confundan con el stop y la meta reales.
+    """
+    lines = ["### Niveles de vigilancia (no son ordenes)", ""]
+    lines.append(
+        "| Activo | Nivel revision | Dist. rev | Nivel alarma | Dist. alarma | Regla | "
+        "Riesgo patrim. | Zona tactica | R:R | Objetivo | Estado | Piso catastrofe |"
+    )
+    lines.append("|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---|---:|")
+    for asset in report.assets:
+        verdict = asset.verdict
+        if verdict is None:
+            continue
+        levels = verdict.levels
+        revision = _fmt_num(levels.review)
+        if levels.review_perforated:
+            revision = f"{revision} (perforado)"
+        zone = _fmt_num(levels.tactical_zone) if levels.tactical_zone is not None else "recorrido insuficiente"
+        rr = f"{levels.tactical_rr:.2f}" if levels.tactical_rr is not None else "-"
+        lines.append(
+            f"| {asset.ticker} | {revision} | {_fmt_pct(levels.review_distance_pct)} | "
+            f"{_fmt_num(levels.alarm)} | {_fmt_pct(levels.alarm_distance_pct)} | {levels.alarm_rule or '-'} | "
+            f"{_fmt_pct(levels.risk_pct)} | {zone} | {rr} | {_fmt_num(levels.objective)} | "
+            f"{levels.objective_state} | {_fmt_num(levels.catastrophe_floor)} |"
+        )
+    lines.append("")
+    lines.append(
+        "Nivel de revision = SMA50 - 0,5xATR; nivel de alarma = maximo de 20 sesiones - 3xATR "
+        "(aproximacion del maximo cierre de 22 sesiones del prompt), acotado por el piso (2,5xATR) "
+        "y el tope (15 %). Son **alertas de vigilancia, no ordenes**: el unico nivel accionable es el "
+        "stop y la meta del motor (tabla de arriba)."
+    )
+    subir = [asset.ticker for asset in report.assets if asset.verdict is not None and asset.verdict.levels.stop_raise_due]
+    if subir:
+        lines.append("")
+        lines.append(f"- Subir el stop a breakeven (avance mayor a +2R): {', '.join(subir)}.")
+    lines.append("")
+    return lines
+
+
+def _fmt_num(value: float | None) -> str:
+    return f"{value:.2f}" if value is not None else "-"
 
 
 def _section_alertas(report: ReviewReport) -> list[str]:
@@ -1166,6 +1306,127 @@ def _section_fuentes(report: ReviewReport) -> list[str]:
             any_fact |= _emit_fact(lines, asset.ticker, fact, seen)
     if not any_fact:
         lines.append("Sin fuentes citadas en esta corrida (la IA no aporto hechos con URL).")
+    lines.append("")
+    return lines
+
+
+def _section_auditoria(report: ReviewReport) -> list[str]:
+    """## 8. Auditoria de ventas: motivo admitido + hechos + filtro fundamental.
+
+    Solo audita lo que se vende o es candidato a vender. El filtro fundamental que pide
+    el prompt (reporte primario, 3 hechos a favor y 3 en contra, veredicto) no siempre
+    esta disponible en el ``stats``: cuando falta, se declara **cobertura insuficiente**
+    y el fail-safe del prompt dice no vender.
+    """
+    lines = ["## 8. Auditoria de ventas", ""]
+    candidates = [asset for asset in report.assets if _is_sell_candidate(asset)]
+    if not candidates:
+        lines.append("Sin ventas ni candidatos a vender en esta corrida.")
+        lines.append("")
+        return lines
+    for asset in candidates:
+        verdict = asset.verdict
+        lines.append(f"### {asset.ticker}")
+        lines.append("")
+        if verdict is not None:
+            codes = ", ".join(item.code for item in verdict.motives) or "ninguno"
+            lines.append(f"- Motivos admitidos (M): {codes}.")
+            for motive in verdict.motives:
+                lines.append(f"    - {motive.code}: {motive.detail}")
+            if verdict.triggers:
+                for trigger in verdict.triggers:
+                    lines.append(f"- Disparador {trigger.code}: {trigger.detail}")
+            score = verdict.axes
+            lines.append(
+                f"- Puntajes: E1-E4 {score.formatted()} | F {_signed(score.f)} | M {_signed(score.m)} | "
+                f"total {_signed(score.total)}. Accion v4: {verdict.action or '-'}."
+            )
+            compraria = "no" if score.e1 <= 0 and score.e2 <= 0 else "si (con matices)"
+            lines.append(f"- Compraria hoy solo con fundamentales: {compraria}.")
+        if asset.facts:
+            for fact in asset.facts:
+                source = f" ({fact.source_url})" if fact.source_url else ""
+                lines.append(f"- Hecho {fact.date.isoformat()}: {fact.fact}{source}")
+        else:
+            lines.append(
+                "- Sin hechos con fuente en el ``stats``: **cobertura insuficiente**. El filtro del "
+                "prompt pide reporte primario y 3 hechos a favor y en contra antes de vender."
+            )
+        if verdict is not None and not verdict.motives and not verdict.triggers:
+            lines.append(
+                "- **Fail-safe (juicio)**: ningun motivo admitido ni disparador. Si el motor vende esta "
+                "posicion, obedece a una regla mecanica (stop o meta), no a una tesis."
+            )
+        lines.append("")
+    return lines
+
+
+def _is_sell_candidate(asset: AssetReview) -> bool:
+    if asset.sell_fraction > 0.0:
+        return True
+    if asset.verdict is not None and "vender" in asset.verdict.action.lower():
+        return True
+    return "vender" in (asset.decision or "").lower()
+
+
+def _section_registro(report: ReviewReport) -> list[str]:
+    """## 9. Registro de decisiones: una linea por activo, para medir a 30/90 dias."""
+    lines = ["## 9. Registro de decisiones", ""]
+    if not report.records:
+        lines.append("Sin registro en esta corrida.")
+        lines.append("")
+        return lines
+    lines.append("| Fecha | Activo | Accion | Precio | Entrada | Nivel revision | Nivel alarma | Objetivo | Motivo | Disparador |")
+    lines.append("|---|---|---|---:|---:|---:|---:|---:|---|---|")
+    for record in report.records:
+        lines.append(
+            f"| {record.date} | {record.ticker} | {_cell(record.action) or '-'} | {_fmt_num(record.price)} | "
+            f"{_fmt_num(record.entry_usd)} | {_fmt_num(record.review_level)} | {_fmt_num(record.alarm_level)} | "
+            f"{_fmt_num(record.objective)} | {record.motive or '-'} | {record.trigger or '-'} |"
+        )
+    lines.append("")
+    lines.append(
+        "El registro se guarda en ``state/`` y se compara con la corrida anterior: sirve para "
+        "medir la decision a 30 y 90 dias y para vigilar que los niveles no bajen."
+    )
+    lines.append("")
+    return lines
+
+
+def _section_que_cambio(report: ReviewReport) -> list[str]:
+    """## 10. Que cambio respecto de la corrida anterior (registro de ``state/``)."""
+    lines = ["## 10. Que cambio", ""]
+    if not report.previous:
+        lines.append("Sin corrida anterior registrada: esta es la primera linea base.")
+        lines.append("")
+        return lines
+    changes = 0
+    for record in report.records:
+        before = report.previous.get(record.ticker)
+        if before is None:
+            lines.append(f"- **{record.ticker}**: nueva en el registro ({record.action or '-'}).")
+            changes += 1
+            continue
+        if (before.action or "") != (record.action or ""):
+            lines.append(
+                f"- **{record.ticker}**: accion {before.action or '-'} -> {record.action or '-'}."
+            )
+            changes += 1
+        if before.alarm_level is not None and record.alarm_level is not None:
+            if record.alarm_level < before.alarm_level - 0.005:
+                lines.append(
+                    f"- **{record.ticker}**: el nivel de alarma BAJO "
+                    f"({before.alarm_level:.2f} -> {record.alarm_level:.2f}); revisar que no sea ruido."
+                )
+                changes += 1
+            elif record.alarm_level > before.alarm_level + 0.005:
+                lines.append(
+                    f"- **{record.ticker}**: el nivel de alarma subio "
+                    f"({before.alarm_level:.2f} -> {record.alarm_level:.2f}) (ascenso de niveles)."
+                )
+                changes += 1
+    if changes == 0:
+        lines.append("Sin cambios de accion ni de nivel de alarma respecto de la corrida anterior.")
     lines.append("")
     return lines
 

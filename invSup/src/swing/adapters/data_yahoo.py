@@ -97,6 +97,19 @@ def to_yahoo_symbol(ticker: str) -> str:
     return _CLASS_TO_DASH.get(symbol, symbol)
 
 
+def _yf_timestamp(day: dt.date) -> dt.datetime:
+    """``day`` al mediodia, como ``datetime`` para yfinance.
+
+    yfinance localiza la fecha a la zona del mercado. Una medianoche que no existe
+    (el arranque del horario de verano de Santiago: 00:00 salta directo a 01:00) hace
+    fallar la descarga con ``... is a nonexistent time due to daylight savings time``,
+    y ese error se confundia con un fallo de red (se reintentaba tres veces y el ticker
+    quedaba "sin dato"). Pasar un instante al mediodia evita el limite horario sin mover
+    el rango de sesiones pedido: yfinance descarta la hora y usa el dia.
+    """
+    return dt.datetime.combine(day, dt.time(12, 0))
+
+
 def _yfinance_bars(request: FetchRequest) -> pd.DataFrame:
     """Descarga velas crudas. Es el unico punto del proyecto que toca la red de precios.
 
@@ -109,8 +122,8 @@ def _yfinance_bars(request: FetchRequest) -> pd.DataFrame:
     for attempt in range(NETWORK_RETRIES):
         try:
             frame = yf.Ticker(request.symbol).history(
-                start=request.start.isoformat(),
-                end=(request.end + dt.timedelta(days=1)).isoformat(),  # yfinance es exclusivo en end
+                start=_yf_timestamp(request.start),
+                end=_yf_timestamp(request.end + dt.timedelta(days=1)),  # yfinance es exclusivo en end
                 auto_adjust=False,
                 actions=False,
                 raise_errors=False,
@@ -140,15 +153,24 @@ def _yfinance_earnings(symbol: str, limit: int) -> pd.DataFrame | None:
     return frame if isinstance(frame, pd.DataFrame) else None
 
 
-def frame_to_series(symbol: str, frame: pd.DataFrame) -> PriceSeries:
+def _ohlc_incoherent(open_: float, high: float, low: float, close: float) -> bool:
+    """Vela con el OHLC contraditorio entre si (lo que ``Bar`` rechaza con ``ValueError``)."""
+    return high < max(open_, close) or low > min(open_, close)
+
+
+def frame_to_series(symbol: str, frame: pd.DataFrame, *, skip_incoherent: bool = False) -> PriceSeries:
     """Frame crudo -> ``PriceSeries``.
 
     Se ignoran las filas con NaN en cualquier precio (los provider devuelven filas de
     weekend o de dias sin cotizacion), las que no son fecha valida, y las de precio no
     positivo (el provider a veces devuelve una fila de relleno con ``Open=0``); una fila
-    asi es "sin dato", no una vela. Una vela imposible (alto menor que el cierre) si hace
-    fallar la conversion con ``ValueError``: es un dato contraditorio y no algo que se
-    pueda promediar.
+    asi es "sin dato", no una vela.
+
+    Una vela imposible (alto menor que el cierre, o bajo mayor que la apertura) hace
+    fallar la conversion con ``ValueError``: es un dato contraditorio y promediarlo
+    inventaria un rango. Con ``skip_incoherent=True`` en cambio se **descarta esa vela**
+    (no se repara: no se toca el precio) y se sigue con el resto; lo usa la vista best
+    effort del informe, que declara el descarte en vez de esconderlo.
     """
     if frame.empty:
         return PriceSeries.empty(symbol)
@@ -167,6 +189,8 @@ def frame_to_series(symbol: str, frame: pd.DataFrame) -> PriceSeries:
             continue
         prices = [float(values[column]) for column in ("Open", "High", "Low", "Close")]
         if any(price <= 0.0 for price in prices):
+            continue
+        if skip_incoherent and _ohlc_incoherent(*prices):
             continue
         bars.append(
             Bar(
@@ -258,20 +282,49 @@ class YahooDataProvider:
         series = self.cache.read(symbol).slice(end=on)
         return series.last_close
 
-    def _fetch(self, request: FetchRequest) -> PriceSeries:
-        """Descarga y normaliza un rango, declarando el fallo en vez de propagarlo crudo.
+    def daily_bars_report(self, ticker: str, *, start: dt.date, end: dt.date) -> tuple[PriceSeries, bool]:
+        """Velas para el informe, best effort ante una vela contraditoria.
+
+        Igual que ``daily_bars`` salvo que, si la descarga trae una vela con el OHLC
+        contraditorio, la **descarta** (no la repara) y sigue con el resto, avisando con
+        ``True`` en el segundo elemento. La serie recortada **no se cachea**: la cache
+        guarda velas coherentes o nada, y asi el motor (que usa ``daily_bars``, fail-closed)
+        sigue viendo el hueco en vez de un historico "arreglado" en silencio, y el informe
+        vuelve a declarar el descarte en cada corrida.
+        """
+        symbol = to_yahoo_symbol(ticker)
+        cached = self.cache.read(symbol)
+        pending = self.cache.missing_range(cached, start, end)
+        if pending is None:
+            return cached.slice(start, end), False
+        frame = self._raw_frame(FetchRequest(symbol, *pending))
+        try:
+            fetched = frame_to_series(symbol, frame)
+        except ValueError:
+            fetched = frame_to_series(symbol, frame, skip_incoherent=True)
+            merged = self.cache.merge(symbol, cached, fetched)
+            if merged.is_empty:
+                raise
+            return merged.slice(start, end), True
+        self.cache.write(symbol, self.cache.merge(symbol, cached, fetched))
+        return self.cache.read(symbol).slice(start, end), False
+
+    def _raw_frame(self, request: FetchRequest) -> pd.DataFrame:
+        """Frame crudo del provider, declarando el fallo en vez de propagarlo crudo.
 
         Cualquier error del fetcher (red, formato del proveedor) es un ``DataUnavailable``:
-        el llamador ya lo trata como "ticker sin dato". ``frame_to_series`` puede levantar
-        ``ValueError`` por una vela incoherente, y eso si es un error de dato que sube tal cual.
+        el llamador ya lo trata como "ticker sin dato".
         """
         try:
-            frame = self._bars_fetcher(request)
+            return self._bars_fetcher(request)
         except DataUnavailable:
             raise
         except Exception as exc:
             raise DataUnavailable(f"{request.symbol}: fallo al descargar velas: {exc}") from exc
-        return frame_to_series(request.symbol, frame)
+
+    def _fetch(self, request: FetchRequest) -> PriceSeries:
+        """Descarga y normaliza un rango; un ``ValueError`` por vela incoherente sube tal cual."""
+        return frame_to_series(request.symbol, self._raw_frame(request))
 
 
 def provider_from_project(cache_dir: Path | None = None, *, offline: bool = False) -> YahooDataProvider:

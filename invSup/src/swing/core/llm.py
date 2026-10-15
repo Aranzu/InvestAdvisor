@@ -17,12 +17,22 @@ recientes, o 1 con fuente) viven aca; el cliente HTTP vive en ``adapters/llm``.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TypeVar
 
 _E = TypeVar("_E", bound=StrEnum)
+
+#: ``Vender 40%`` en el texto de la accion -> la fraccion ``0.4``.
+_SELL_PCT: re.Pattern[str] = re.compile(r"vender\s+(\d+(?:[.,]\d+)?)\s*%", re.IGNORECASE)
+
+#: Verbos con los que la IA declara que quiere salir de la posicion completa.
+_SELL_VERBS: tuple[str, ...] = ("vender", "venda", "vende", "liquidar", "salir", "cerrar", "reducir")
+
+#: Verbos que declaran mantener; ganan sobre un ``verdict SELL`` contradictorio.
+_HOLD_VERBS: tuple[str, ...] = ("mantener", "manten", "mantengo", "conservar", "hold", "esperar", "vigilar")
 
 
 class ReviewContext(StrEnum):
@@ -119,6 +129,27 @@ class LLMReview:
         if len(recent) >= 2:
             return True
         return len(recent) == 1 and bool(recent[0].source_url.strip())
+
+    def sell_intent(self) -> float:
+        """Fraccion que la IA decide vender (``0`` = mantener). Sólo en ``POSITION_REVIEW``.
+
+        Manda el texto ``accion``: ``Vender 40%`` -> ``0.4``; ``Vender`` sin porcentaje o un
+        ``verdict`` ``SELL`` -> ``1.0`` (salida completa); un ``Mantener`` explicito -> ``0.0``
+        aunque el ``verdict`` diga ``SELL`` (el texto es la recomendacion concreta). El motor
+        usa esta fraccion como **direccion**; el volumen en acciones lo calcula el, no la IA.
+        """
+        if self.context is not ReviewContext.POSITION_REVIEW:
+            return 0.0
+        text = (self.accion or "").strip()
+        low = text.lower()
+        if low.startswith(_HOLD_VERBS):
+            return 0.0
+        match = _SELL_PCT.search(text)
+        if match is not None:
+            return min(1.0, float(match.group(1).replace(",", ".")) / 100.0)
+        if low.startswith(_SELL_VERBS) or self.verdict is Verdict.SELL:
+            return 1.0
+        return 0.0
 
 
 @dataclass(frozen=True, slots=True)

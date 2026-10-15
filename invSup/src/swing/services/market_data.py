@@ -71,8 +71,14 @@ def warn_jumps(series: dict[str, PriceSeries]) -> None:
 
     En vivo el motor **no puede decidir solo** si un salto grande es un split o una
     caida real, asi que no reescala en silencio: lo declara para que el usuario revise.
+    Los indices (``^VIX``, ``^TNX``, ``^DXY``) quedan fuera: no pueden partirse, y un
+    VIX que sube mas de 30 % en un dia es una subida real, no un split.
     """
-    jumped = sorted(name for name, bars in series.items() if find_unadjusted_jumps(bars))
+    jumped = sorted(
+        name
+        for name, bars in series.items()
+        if not name.startswith("^") and find_unadjusted_jumps(bars)
+    )
     if jumped:
         typer.secho(
             f"  aviso: salto no ajustado (posible split) en {', '.join(jumped)}; "
@@ -90,7 +96,12 @@ def live_fx(provider: YahooDataProvider, today: dt.date) -> float | None:
 
 def live_quotes(model: PositionReport, provider: YahooDataProvider, today: dt.date) -> dict[str, Quote]:
     """Precio de cierre y earnings por ticker de hoy. Lo que falte queda sin cotizar:
-    el analisis cae al precio del reporte y lo declara (fail-closed, no inventa)."""
+    el analisis cae al precio del reporte y lo declara (fail-closed, no inventa).
+
+    El ``ValueError`` de una vela en curso contraditoria (``open`` fuera del rango,
+    tipico antes del cierre: ver ``last_closed_session``) se trata como un dato
+    faltante: ese ticker queda sin cotizar en vivo, no tumba el barrido del resto.
+    """
     quotes: dict[str, Quote] = {}
     start = today - dt.timedelta(days=45)
     for ticker in sorted({lot.ticker for lot in model.lots}):
@@ -98,7 +109,7 @@ def live_quotes(model: PositionReport, provider: YahooDataProvider, today: dt.da
             series = provider.daily_bars(ticker, start=start, end=today)
             price = series.last_close
             earnings = provider.earnings(ticker)
-        except (CacheError, DataUnavailable):
+        except (CacheError, DataUnavailable, ValueError):
             continue
         if price is None:
             continue
