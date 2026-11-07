@@ -199,10 +199,11 @@ El CLI expone **tres comandos**: `stats`, `review` y `screen`. El resto está **
 | `verify-broker` (oculto) | campos de `broker.yaml` sin verificar |
 | `data-health` (oculto) | frescura/huecos/earnings por ticker |
 | `analyze-positions` (oculto) | valúa la cartera y hallazgos (sin reglas de salida completas) |
-| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), insiders (compras y ventas, Form 4), **horario extendido** (pre/after market de Yahoo, solo cuando hay dato), resumen determinista (banderas clasificadas, stops, alertas SL Tipo A/B, mapa de liquidez y alertas según `briefing`, más los niveles de `PROMPT PORTAFOLIO` según `review`) y materias primas (oro/plata/cobre, precio y variación de Trading Economics con respaldo de Yahoo); con `--contexto` agrega **régimen de mercado** (VIX, SPY/10Y/DXY vs SMA200 y USD/CLP); oculta el contexto informativo por defecto; emite `stats_<reporte>_<marca>.md` y `.json` (`schema: 8`), que `analyze-positions` y `review` reutilizan |
-| `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto. `--formato informe` (10 secciones, por defecto), `detalle` o `tabla` |
+| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), **panel de cumplimiento P1-P11** (stop inicial anclado a la entrada, stop vigente, R, riesgo, peso máximo y estado), lotes, curva de patrimonio ajustada por aportes, historial cerrado, insiders resumidos (3 recientes), **horario extendido** y materias primas; con `--contexto` agrega **régimen v7 de 6 señales** (VIX/SPY/10Y/DXY/QQQ/VIX 1M, benchmarks sospechosos, amplitud y USD/CLP), factores y diversificación. Emite `stats_<reporte>_<marca>.md` y `.json` (`schema: 9`), que `analyze-positions` y `review` reutilizan |
+| `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto. `--formato informe` (11 secciones, por defecto), `detalle`, `tabla` o `acciones` |
 | `screen` (alias `discover`) | **funcion 2**: screener de compra (técnico + fundamentales + proyecciones) |
-| `nightly` (oculto) | **fase 8**: `screen` + `review --formato detalle` en una corrida, resumen y notificación opcional |
+| `track` (oculto) | mide el journal forward del screener a 21/63 sesiones |
+| `nightly` (oculto) | **fase 8**: `screen` + `review --formato detalle` (si hay export) en una corrida, resumen y notificación opcional |
 | `schedule` (oculto) | **fase 8**: hora local del cierre + margen y comando `schtasks` |
 
 Los comandos archivados (`daily`, `scan`, `allocate`, `confirm`, `backtest`)

@@ -259,6 +259,7 @@ def _open_lot(data: dict[str, object], names: dict[str, str]) -> OpenLot:
         open_price_usd=_to_float(data.get("Open price")) or 0.0,
         open_date=_session_date(data.get("Open time (UTC)"), "tramo sin fecha de apertura"),
         stop_usd=_to_float(data.get("Stop Loss")),
+        take_profit_usd=_to_float(data.get("Take Profit")),
         profit_clp=_to_float(data.get("Net Profit")) or 0.0,
     )
 

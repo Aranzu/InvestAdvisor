@@ -13,7 +13,14 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from swing.core.models import BrokerConfig, StrategyConfig, ThemesConfig, WatchlistConfig
+from swing.core.models import (
+    BrokerConfig,
+    ComplianceConfig,
+    FactorsConfig,
+    StrategyConfig,
+    ThemesConfig,
+    WatchlistConfig,
+)
 
 
 class ConfigError(RuntimeError):
@@ -62,6 +69,18 @@ def load_watchlist(path: Path | None = None) -> WatchlistConfig:
 def load_themes(path: Path | None = None) -> ThemesConfig:
     target = path if path is not None else _default_dir() / "themes.yaml"
     return _load(target, ThemesConfig)  # type: ignore[no-any-return]
+
+
+def load_compliance(path: Path | None = None) -> ComplianceConfig:
+    """Parametros P1-P11 del prompt v7 (``config/config.yaml``)."""
+    target = path if path is not None else _default_dir() / "config.yaml"
+    return _load(target, ComplianceConfig)  # type: ignore[no-any-return]
+
+
+def load_factors(path: Path | None = None) -> FactorsConfig:
+    """Definicion de factores y temas (``config/factors.yaml``)."""
+    target = path if path is not None else _default_dir() / "factors.yaml"
+    return _load(target, FactorsConfig)  # type: ignore[no-any-return]
 
 
 def _default_dir() -> Path:

@@ -63,6 +63,10 @@ def _regime(instruments: tuple[MarketInstrument, ...]):  # type: ignore[no-untyp
         vix_max=20.0,
         tnx_above_sma200_pct=10.0,
         dxy_above_sma200_pct=5.0,
+        qqq_1m_max_pct=-8.0,
+        vix_1m_min_pct=40.0,
+        suspicious_1m_abs_pct=40.0,
+        suspicious_sma_band=(0.5, 2.0),
         near_threshold_pp=1.0,
     )
 
@@ -76,7 +80,7 @@ def test_regimen_cuenta_senales_y_nivel() -> None:
     )
     result = _regime(instruments)
     assert result.count == 3
-    assert result.level == "alto"
+    assert result.level == "medio"
     assert result.signals == ("VIX", "SPY<SMA200", "10Y>SMA200+10%")
     assert result.vix == 25.0
     assert result.spy_vs_sma200_pct == -2.0
@@ -102,3 +106,30 @@ def test_regimen_sin_datos_no_inventa_senales() -> None:
     assert result.count is None
     assert result.level == "sin dato"
     assert result.signals == ()
+
+
+def test_regimen_v7_suma_qqq_y_vix_mensual_y_marca_defensivo() -> None:
+    instruments = (
+        MarketInstrument(symbol="^VIX", label="VIX", price=25.0, chg_1m_pct=20.0),
+        MarketInstrument(symbol="SPY", label="SPY", vs_sma200_pct=-2.0),
+        MarketInstrument(symbol="^TNX", label="10Y", vs_sma200_pct=12.0),
+        MarketInstrument(symbol="DX-Y.NYB", label="DXY", vs_sma200_pct=8.0),
+        MarketInstrument(symbol="QQQ", label="QQQ", chg_1m_pct=-9.0),
+    )
+    result = _regime(instruments)
+    assert result.count == 5
+    assert result.level == "alto"
+    assert result.mode == "defensivo"
+    assert "QQQ 1M<=-8%" in result.signals
+
+
+def test_benchmark_sospechoso_no_cuenta() -> None:
+    instruments = (
+        # SOXX con -75 % en un mes y nivel muy por debajo de su SMA200.
+        MarketInstrument(symbol="QQQ", label="QQQ", price=136.5, chg_1m_pct=-75.8, sma200=476.0),
+        MarketInstrument(symbol="SPY", label="SPY", vs_sma200_pct=5.0),
+    )
+    result = _regime(instruments)
+    assert "QQQ" in result.suspicious
+    assert result.signals == ()
+    assert result.count == 0

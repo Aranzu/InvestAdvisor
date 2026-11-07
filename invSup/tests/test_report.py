@@ -164,6 +164,17 @@ def test_closed_stats() -> None:
     assert stats.total_clp == 100_000.0
 
 
+def test_closed_stats_excluye_promociones_de_precio_01() -> None:
+    rows = (
+        ClosedRow("PROMO", "Promo", "p1", 1.0, 0.01, D1, 5.0, D2, 500.0, 0.0, 500.0, None, None),
+        ClosedRow("REAL", "Real", "p2", 1.0, 100.0, D1, 110.0, D2, 10_000.0, 100_000.0, 110_000.0, None, None),
+    )
+    stats = closed_stats(group_closed(rows), SessionCalendar.us())
+    assert stats.n == 1
+    assert stats.excluded_promo == 1
+    assert stats.avg_win_clp == pytest.approx(10_000.0)
+
+
 def test_closed_stats_sin_perdidas_pf_infinito_y_sin_payoff() -> None:
     def row(pid: str, ticker: str, profit: float) -> ClosedRow:
         return ClosedRow(

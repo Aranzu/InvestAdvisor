@@ -35,6 +35,11 @@ def picks_dir() -> Path:
     return report_dir().parent / "state" / "picks"
 
 
+def ledger_path(name: str = "ledger.json") -> Path:
+    """``state/ledger.json``: stops anclados a la entrada entre corridas."""
+    return report_dir().parent / "state" / name
+
+
 def _stamp(when: dt.datetime) -> str:
     """Sello de tiempo legible y ordenable para el nombre de los informes."""
     return when.strftime("%Y%m%d-%H%M%S")

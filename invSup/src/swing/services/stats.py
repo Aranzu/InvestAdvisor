@@ -39,13 +39,23 @@ from swing.adapters.fundamentals import YahooFundamentalsProvider
 from swing.adapters.tradingeconomics import TeCommodity, TradingEconomicsProvider
 from swing.core.analysis import Analysis, ExtMarket, Market, PositionView, Quote, analyze
 from swing.core.briefing import build as build_briefing
+from swing.core.calendar import SessionCalendar
 from swing.core.commodities import COMMODITIES, Commodity, CommoditySpec, commodity_driver
+from swing.core.compliance import (
+    ComplianceRow,
+    ComplianceSummary,
+    LedgerEntry,
+    breadth_pct,
+    plan_position,
+    summarize,
+)
+from swing.core.equity_curve import EquityCurve, build_curve
 from swing.core.fundamentals import Fundamentals
 from swing.core.indicators import atr, heikin_ashi_state, rsi, sma, smoothed_heikin_ashi
 from swing.core.market import PriceSeries
 from swing.core.market_context import MARKET, MarketInstrument, MarketRegime, instrument, regime
-from swing.core.models import Cluster, StrategyConfig
-from swing.core.report import PositionReport
+from swing.core.models import Cluster, ComplianceConfig, FactorsConfig, StrategyConfig
+from swing.core.report import OpenLot, PositionReport
 from swing.core.stats import (
     INSIDER_WINDOW_DAYS,
     InsiderTrade,
@@ -56,6 +66,7 @@ from swing.core.stats import (
     derive_fields,
     merge_fields,
 )
+from swing.services.ledger import save_ledger
 
 #: Sesiones del máximo/mínimo de 52 semanas.
 WEEKS_52_SESSIONS = 252
@@ -94,6 +105,10 @@ def collect_stats(
     te: TradingEconomicsProvider | None = None,
     sectors: Mapping[str, str] | None = None,
     window_days: int = BAR_WINDOW_DAYS,
+    compliance: ComplianceConfig,
+    factors: FactorsConfig | None = None,
+    ledger: Mapping[str, LedgerEntry] | None = None,
+    ledger_path: Path | None = None,
 ) -> StatsReport:
     """Arma el informe por posición abierta. Nunca levanta por un ticker sin datos."""
     analysis = analyze(model, market, strategy, themes, sectors=sectors)
@@ -109,12 +124,15 @@ def collect_stats(
     quality_gaps: list[str] = []
     repaired_gaps: list[str] = []
     technical_gaps: list[str] = []
+    price_series: dict[str, PriceSeries] = {}
     commodity_rows = _commodities(bars, te.get(today=market.today) if te is not None else {}, market.today, window_days)
     commodity_index = {item.key: item for item in commodity_rows}
     spy_series = _series(bars, "SPY", market.today, window_days)[0]
     rs_lookback = strategy.gates.rs_lookback_days
     for view in positions:
         series, gap = _series(bars, view.ticker, market.today, window_days)
+        if series is not None and not series.is_empty:
+            price_series[view.ticker] = series
         if gap == "incoherent":
             quality_gaps.append(view.ticker)
         elif gap == "repaired":
@@ -133,7 +151,7 @@ def collect_stats(
         rows.append(
             PositionStats(
                 ticker=view.ticker,
-                context=_context(view, fields=merged),
+                context=_context(view, fields=merged, lots=model.lots),
                 fields=merged,
                 insider_trades=_insider_trades(finviz, view.ticker, market.today),
             )
@@ -142,12 +160,56 @@ def collect_stats(
     enriched, invested_clp = _enrich_panel(rows, equity_clp=analysis.equity_clp, cash_clp=analysis.cash_clp, strategy=strategy)
     market_rows = _market_context(bars, market.today, window_days)
     market_regime = _market_regime(market_rows, strategy)
+    if market_regime is not None:
+        market_regime = replace(
+            market_regime,
+            portfolio_breadth_pct=breadth_pct([dict(row.fields) for row in enriched]),
+        )
     panel = _portfolio_panel(
         enriched,
         analysis=analysis,
         invested_clp=invested_clp,
         strategy=strategy,
     )
+    theme_map = {**themes, **(factors.themes if factors is not None else {})}
+    compliance_rows, new_ledger = _compliance_rows(
+        enriched,
+        model=model,
+        panel=panel,
+        compliance=compliance,
+        ledger=ledger or {},
+        today=market.today,
+    )
+    if ledger_path is not None:
+        save_ledger(ledger_path, new_ledger.values())
+    curve = _equity_curve(model, bars, market, price_series, analysis, compliance)
+    summary = summarize(
+        compliance_rows,
+        cash_pct=_as_number(panel.get("cash_pct")),
+        cfg=compliance,
+        factor_cfg=factors,
+        themes=theme_map,
+        regime_mode=market_regime.mode if market_regime is not None else "",
+        drawdown_pct=curve.drawdown_pct if curve is not None else None,
+    )
+    qqq_series = _series(bars, "QQQ", market.today, window_days)[0]
+    correlation, beta_spy, beta_qqq = _risk_metrics(
+        enriched,
+        price_series,
+        spy=spy_series,
+        qqq=qqq_series,
+        sessions=compliance.correlation_sessions,
+    )
+    summary = replace(
+        summary,
+        breadth_pct=market_regime.portfolio_breadth_pct if market_regime is not None else None,
+        avg_correlation=correlation,
+        beta_spy=beta_spy,
+        beta_qqq=beta_qqq,
+        drawdown_pct=curve.drawdown_pct if curve is not None else None,
+        drawdown_mode=curve.mode if curve is not None else "normal",
+    )
+    closed = _closed_history(analysis, SessionCalendar.us())
 
     report = StatsReport(
         account=analysis.account,
@@ -171,7 +233,7 @@ def collect_stats(
             )
         ),
         quotes={ticker: _quote_to_dict(quote) for ticker, quote in market.quotes.items()},
-        themes=dict(themes),
+        themes=dict(theme_map),
         sectors=dict(sectors or {}),
         fundamentals=fundamentals_used,
         commodities=commodity_rows,
@@ -194,6 +256,8 @@ def collect_stats(
             if strategy.briefing is not None
             else None
         ),
+        compliance=_compliance_to_dict(compliance_rows, summary, curve, today=market.today, compliance=compliance),
+        closed_history=closed,
         generated_at=dt.datetime.utcnow(),
     )
     report = _enrich_extended_hours(report, bars)
@@ -223,9 +287,18 @@ def _series(
     return series, "repaired" if repaired else ""
 
 
-def _context(view: PositionView, *, fields: Mapping[str, object] | None = None) -> dict[str, object]:
+def _context(
+    view: PositionView,
+    *,
+    fields: Mapping[str, object] | None = None,
+    lots: Sequence[OpenLot] = (),
+) -> dict[str, object]:
     present, _ = coverage(fields or {})
     total = len(all_field_keys())
+    own = [lot for lot in lots if lot.ticker == view.ticker]
+    last = max(own, key=lambda lot: lot.open_date, default=None)
+    average = view.open_price_usd
+    last_vs_entry = _ret_pct(last.open_price_usd, average) if last is not None else None
     return {
         "name": view.name,
         "theme": view.theme,
@@ -241,12 +314,30 @@ def _context(view: PositionView, *, fields: Mapping[str, object] | None = None) 
         "sessions_open": view.sessions_open,
         "stop_usd": view.stop_usd,
         "earnings": _earnings_text(view),
+        "earnings_confirmed": bool(getattr(view, "earnings_confirmed", False)),
         "earnings_sessions": view.earnings_sessions if view.earnings_known else None,
         "entry_usd": view.open_price_usd,
         "ret_clp_pct": _ret_pct(view.value_clp, view.cost_clp),
         "ret_usd_pct": _ret_pct(view.price_usd, view.open_price_usd),
         "coverage_pct": (present / total * 100.0) if total > 0 else None,
+        "lots": float(len(own)) if own else None,
+        "last_lot_date": last.open_date.isoformat() if last is not None else None,
+        "last_lot_price": last.open_price_usd if last is not None else None,
+        "last_lot_vs_entry_pct": last_vs_entry,
+        "averaged_down": ("si" if last.open_price_usd < average else "no") if last is not None else None,
+        "stop_xtb": _ticker_stop(own),
+        "tp_xtb": _ticker_tp(own),
     }
+
+
+def _ticker_stop(lots: Sequence[OpenLot]) -> float | None:
+    values = [lot.stop_usd for lot in lots if lot.stop_usd is not None]
+    return min(values) if values else None
+
+
+def _ticker_tp(lots: Sequence[OpenLot]) -> float | None:
+    values = [lot.take_profit_usd for lot in lots if lot.take_profit_usd is not None]
+    return min(values) if values else None
 
 
 def _ret_pct(now: float | None, then: float | None) -> float | None:
@@ -260,7 +351,8 @@ def _earnings_text(view: PositionView) -> str:
     if not view.earnings_known or view.earnings_date is None:
         return "sin dato"
     sessions = "" if view.earnings_sessions is None else f" ({view.earnings_sessions} ses)"
-    return f"est. {view.earnings_date.isoformat()}{sessions}"
+    prefix = "conf." if view.earnings_confirmed else "est."
+    return f"{prefix} {view.earnings_date.isoformat()}{sessions}"
 
 
 def _insider_trades(finviz: FinvizProvider, ticker: str, today: dt.date) -> tuple[InsiderTrade, ...]:
@@ -312,8 +404,314 @@ def _market_regime(instruments: Sequence[MarketInstrument], strategy: StrategyCo
         vix_max=cfg.vix_max,
         tnx_above_sma200_pct=cfg.tnx_above_sma200_pct,
         dxy_above_sma200_pct=cfg.dxy_above_sma200_pct,
+        qqq_1m_max_pct=cfg.qqq_1m_max_pct,
+        vix_1m_min_pct=cfg.vix_1m_min_pct,
+        suspicious_1m_abs_pct=cfg.suspicious_1m_abs_pct,
+        suspicious_sma_band=cfg.suspicious_sma_band,
         near_threshold_pp=cfg.near_threshold_pp,
     )
+
+
+def _compliance_rows(
+    rows: Sequence[PositionStats],
+    *,
+    model: PositionReport,
+    panel: Mapping[str, object],
+    compliance: ComplianceConfig,
+    ledger: Mapping[str, LedgerEntry],
+    today: dt.date,
+) -> tuple[list[ComplianceRow], dict[str, LedgerEntry]]:
+    """Calcula el panel de cumplimiento y el ledger actualizado (stops que no bajan)."""
+    today = today if today is not None else dt.date.today()
+    patrimonio = _as_number(panel.get("patrimonio_clp"))
+    lots_by: dict[str, list[OpenLot]] = {}
+    for lot in model.lots:
+        lots_by.setdefault(lot.ticker, []).append(lot)
+
+    out: list[ComplianceRow] = []
+    entries: dict[str, LedgerEntry] = {}
+    for row in rows:
+        context = row.context
+        fields = row.fields
+        ticker = row.ticker
+        own = lots_by.get(ticker, [])
+        previous = ledger.get(ticker)
+        entry = _as_number(context.get("entry_usd"))
+        price = _as_number(context.get("price_usd"))
+        atr = _as_number(fields.get("atr"))
+        atr_pct = _as_number(fields.get("atr_pct"))
+        plan = plan_position(
+            ticker=ticker,
+            entry=entry,
+            price=price,
+            atr=atr,
+            atr_pct=atr_pct,
+            value_clp=_as_number(context.get("value_clp")),
+            patrimonio_clp=patrimonio,
+            weight_invested_pct=_as_number(context.get("weight_invested_pct")),
+            high_20=_as_number(fields.get("high_20")),
+            previous=previous,
+            stop_xtb=_ticker_stop(own),
+            tp_xtb=_ticker_tp(own),
+            target_price=_as_number(fields.get("target_price")),
+            analyst_count=_as_number(fields.get("analyst_count")),
+            earnings_sessions=_as_number(context.get("earnings_sessions")),
+            cfg=compliance,
+        )
+        out.append(plan)
+        if plan.initial_stop is not None and plan.current_stop is not None and entry is not None:
+            first_entry = previous.first_entry if previous is not None else _first_entry(own, today)
+            entries[ticker] = LedgerEntry(
+                ticker=ticker,
+                entry_usd=entry,
+                first_entry=first_entry,
+                initial_stop=plan.initial_stop,
+                current_stop=plan.current_stop,
+                take_profit=plan.take_profit,
+                transition_stop=previous.transition_stop if previous is not None else None,
+                inherited=plan.inherited,
+            )
+    return out, entries
+
+
+def _first_entry(lots: Sequence[OpenLot], today: dt.date) -> dt.date:
+    return min((lot.open_date for lot in lots), default=today)
+
+
+def _equity_curve(
+    model: PositionReport,
+    bars: YahooDataProvider,
+    market: Market,
+    held_series: Mapping[str, PriceSeries],
+    analysis: Analysis,
+    compliance: ComplianceConfig,
+) -> EquityCurve | None:
+    """Curva de patrimonio ajustada por aportes, best effort."""
+    if not model.cash:
+        return None
+    prices: dict[str, PriceSeries] = dict(held_series)
+    closed_tickers = {row.ticker for row in model.closed}
+    for ticker in sorted(closed_tickers - set(prices)):
+        series, _ = _series(bars, ticker, market.today, BAR_WINDOW_DAYS)
+        if series is not None and not series.is_empty:
+            prices[ticker] = series
+    rates = _fx_history(bars, model, market.today)
+    return build_curve(
+        cash_ops=model.cash,
+        closed=model.closed,
+        lots=model.lots,
+        prices=prices,
+        fx_by_date=rates,
+        fallback_fx=analysis.fx or 1.0,
+        today=market.today,
+        cfg=compliance,
+    )
+
+
+def _risk_metrics(
+    rows: Sequence[PositionStats],
+    prices: Mapping[str, PriceSeries],
+    *,
+    spy: PriceSeries | None,
+    qqq: PriceSeries | None,
+    sessions: int,
+) -> tuple[float | None, float | None, float | None]:
+    """Correlacion media por pares y beta de la cartera contra SPY/QQQ (60 sesiones)."""
+    returns: dict[str, pd.Series] = {}
+    weights: dict[str, float] = {}
+    for row in rows:
+        series = prices.get(row.ticker)
+        if series is None or series.is_empty:
+            continue
+        closes = series.closes()
+        if len(closes) <= sessions + 1:
+            continue
+        returns[row.ticker] = closes.pct_change().tail(sessions)
+        value = _as_number(row.context.get("value_clp"))
+        if value is not None and value > 0.0:
+            weights[row.ticker] = value
+    correlations: list[float] = []
+    names = list(returns)
+    for index, left in enumerate(names):
+        for right in names[index + 1 :]:
+            pair = pd.concat([returns[left], returns[right]], axis=1).dropna()
+            if len(pair) >= 5:
+                value = float(pair.iloc[:, 0].corr(pair.iloc[:, 1]))
+                if not math.isnan(value):
+                    correlations.append(value)
+    average = sum(correlations) / len(correlations) if correlations else None
+    return average, _beta(returns, weights, spy, sessions), _beta(returns, weights, qqq, sessions)
+
+
+def _beta(
+    returns: Mapping[str, pd.Series],
+    weights: Mapping[str, float],
+    benchmark: PriceSeries | None,
+    sessions: int,
+) -> float | None:
+    if benchmark is None or benchmark.is_empty:
+        return None
+    bench = benchmark.closes().pct_change().tail(sessions)
+    total = sum(weights.get(ticker, 0.0) for ticker in returns)
+    if total <= 0.0:
+        return None
+    portfolio: pd.Series | None = None
+    for ticker, series in returns.items():
+        weight = weights.get(ticker, 0.0) / total
+        contribution = series * weight
+        portfolio = contribution if portfolio is None else portfolio.add(contribution, fill_value=0.0)
+    if portfolio is None:
+        return None
+    pair = pd.concat([portfolio, bench], axis=1).dropna()
+    if len(pair) < 5:
+        return None
+    variance = float(pair.iloc[:, 1].var())
+    if variance <= 0.0 or math.isnan(variance):
+        return None
+    value = float(pair.iloc[:, 0].cov(pair.iloc[:, 1]) / variance)
+    return None if math.isnan(value) else value
+
+
+def _fx_history(bars: YahooDataProvider, model: PositionReport, today: dt.date) -> dict[dt.date, float]:
+    """Tipo de cambio diario: velas cortas de Yahoo y, si faltan, el FX de las filas."""
+    rates: dict[dt.date, float] = {}
+    for symbol in ("CLP=X", "USDCLP=X"):
+        series, _ = _series(bars, symbol, today, BAR_WINDOW_DAYS)
+        if series is None or series.is_empty:
+            continue
+        for bar in series.bars:
+            rates.setdefault(bar.date, bar.close)
+    for row in model.closed:
+        if row.open_fx:
+            rates.setdefault(row.open_date, row.open_fx)
+        if row.close_fx:
+            rates.setdefault(row.close_date, row.close_fx)
+    for lot in model.lots:
+        if lot.volume > 0.0 and lot.open_price_usd > 0.0:
+            cost = lot.value_clp - lot.profit_clp
+            if cost > 0.0:
+                rates.setdefault(lot.open_date, cost / (lot.volume * lot.open_price_usd))
+    return rates
+
+
+def _closed_history(analysis: Analysis, calendar: SessionCalendar) -> dict[str, object]:
+    """Historial cerrado (sin promociones) y comparacion con la cartera abierta."""
+    closed = analysis.closed
+    open_winners = [view for view in analysis.positions if (view.price_usd or 0.0) > view.open_price_usd]
+    open_losers = [view for view in analysis.positions if (view.price_usd or 0.0) < view.open_price_usd]
+
+    def bucket(views: Sequence[PositionView]) -> dict[str, object]:
+        if not views:
+            return {"count": 0, "avg_age_sessions": None, "avg_return_pct": None}
+        ages = [view.sessions_open for view in views]
+        returns = [
+            (view.price_usd / view.open_price_usd - 1.0) * 100.0
+            for view in views
+            if view.price_usd is not None and view.open_price_usd > 0.0
+        ]
+        return {
+            "count": len(views),
+            "avg_age_sessions": sum(ages) / len(ages),
+            "avg_return_pct": (sum(returns) / len(returns)) if returns else None,
+        }
+
+    return {
+        "trades": closed.n,
+        "wins": closed.wins,
+        "losses": closed.losses,
+        "win_rate_pct": closed.win_rate_pct,
+        "avg_win_clp": closed.avg_win_clp,
+        "avg_loss_clp": closed.avg_loss_clp,
+        "avg_hold_sessions": closed.avg_hold_sessions,
+        "realized_clp": closed.total_clp,
+        "excluded_promo": closed.excluded_promo,
+        "open_winners": bucket(open_winners),
+        "open_losers": bucket(open_losers),
+    }
+
+
+def _compliance_to_dict(
+    rows: Sequence[ComplianceRow],
+    summary: ComplianceSummary,
+    curve: EquityCurve | None,
+    *,
+    today: dt.date,
+    compliance: ComplianceConfig,
+) -> dict[str, object]:
+    """Version JSON-able del panel y su resumen (contrato del ``stats``)."""
+    calendar = SessionCalendar.us()
+    sessions_purchase = calendar.sessions_between(today, compliance.purchases_until)
+    sessions_liquidate = calendar.sessions_between(today, compliance.liquidate_until)
+    return {
+        "summary": {
+            "open_risk_pct": summary.open_risk_pct,
+            "max_open_risk_pct": summary.max_open_risk_pct,
+            "cash_pct": summary.cash_pct,
+            "min_cash_pct": summary.min_cash_pct,
+            "cash_band_max_pct": summary.cash_band_max_pct,
+            "factor_pcts": dict(summary.factor_pcts),
+            "factor_max_pct": dict(summary.factor_max_pct),
+            "theme_pcts": dict(summary.theme_pcts),
+            "max_theme_pct": summary.max_theme_pct,
+            "biggest_theme": summary.biggest_theme,
+            "biggest_theme_pct": summary.biggest_theme_pct,
+            "infractions": summary.infractions,
+            "mode": summary.mode,
+            "breadth_pct": summary.breadth_pct,
+            "avg_correlation": summary.avg_correlation,
+            "beta_spy": summary.beta_spy,
+            "beta_qqq": summary.beta_qqq,
+            "earnings_5": list(summary.earnings_5),
+            "earnings_10": list(summary.earnings_10),
+            "earnings_15": list(summary.earnings_15),
+            "drawdown_pct": summary.drawdown_pct,
+            "drawdown_mode": summary.drawdown_mode,
+            "regime_mode": summary.regime_mode,
+            "sessions_to_purchases": sessions_purchase,
+            "sessions_to_liquidation": sessions_liquidate,
+            "purchases_until": compliance.purchases_until.isoformat(),
+            "liquidate_until": compliance.liquidate_until.isoformat(),
+            "equity_curve": None
+            if curve is None
+            else {
+                "max_unit_value": curve.max_unit_value,
+                "current_unit_value": curve.current_unit_value,
+                "drawdown_pct": curve.drawdown_pct,
+                "days_since_peak": curve.days_since_peak,
+                "mode": curve.mode,
+                "points": curve.points,
+            },
+        },
+        "positions": [
+            {
+                "ticker": row.ticker,
+                "price": row.price,
+                "entry": row.entry,
+                "atr_pct": row.atr_pct,
+                "value_clp": row.value_clp,
+                "weight_invested_pct": row.weight_invested_pct,
+                "initial_stop": row.initial_stop,
+                "current_stop": row.current_stop,
+                "previous_stop": row.previous_stop,
+                "transition_stop": row.transition_stop,
+                "take_profit": row.take_profit,
+                "tp_formula": row.tp_formula,
+                "stop_dist_price_pct": row.stop_dist_price_pct,
+                "stop_dist_entry_pct": row.stop_dist_entry_pct,
+                "r_multiple": row.r_multiple,
+                "risk_pct": row.risk_pct,
+                "max_weight_open_pct": row.max_weight_open_pct,
+                "status": row.status,
+                "inherited": row.inherited,
+                "stop_xtb": row.stop_xtb,
+                "tp_xtb": row.tp_xtb,
+                "stop_xtb_differs": row.stop_xtb_differs,
+                "tp_xtb_differs": row.tp_xtb_differs,
+                "earnings_sessions": row.earnings_sessions,
+            }
+            for row in rows
+        ],
+    }
 
 
 def _semis_tickers(strategy: StrategyConfig) -> tuple[str, ...]:
@@ -811,6 +1209,7 @@ def _quote_to_dict(quote: Quote) -> dict[str, object]:
         "price_source": quote.price_source,
         "earnings_date": quote.earnings_date.isoformat() if quote.earnings_date else None,
         "earnings_known": quote.earnings_known,
+        "earnings_confirmed": quote.earnings_confirmed,
         "pre_market": _ext_to_dict(quote.pre_market),
         "after_market": _ext_to_dict(quote.after_market),
     }
@@ -823,6 +1222,7 @@ def _quote_from_dict(data: Mapping[str, object]) -> Quote:
         price_source=str(data.get("price_source") or ""),
         earnings_date=dt.date.fromisoformat(str(raw)) if raw else None,
         earnings_known=bool(data.get("earnings_known")),
+        earnings_confirmed=bool(data.get("earnings_confirmed")),
         pre_market=_ext_from_dict(data.get("pre_market")),
         after_market=_ext_from_dict(data.get("after_market")),
     )

@@ -2,9 +2,10 @@
 
 Motor de swing para operar solo de noche. **Recomienda, nunca ejecuta órdenes.**
 
-Implementación desde cero de `plan/spec_v3_1_operacion_nocturna.md`. Sin dependencia
-de `prepData`: todo lo que hay en `C:\repo\prepData` (reader XTB, Yahoo, indicadores,
-clientes LLM) se puede leer como referencia, pero el motor no lo importa.
+Implementación desde cero del spec v3.1 de operación nocturna (sus referencias viven
+en `docs/DECISIONES.md` y en los docstrings). Sin dependencia de `prepData`: todo lo
+que hay en `C:\repo\prepData` (reader XTB, Yahoo, indicadores, clientes LLM) se puede
+leer como referencia, pero el motor no lo importa.
 
 ## Estado
 
@@ -55,9 +56,9 @@ python -m venv .venv
 .venv\Scripts\python.exe -m mypy src
 ```
 
-`nightly` (`swing nightly`) corre `screen` y luego `review --formato detalle` de una
-pasada y deja un resumen; `schedule` imprime el horario local (`America/Santiago`) y el
-comando para el Programador de tareas.
+`nightly` (`swing nightly`) corre `screen` y, si hay export de XTB, `review --formato
+detalle` en una pasada y deja un resumen; `schedule` imprime el horario local
+(`America/Santiago`) y el comando para el Programador de tareas.
 
 `check-config` no necesita red ni broker. Sale con código 1 y el nombre del archivo si
 algo no valida. `verify-broker` tampoco habla con el broker: muestra qué dice la
@@ -93,42 +94,59 @@ Market)** con el precio de pre/after market (variación y hora ET) y su volumen.
 
 Además, **todo lo que se puede derivar se calcula en código** (no lo inventa la IA):
 
-- **Panel de posición (derivado)**: peso sobre el capital invertido, retorno CLP y USD,
-  precio de entrada en USD, stop de la regla de máxima pérdida
-  (`legacy.max_loss_from_cost_pct` sobre la entrada) y riesgo a ese stop. Es el piso de
-  pérdida, no el stop vivo: el stop que el motor quiere —con el trail que protege la
-  ganancia abierta (D35)— se muestra en el informe de `review`.
-- **Resumen de cartera (derivado)**: patrimonio (caja + invertido),
-  caja %, pesos por tema contra el tope de `risk.max_theme_pct` (un tema sobre el tope se
-  marca `**+**`) y los **clusters** de `risk.clusters` (semis e IA ampliada), que suman por
-  ticker curado y por tema sobre el capital invertido.
-- **Resumen determinista (calculado por el motor)**: la política de la revisión manual
-  (`briefing` en `config/strategy.yaml`, **solo informativa**) convertida a hechos:
-  **banderas** por posición (ganancia >25 %, pérdida >10 %, bajo SMA200, RSI, ATR %, upside,
-  sobre objetivo, earnings próximos, peso sobre el tope, RS negativo, indicador sospechoso),
-  **stop técnico** (soporte más cercano bajo el precio − `buffer_atr`×ATR, acotado entre
-  `min_atr_mult`×ATR y `max_distance_pct`), **take profit** y riesgo al stop, más las
-  **alertas** de caja y concentración. Con la política `review` agrega los **niveles de
-  `PROMPT PORTAFOLIO`** (nivel de revisión = SMA50 − 0,5×ATR; nivel de alarma = máximo de
-  20 sesiones − 3×ATR, con piso y tope; zona táctica con R:R, objetivo y piso de catástrofe).
-  No emite veredictos: el juicio queda en la revisión.
-- **Contexto de mercado determinista**: VIX, SPY, QQQ, SOXX, Chile (`ECH`, proxy), tasa 10Y
-  y DXY, con nivel, variación a 1 mes y distancia a la SMA200. El dólar/CLP no entra porque
-  Yahoo publica velas incoherentes en `CLP=X` en ventanas largas; su nivel vive en la
-  cabecera (`fx`).
+- **Panel de cumplimiento (P1-P11)**: la sección de arriba del informe, única fuente de
+  verdad para stops y riesgo. Una fila por posición con peso invertido, ATR %, **stop
+  inicial** (P8: entrada − clamp(2,5×ATR, 8 %, 18 %)), **stop vigente**, distancias al
+  stop (% del precio y de la entrada), R, riesgo % del patrimonio, peso máximo permitido
+  al abrir (P1 ÷ distancia, tope P2; 3 % si ATR % > 7 %) y estado
+  `OK | SOBRE_PESO | SOBRE_RIESGO | STOP_TOCADO | HEREDADA_EN_PERDIDA | SIN_STOP`.
+  Resume riesgo abierto total vs P5, caja vs P7, factor IA ampliada y mayor tema vs P6,
+  infracciones, amplitud de la cartera y **modo vigente** (normal/cautela/defensivo).
+- **Stops anclados a la entrada y ledger**: `state/ledger.json` guarda entrada media,
+  fecha de primera entrada, stop inicial, stop vigente y TP. El vigente solo sube
+  (break-even a +1,5R, entrada +1R a +3R y trailing de máx. 20 sesiones − 3×ATR); una
+  posición sin stop registrado se calcula con P8 y, si el precio ya está bajo ese stop o
+  el stop queda a más de 15 % del precio, se marca **heredada en pérdida**. Si el export
+  trae `Stop Loss`/`Take Profit` en `Open Positions`, se leen como `stop_xtb`/`tp_xtb` y
+  se reporta la diferencia contra el ledger.
+- **Curva de patrimonio ajustada por aportes**: valor cuota diario (base 100)
+  reconstruido con `Cash Operations`, `Closed Positions`, `Open Positions` y precios
+  históricos. Publica máximo, caída actual, días desde el máximo y el modo P9
+  (cautela ≥ 8 %, defensivo ≥ 15 %).
+- **Régimen v7 de seis señales**: VIX > 20, SPY bajo su SMA200, 10Y > 10 % sobre su
+  SMA200, DXY > 5 % sobre su SMA200, QQQ ≤ −8 % en un mes y VIX ≥ +40 % en un mes.
+  0-1 = bajo, 2-3 = medio (cautela), ≥4 = alto (defensivo). Un benchmark con variación
+  a un mes absurda o nivel fuera de [0,5×, 2×] su SMA200 se marca **sospechoso** y no
+  cuenta. Añade USD/CLP y la amplitud de la cartera (% de posiciones bajo su SMA200).
+- **Factores y diversificación**: `config/factors.yaml` define una sola vez el factor
+  **IA ampliada** (semiconductores + proveedores de capex), los temas por ticker y el
+  tope P6. El resumen agrega correlación media por pares (60 sesiones) y beta de la
+  cartera contra SPY y QQQ.
+- **Lotes e historial cerrado**: por ticker, número de lotes, fecha/precio del último
+  lote, comparación contra la entrada media y bandera **promedio a la baja**. El
+  historial cerrado excluye las acciones de promoción (~0,01), resume operaciones,
+  win rate, ganancia/pérdida medias, tenencia media y P/L realizado, y lo compara con
+  las ganadoras/perdedoras abiertas.
+- **Calendario**: sesiones restantes hasta las compras nuevas y hasta la liquidación
+  (`config/config.yaml`), y earnings **confirmados o estimados**.
 - **Materias primas**: oro, plata y cobre desde **Trading Economics**
   (`/commodities`; precio y variación a 1 mes/YTD ya calculadas), con las velas de Yahoo
-  como respaldo y para el máx/mín de 52 semanas. La columna **Driver** mapea cada posición
-  a su materia prima (FCX → cobre).
+  como respaldo y para el máx/mín de 52 semanas.
+
+Los insiders se reducen al resumen por ticker (compras, ventas y neto 90 d) y las tres
+transacciones más recientes. El informe ya no trae las cuatro tablas de stops que se
+contradecían: el panel de cumplimiento es la única fuente. También se quitaron los
+campos que el prompt manda ignorar (empresa y clasificación, driver, quick, P/Cash,
+objetivo mín/máx, SHA, volatilidad realizada y peso eq de XTB).
 
 Las cantidades usan 4 decimales (acciones fraccionarias). Escribe `output/stats_<reporte>_<marca>.md`
 (o `--out`), con una tabla por sección y una sección final de **cobertura** que declara qué
 quedó sin dato (`-` nunca es un cero). Por defecto el informe **oculta el contexto informativo**
-(dividendos, desempeño, liquidez/propiedad, insiders, driver, mercado y materias primas) y deja
-solo lo que decide (decisión, niveles y puntaje); con `--contexto` sale la ficha completa. La IA
-de `review` recibe igual el contexto (solo se oculta en el informe, a la IA se le sigue enviando,
-con cada dato una sola vez). Los **niveles de `PROMPT PORTAFOLIO`** son de **vigilancia, no
-órdenes**: lo único accionable es el stop y la meta que fija el motor.
+(dividendos, desempeño, liquidez/propiedad, insiders, mercado y materias primas) y deja
+solo lo que decide (panel, decisión, niveles y puntaje); con `--contexto` sale la ficha
+completa. La IA de `review` recibe igual el contexto (solo se oculta en el informe, a la
+IA se le sigue enviando, con cada dato una sola vez). Los **niveles del panel** son de
+**vigilancia, no órdenes**: lo único accionable es el stop y la meta que fija el motor.
 
 `review` es la **función 1**: primero escribe el informe de `stats` (y reutiliza sus
 fundamentales) y después recomienda sobre tus posiciones. Adopta lo abierto y corre las
@@ -278,6 +296,9 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `core/sizing.py` | 5.5, 5.6 | Riesgo → notional, topes, tramos, `SINGLE` |
 | `core/exits.py` | 5.7, 4.3, 4.6 | Precedencia de las diez reglas y transiciones de §5.6 |
 | `core/portfolio.py` | 5.5, 5.8 | Heat, pérdida mensual, topes por ticker y tema, `CAP_TRIM` |
+| `core/compliance.py` | — | Panel P1-P11: stop inicial/vigente anclado a la entrada, TP, estados y resumen |
+| `core/equity_curve.py` | — | Curva de patrimonio ajustada por aportes (valor cuota base 100) y modo P9 |
+| `core/verdict.py` | — | `PROMPT PORTAFOLIO` v6/v7 como código puro: niveles, disparadores y ejes |
 | `core/orders.py` | 4.2, 11.2 | Semántica de relleno (Buy Limit, Sell Stop, ventas) y `Ticket` |
 | `core/engine.py` | 5, 11.3 | `decide()`: la única función que decide (entradas y salidas) |
 | `core/report.py` | — | Modelo del export de XTB y agregación filas → posiciones |
@@ -305,12 +326,14 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `adapters/finviz.py` | — | Snapshot de Finviz por ticker (scraping best effort, cache por día) |
 | `adapters/tradingeconomics.py` | — | Materias primas de Trading Economics (scraping best effort, cache por día) |
 | `services/paths.py` | — | Rutas del proyecto (`posiciones/`, `output/`, `state/`) y nombres únicos de informes |
+| `services/ledger.py` | — | Ledger de stops en `state/ledger.json`: lectura/escritura atómica, best effort |
+| `services/registry.py` | — | Registro de decisiones de `review` en `state/decisions.json` (historia y "qué cambió") |
 | `services/picks_log.py` | — | Journal forward en `state/picks/`: una foto por sesión, idempotente y tolerante a corrupción |
 | `services/market_data.py` | 6 | Arma velas, FX, quotes, earnings y fuerza relativa del snapshot |
 | `services/stats.py` | 5.2 | Ensambla el informe de stats (Yahoo base + técnicos + Finviz) |
 | `services/research.py` | 12 | Hechos para el prompt de la IA y contexto macro con caché |
 | `services/reporting.py` | 14 | Presentación de la corrida nocturna y lectura de candidatos |
-| `cli.py` | — | `check-config`, `verify-broker`, `data-health`, `analyze-positions`, `stats`, `review`, `screen`/`discover`, `nightly`, `schedule` |
+| `cli.py` | — | `check-config`, `verify-broker`, `data-health`, `analyze-positions`, `stats`, `review`, `screen`/`discover`, `track`, `nightly`, `schedule` |
 
 Queda la fase 8 implementada como `swing nightly` + `swing schedule`: el núcleo no
 depende de ella y la notificación es opcional. Ver `docs/PROGRAMACION.md`.
@@ -340,6 +363,9 @@ depende de ella y la notificación es opcional. Ver `docs/PROGRAMACION.md`.
 - **El trail protege la ganancia antes de asegurar.** Con el tramo A aún sin vender, el
   Chandelier sube el stop si queda sobre el costo y bajo el precio (D35); nunca aprieta una
   posición que no gana ni fija un stop por encima del mercado.
+- **Todo stop nace de la entrada (P8).** El stop inicial se ancla a la entrada media y el
+  ledger lo conserva entre corridas; el vigente solo sube. Re-ejecutar sin cambios de
+  precio no mueve ningún stop, y una heredada en pérdida no se re-ancla al precio actual.
 - **Una sola acción por posición y noche** (D14): las reglas que también se cumplen
   quedan en el informe con el motivo que las tapó.
 
@@ -349,12 +375,14 @@ depende de ella y la notificación es opcional. Ver `docs/PROGRAMACION.md`.
   `decide()`, la capa de IA y los datos. Empezar por acá.
 - `docs/USO.md` — guía operativa: flujo semanal/noche, formatos, códigos de salida y claves.
 - `docs/PROGRAMACION.md` — fase 8: agendar `nightly` en Windows y notificar (webhook/Telegram).
-- `docs/DECISIONES.md` — D1 a D30. Cada ambigüedad del spec que se resolvió y por qué.
+- `docs/DECISIONES.md` — D1 a D36. Cada ambigüedad del spec que se resolvió y por qué.
   Es lo que hay que leer antes de cuestionar un parámetro.
+- `docs/Prompt_portafolio_v7.md` — reglas y parámetros P1-P11 del prompt vigente.
+- `docs/Spec_stats_v7.md` — cambios del `stats` para que el motor entregue el panel y
+  los niveles ya calculados.
 - `docs/ESTRATEGIA.md` — linaje de cada componente, evidencia, y sobre todo **lo que no
   es fuente de ventaja** (la salida escalonada sube el win rate por construcción).
 - `docs/VERIFICACION_BROKER.md` — checklist pendiente contra la cuenta demo.
-- `plan/spec_v3_1_operacion_nocturna.md` — el spec.
 
 ## Git
 

@@ -79,6 +79,7 @@ class Quote:
     price_source: str
     earnings_date: dt.date | None
     earnings_known: bool
+    earnings_confirmed: bool = False
     pre_market: ExtMarket | None = None
     after_market: ExtMarket | None = None
 
@@ -123,6 +124,7 @@ class PositionView:
     stop_usd: float | None
     earnings_date: dt.date | None
     earnings_known: bool
+    earnings_confirmed: bool
     earnings_sessions: int | None
     verdict: str = ""  # se resuelve al final del analisis, sobre las acciones
     verdict_reason: str = ""
@@ -299,6 +301,7 @@ def analyze(
                 stop_usd=position.stop_usd,
                 earnings_date=quote.earnings_date,
                 earnings_known=quote.earnings_known,
+                earnings_confirmed=quote.earnings_confirmed,
                 earnings_sessions=earnings_sessions,
             )
         )

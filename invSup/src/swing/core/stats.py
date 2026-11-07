@@ -35,7 +35,7 @@ from swing.core.verdict import Levels
 FORMATS = frozenset({"text", "int", "qty", "num", "pct", "pct_signed", "ratio", "money", "clp"})
 
 #: Version del contrato JSON de ``StatsReport``. Sube cuando cambia la forma.
-STATS_SCHEMA = 8
+STATS_SCHEMA = 9
 
 #: Ventana (dias de calendario) de las transacciones de insiders que entran al informe.
 #: Vive aca porque el render la cita y ``services`` la usa para filtrar: una sola
@@ -53,7 +53,7 @@ class FieldSpec:
     - ``levels``: niveles reales (stop, meta, distancias, riesgo);
     - ``score``: alimenta el puntaje, los ejes y los disparadores;
     - ``context``: informativo (dividendo, desempeno, liquidez, propiedad,
-      insiders, driver); se **oculta** salvo ``show_context=True``.
+      insiders); se **oculta** salvo ``show_context=True``.
 
     El valor por omision es ``context``: un campo nuevo sin rol no se cuela en el
     informe curado, hay que declararlo.
@@ -76,15 +76,18 @@ POSITION_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("volume", "Acciones", "qty", role="decision"),
     FieldSpec("cost_clp", "Costo CLP", "clp", role="decision"),
     FieldSpec("value_clp", "Valor CLP", "clp", role="decision"),
-    FieldSpec("weight_pct", "Peso eq (% XTB)", "pct", role="decision"),
     FieldSpec("price_usd", "Precio", "num", role="decision"),
     FieldSpec("price_source", "Fuente", "text", role="decision"),
     FieldSpec("pl_clp", "P/L CLP", "clp", role="decision"),
     FieldSpec("price_effect_clp", "Ef. precio", "clp", role="decision"),
     FieldSpec("fx_effect_clp", "Ef. FX", "clp", role="decision"),
     FieldSpec("sessions_open", "Sesiones", "int", role="decision"),
-    FieldSpec("stop_usd", "Stop", "num", role="levels"),
     FieldSpec("earnings", "Earnings", "text", role="decision"),
+    FieldSpec("lots", "Lotes", "int", role="decision"),
+    FieldSpec("last_lot_date", "Ultimo lote", "text", role="decision"),
+    FieldSpec("last_lot_price", "Precio ultimo lote", "num", role="decision"),
+    FieldSpec("last_lot_vs_entry_pct", "Ultimo vs entrada", "pct_signed", role="decision"),
+    FieldSpec("averaged_down", "Promedio a la baja", "text", role="decision"),
 )
 
 #: Panel **derivado** de cada posicion: se calcula en codigo (``services/stats``), no
@@ -103,20 +106,6 @@ PANEL_FIELDS: tuple[FieldSpec, ...] = (
 #: Secciones de campos externos, en el orden en que se leen.
 SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
     (
-        "Empresa y clasificacion",
-        (
-            FieldSpec("sector", "Sector", "text"),
-            FieldSpec("industry", "Industria", "text"),
-            FieldSpec("index", "Indice", "text"),
-            FieldSpec("employees", "Empleados", "int"),
-            FieldSpec("market_cap", "Mkt cap", "money"),
-            FieldSpec("income", "Ingreso neto", "money"),
-            FieldSpec("sales", "Ventas", "money"),
-            FieldSpec("book_per_share", "Valor libro/acc", "num"),
-            FieldSpec("cash_per_share", "Caja/acc", "num"),
-        ),
-    ),
-    (
         "Valoracion",
         (
             FieldSpec("pe", "P/E", "ratio", role="score"),
@@ -124,7 +113,6 @@ SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             FieldSpec("peg", "PEG", "ratio", role="score"),
             FieldSpec("ps", "P/S", "ratio", role="score"),
             FieldSpec("pb", "P/B", "ratio", role="score"),
-            FieldSpec("pcash", "P/Cash", "ratio", role="score"),
             FieldSpec("pfcf", "P/FCF", "ratio", role="score"),
             FieldSpec("eps_ttm", "EPS ttm", "num", role="score"),
             FieldSpec("eps_forward", "EPS fwd", "num", role="score"),
@@ -149,7 +137,6 @@ SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         (
             FieldSpec("debt_to_equity", "Deuda/Eq", "ratio", role="score"),
             FieldSpec("lt_debt_to_equity", "Deuda LP/Eq", "ratio", role="score"),
-            FieldSpec("quick_ratio", "Quick", "ratio", role="score"),
             FieldSpec("current_ratio", "Current", "ratio", role="score"),
         ),
     ),
@@ -183,8 +170,6 @@ SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             FieldSpec("rs_1m_pct", "RS 1M vs SPY", "pct_signed", role="score"),
             FieldSpec("rs_3m_pct", "RS 3M vs SPY", "pct_signed", role="score"),
             FieldSpec("rs_pct", "RS 6M vs SPY", "pct_signed", role="score"),
-            FieldSpec("volatility_w", "Volat 1S (realizada)", "pct", role="context"),
-            FieldSpec("volatility_m", "Volat 1M (realizada)", "pct", role="context"),
             FieldSpec("rsi", "RSI(14)", "num", role="score"),
             FieldSpec("rsi_percentile", "RSI pct 1a", "pct", role="score"),
             FieldSpec("sma20", "SMA20", "num", role="score"),
@@ -201,15 +186,6 @@ SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             FieldSpec("low_52w", "Min 52S", "num", role="levels"),
             FieldSpec("pct_to_52w_high", "Al max 52S", "pct_signed", role="score"),
             FieldSpec("pct_from_52w_low", "Del min 52S", "pct_signed", role="score"),
-            FieldSpec("sha_trend", "SHA tend.", "text", role="score"),
-            FieldSpec("sha_flip_sesiones", "SHA giro (ses)", "int", role="score"),
-        ),
-    ),
-    (
-        "Driver de materia prima",
-        (
-            FieldSpec("driver", "Driver", "text"),
-            FieldSpec("driver_1m_pct", "Driver 1 mes", "pct_signed"),
         ),
     ),
     (
@@ -242,8 +218,6 @@ SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             FieldSpec("recom", "Recom (1-5)", "ratio", role="score"),
             FieldSpec("recommendation_key", "Consenso", "text", role="score"),
             FieldSpec("target_price", "Objetivo", "num", role="decision"),
-            FieldSpec("target_high", "Objetivo max", "num", role="context"),
-            FieldSpec("target_low", "Objetivo min", "num", role="context"),
             FieldSpec("target_upside_pct", "Potencial", "pct_signed", role="score"),
             FieldSpec("analyst_count", "N analistas", "int", role="score"),
         ),
@@ -354,6 +328,12 @@ class StatsReport:
     panel: Mapping[str, object] = field(default_factory=dict)
     """Resumen de cartera derivado (patrimonio, caja %, pesos por tema, concentracion)."""
 
+    compliance: Mapping[str, object] = field(default_factory=dict)
+    """Panel de cumplimiento v7: resumen P1-P11 y una fila por posicion."""
+
+    closed_history: Mapping[str, object] = field(default_factory=dict)
+    """Historial cerrado y comparacion con la cartera abierta (revision mensual)."""
+
     briefing: Briefing | None = None
     """Bloque determinista de la revision manual (banderas, stops, alertas). ``None`` si no hay politica."""
 
@@ -389,6 +369,8 @@ class StatsReport:
             "market": [_market_to_dict(item) for item in self.market],
             "regime": _regime_to_dict(self.regime),
             "panel": dict(self.panel),
+            "compliance": dict(self.compliance),
+            "closed_history": dict(self.closed_history),
             "briefing": _briefing_to_dict(self.briefing),
             "rows": [_position_to_dict(row) for row in self.rows],
             "limitations": list(self.limitations),
@@ -432,6 +414,8 @@ class StatsReport:
             market=tuple(_market_from_dict(item) for item in _list(data.get("market"))),
             regime=_regime_from_dict(data.get("regime")),
             panel=_mapping(data.get("panel")),
+            compliance=_mapping(data.get("compliance")),
+            closed_history=_mapping(data.get("closed_history")),
             briefing=_briefing_from_dict(data.get("briefing")),
         )
 
@@ -526,11 +510,16 @@ def _regime_to_dict(item: MarketRegime | None) -> dict[str, object] | None:
         "count": item.count,
         "signals": list(item.signals),
         "near_threshold": list(item.near_threshold),
+        "suspicious": list(item.suspicious),
         "usdclp": item.usdclp,
         "vix": item.vix,
         "spy_vs_sma200_pct": item.spy_vs_sma200_pct,
         "tnx_vs_sma200_pct": item.tnx_vs_sma200_pct,
         "dxy_vs_sma200_pct": item.dxy_vs_sma200_pct,
+        "qqq_1m_pct": item.qqq_1m_pct,
+        "vix_1m_pct": item.vix_1m_pct,
+        "portfolio_breadth_pct": item.portfolio_breadth_pct,
+        "mode": item.mode,
     }
 
 
@@ -543,11 +532,16 @@ def _regime_from_dict(data: object) -> MarketRegime | None:
         count=int(raw_count) if raw_count is not None else None,
         signals=tuple(_text(item) for item in _list(data.get("signals"))),
         near_threshold=tuple(_text(item) for item in _list(data.get("near_threshold"))),
+        suspicious=tuple(_text(item) for item in _list(data.get("suspicious"))),
         usdclp=_number(data.get("usdclp")),
         vix=_number(data.get("vix")),
         spy_vs_sma200_pct=_number(data.get("spy_vs_sma200_pct")),
         tnx_vs_sma200_pct=_number(data.get("tnx_vs_sma200_pct")),
         dxy_vs_sma200_pct=_number(data.get("dxy_vs_sma200_pct")),
+        qqq_1m_pct=_number(data.get("qqq_1m_pct")),
+        vix_1m_pct=_number(data.get("vix_1m_pct")),
+        portfolio_breadth_pct=_number(data.get("portfolio_breadth_pct")),
+        mode=_text(data.get("mode")),
     )
 
 
@@ -875,7 +869,7 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
     """El informe, en Markdown plano: se lee en la terminal y en archivo.
 
     Por defecto se ocultan los campos de rol ``context`` (dividendos, desempeno,
-    liquidez y propiedad, insiders, driver, mercado y materias primas) y se dejan
+    liquidez y propiedad, insiders, mercado y materias primas) y se dejan
     solo los que deciden (``decision``/``levels``/``score``). Con ``show_context=True``
     sale la ficha completa.
     """
@@ -902,11 +896,11 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
     lines.append("")
     if not show_context:
         lines.append(
-            "Contexto oculto (dividendos, desempeno, liquidez/propiedad, insiders, driver, "
+            "Contexto oculto (dividendos, desempeno, liquidez/propiedad, insiders, "
             "mercado y materias primas): vuelve a generar con ``--contexto`` para verlo."
         )
         lines.append("")
-    lines.extend(_briefing_section(report.briefing))
+    lines.extend(_compliance_section(report))
 
     if not report.rows:
         lines.append("Sin posiciones abiertas.")
@@ -915,18 +909,13 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
         position_specs = _visible(POSITION_FIELDS, show_context=show_context)
         if position_specs:
             lines.extend(_section("Posicion y valuacion", position_specs, report.rows, "context"))
-        lines.extend(_panel_section(report, show_context=show_context))
         lines.extend(_extended_hours_section(report))
         for title, specs in SECTIONS:
             visible = _visible(specs, show_context=show_context)
             if not visible:
                 continue
-            section_rows = report.rows
-            if title == "Driver de materia prima":
-                section_rows = tuple(row for row in report.rows if row.fields.get("driver") is not None)
-                if not section_rows:
-                    continue
-            lines.extend(_section(title, visible, section_rows, "fields"))
+            lines.extend(_section(title, visible, report.rows, "fields"))
+        lines.extend(_closed_history_section(report))
         if show_context:
             lines.extend(_market_section(report))
             lines.extend(_commodities_section(report))
@@ -948,6 +937,143 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
         lines.append("")
 
     return "\n".join(lines) + "\n"
+
+
+def _compliance_section(report: StatsReport) -> list[str]:
+    """Panel de cumplimiento v7: niveles anclados a la entrada y reglas P1-P11."""
+    data = report.compliance
+    if not data:
+        return []
+    summary = _mapping(data.get("summary"))
+    positions = [item for item in _list(data.get("positions")) if isinstance(item, Mapping)]
+    lines = ["## Panel de cumplimiento", ""]
+    if not positions:
+        lines.append("Sin posiciones abiertas.")
+        lines.append("")
+        return lines
+    lines.append(
+        "| Ticker | Peso inv | ATR % | Stop inicial | Stop vigente | Dist. stop precio | "
+        "Dist. stop entrada | R | Riesgo % | Peso max abrir | TP | Estado |"
+    )
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    for item in positions:
+        lines.append(
+            f"| {item.get('ticker', '')} | {_format('pct', item.get('weight_invested_pct'))} | "
+            f"{_format('pct', item.get('atr_pct'))} | {_format('num', item.get('initial_stop'))} | "
+            f"{_format('num', item.get('current_stop'))} | {_format('pct_signed', item.get('stop_dist_price_pct'))} | "
+            f"{_format('pct_signed', item.get('stop_dist_entry_pct'))} | {_format('ratio', item.get('r_multiple'))} | "
+            f"{_format('pct', item.get('risk_pct'))} | {_format('pct', item.get('max_weight_open_pct'))} | "
+            f"{_format('num', item.get('take_profit'))} | {item.get('status', '')} |"
+        )
+    lines.append("")
+
+    lines.extend(_compliance_summary_lines(summary))
+    diffs = [item for item in positions if item.get("stop_xtb_differs") or item.get("tp_xtb_differs")]
+    if diffs:
+        lines.append("- **XTB vs ledger:**")
+        for item in diffs:
+            lines.append(
+                f"  - {item.get('ticker')}: stop XTB {_format('num', item.get('stop_xtb'))} vs ledger "
+                f"{_format('num', item.get('current_stop'))}; TP XTB {_format('num', item.get('tp_xtb'))} vs ledger "
+                f"{_format('num', item.get('take_profit'))}."
+            )
+    lines.append("")
+    return lines
+
+
+def _compliance_summary_lines(summary: Mapping[str, object]) -> list[str]:
+    lines: list[str] = []
+    lines.append(
+        f"- Riesgo abierto total: {_format('pct', summary.get('open_risk_pct'))} "
+        f"(P5 {_format('pct', summary.get('max_open_risk_pct'))})."
+    )
+    lines.append(
+        f"- Caja: {_format('pct', summary.get('cash_pct'))} "
+        f"(P7 minimo {_format('pct', summary.get('min_cash_pct'))}; banda hasta "
+        f"{_format('pct', summary.get('cash_band_max_pct'))})."
+    )
+    factor_pcts = _mapping(summary.get("factor_pcts"))
+    factor_max = _mapping(summary.get("factor_max_pct"))
+    for name, pct in factor_pcts.items():
+        lines.append(f"- Factor {name}: {_format('pct', pct)} (tope {_format('pct', factor_max.get(name))}).")
+    if summary.get("biggest_theme"):
+        lines.append(
+            f"- Mayor tema: {summary.get('biggest_theme')} {_format('pct', summary.get('biggest_theme_pct'))} "
+            f"(tope {_format('pct', summary.get('max_theme_pct'))})."
+        )
+    lines.append(
+        f"- Modo vigente: **{summary.get('mode') or 'normal'}** "
+        f"(caida ajustada {_format('pct_signed', summary.get('drawdown_pct'))}; "
+        f"regimen {summary.get('regime_mode') or 'normal'})."
+    )
+    lines.append(f"- Infracciones: {summary.get('infractions', 0)}.")
+    if summary.get("breadth_pct") is not None:
+        lines.append(f"- Amplitud de la cartera: {_format('pct', summary.get('breadth_pct'))} bajo su SMA200.")
+    if summary.get("avg_correlation") is not None:
+        lines.append(
+            f"- Diversificacion: correlacion media por pares {_format('ratio', summary.get('avg_correlation'))} "
+            f"(60 sesiones); beta vs SPY {_format('ratio', summary.get('beta_spy'))}, "
+            f"vs QQQ {_format('ratio', summary.get('beta_qqq'))}."
+        )
+    for window, key in ((5, "earnings_5"), (10, "earnings_10"), (15, "earnings_15")):
+        tickers = _list(summary.get(key))
+        if tickers:
+            lines.append(f"- Earnings <= {window} sesiones: {', '.join(str(t) for t in tickers)}.")
+    purchases = summary.get("sessions_to_purchases")
+    liquidation = summary.get("sessions_to_liquidation")
+    if purchases is not None or liquidation is not None:
+        lines.append(
+            f"- Calendario P10: compras hasta {summary.get('purchases_until')} "
+            f"({_format('int', purchases)} sesiones); liquidacion hasta {summary.get('liquidate_until')} "
+            f"({_format('int', liquidation)} sesiones)."
+        )
+    curve = summary.get("equity_curve")
+    if isinstance(curve, Mapping):
+        lines.append(
+            f"- Curva ajustada por aportes (valor cuota base 100): maximo "
+            f"{_format('ratio', curve.get('max_unit_value'))}, actual "
+            f"{_format('ratio', curve.get('current_unit_value'))}, caida "
+            f"{_format('pct_signed', curve.get('drawdown_pct'))}, "
+            f"{_format('int', curve.get('days_since_peak'))} dias desde el maximo."
+        )
+    if summary.get("drawdown_mode") and summary.get("drawdown_mode") != "normal":
+        lines.append(f"- Modo por caida del patrimonio: {summary.get('drawdown_mode')}.")
+    return lines
+
+
+def _closed_history_section(report: StatsReport) -> list[str]:
+    """Historial cerrado y comparacion con la cartera abierta (revision mensual)."""
+    data = report.closed_history
+    if not data:
+        return []
+    lines = ["## Historial cerrado (revision mensual)", ""]
+    lines.append("| metrica | valor |")
+    lines.append("|---|---|")
+    lines.append(f"| operaciones cerradas | {_format('int', data.get('trades'))} |")
+    lines.append(f"| ganadoras | {_format('int', data.get('wins'))} ({_format('pct', data.get('win_rate_pct'))}) |")
+    lines.append(f"| ganancia media | {_format('clp', data.get('avg_win_clp'))} |")
+    lines.append(f"| perdida media | {_format('clp', data.get('avg_loss_clp'))} |")
+    lines.append(f"| tenencia media | {_format('ratio', data.get('avg_hold_sessions'))} sesiones |")
+    lines.append(f"| P/L realizado | {_format('clp', data.get('realized_clp'))} |")
+    if data.get("excluded_promo"):
+        lines.append(f"| promociones excluidas | {_format('int', data.get('excluded_promo'))} |")
+    lines.append("")
+    open_winners = _mapping(data.get("open_winners"))
+    open_losers = _mapping(data.get("open_losers"))
+    lines.append("| cartera abierta | n | edad media (ses) | retorno medio |")
+    lines.append("|---|---:|---:|---:|")
+    lines.append(
+        f"| ganadoras | {_format('int', open_winners.get('count'))} | "
+        f"{_format('ratio', open_winners.get('avg_age_sessions'))} | "
+        f"{_format('pct_signed', open_winners.get('avg_return_pct'))} |"
+    )
+    lines.append(
+        f"| perdedoras | {_format('int', open_losers.get('count'))} | "
+        f"{_format('ratio', open_losers.get('avg_age_sessions'))} | "
+        f"{_format('pct_signed', open_losers.get('avg_return_pct'))} |"
+    )
+    lines.append("")
+    return lines
 
 
 def _briefing_section(briefing: Briefing | None) -> list[str]:
@@ -1299,16 +1425,22 @@ def _market_section(report: StatsReport) -> list[str]:
 
 
 def _regime_block(regime: MarketRegime) -> list[str]:
-    """Regimen del Paso 1: senales cumplidas, cercanas al umbral y USD/CLP."""
+    """Regimen del Paso 1 (v7): seis senales, sospechosos, amplitud y modo."""
     count = "-" if regime.count is None else str(regime.count)
     lines = ["### Regimen (Paso 1)", ""]
-    lines.append(f"- Nivel **{regime.level}** ({count} senales de estres de 4).")
+    lines.append(f"- Nivel **{regime.level}** ({count} senales de estres de 6).")
+    if regime.mode:
+        lines.append(f"- Modo de regimen: **{regime.mode}**.")
     if regime.signals:
         lines.append(f"- Senales cumplidas: {', '.join(regime.signals)}.")
     else:
         lines.append("- Senales cumplidas: ninguna.")
     if regime.near_threshold:
         lines.append(f"- A menos de 1 pp del umbral: {', '.join(regime.near_threshold)}.")
+    if regime.suspicious:
+        lines.append(f"- Benchmarks con dato sospechoso (no cuentan): {', '.join(regime.suspicious)}.")
+    if regime.portfolio_breadth_pct is not None:
+        lines.append(f"- Amplitud de la cartera: {_format('pct', regime.portfolio_breadth_pct)} bajo su SMA200.")
     if regime.usdclp is not None:
         lines.append(f"- USD/CLP: {_format('num', regime.usdclp)}.")
     lines.append("")
@@ -1346,8 +1478,7 @@ def _commodities_section(report: StatsReport) -> list[str]:
     lines.append(
         "- El precio y la variacion a 1 mes/YTD salen de **Trading Economics** (`/commodities`); "
         "sus valores vienen de la tabla y no se recalculan. "
-        "El maximo/minimo de 52 semanas sale de las velas de Yahoo, la unica fuente con historial. "
-        "La columna 'Driver' de cada posicion mapea el ticker a su materia prima."
+        "El maximo/minimo de 52 semanas sale de las velas de Yahoo, la unica fuente con historial."
     )
     lines.append("")
     return lines
@@ -1368,7 +1499,7 @@ def _insiders_section(report: StatsReport) -> list[str]:
     lines.append("| Ticker | Fecha | Insider | Cargo | Tipo | Precio | Acciones | Valor |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for row in report.rows:
-        for trade in row.insider_trades:
+        for trade in row.insider_trades[:3]:
             date = trade.date.isoformat() if trade.date is not None else "-"
             lines.append(
                 f"| {row.ticker} | {date} | {trade.owner or '-'} | {trade.relationship or '-'} | "
@@ -1378,8 +1509,9 @@ def _insiders_section(report: StatsReport) -> list[str]:
     lines.append("")
     lines.append(
         "El neto es compras menos ventas (Buy/Purchase menos Sale/Sell) de los ultimos "
-        f"{INSIDER_WINDOW_DAYS} dias, en USD; ``Option Exercise`` y otras figuras cuentan en la tabla "
-        "pero no en el neto."
+        f"{INSIDER_WINDOW_DAYS} dias, en USD; la tabla de detalle muestra solo las 3 mas "
+        "recientes por ticker. ``Option Exercise`` y otras figuras cuentan en la tabla pero "
+        "no en el neto."
     )
     lines.append("")
     return lines

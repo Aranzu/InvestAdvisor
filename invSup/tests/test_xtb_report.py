@@ -55,7 +55,58 @@ def test_lee_las_tres_hojas(tmp_path: Path) -> None:
     assert report.lots[0].price_usd == pytest.approx(110.0)
     assert report.lots[0].open_price_usd == pytest.approx(100.0)
     assert report.lots[0].stop_usd is None
+    assert report.lots[0].take_profit_usd is None
     assert report.lots[0].open_date == UTC_OPEN.date()
+
+
+def test_lee_stop_loss_y_take_profit_de_la_hoja_abierta(tmp_path: Path) -> None:
+    rows = [
+        (
+            "My Trades",
+            "Test Company",
+            "TEST.US",
+            "STOCK",
+            "",
+            10,
+            990_000.0,
+            "",
+            100.0,
+            "",
+            "",
+            "",
+            10.0,
+            90_000.0,
+            90_000.0,
+            "",
+            "",
+            "",
+            "",
+        ),
+        (
+            "My Trades",
+            "pos-2",
+            "TEST.US",
+            "",
+            "BUY",
+            10,
+            990_000.0,
+            110.0,
+            100.0,
+            UTC_OPEN,
+            92.5,
+            130.0,
+            10.0,
+            90_000.0,
+            90_000.0,
+            "",
+            "",
+            "",
+            "",
+        ),
+    ]
+    report = load_positions_report(build_positions_workbook(tmp_path / "export.xlsx", open_rows=rows))
+    assert report.lots[0].stop_usd == pytest.approx(92.5)
+    assert report.lots[0].take_profit_usd == pytest.approx(130.0)
 
 
 def test_dividendos_netos(tmp_path: Path) -> None:

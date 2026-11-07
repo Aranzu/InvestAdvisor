@@ -96,11 +96,17 @@ briefing:
   # nivel mas cercano no es un objetivo: sale "sin techo claro" en vez de un
   # "objetivo" a 0.02 % que empujaria a tomar utilidades en el primer techo.
   take_profit_min_upside_pct: 5
-  # Regimen de mercado del Paso 1 del prompt v6.
+  # Regimen de mercado del Paso 1 del prompt v7: seis senales de estres. Un
+  # benchmark con variacion a 1 mes absurda o nivel fuera de su banda de SMA200
+  # se marca sospechoso y no cuenta como senal.
   regime:
     vix_max: 20
     tnx_above_sma200_pct: 10
     dxy_above_sma200_pct: 5
+    qqq_1m_max_pct: -8
+    vix_1m_min_pct: 40
+    suspicious_1m_abs_pct: 40
+    suspicious_sma_band: [0.5, 2.0]
     near_threshold_pp: 1
   # Stop = soporte mas cercano por debajo del precio - buffer_atr*ATR; sin soporte
   # dentro de max_distance_pct, precio - fallback_atr_mult*ATR. Se acota a

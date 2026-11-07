@@ -81,13 +81,18 @@ publica; escribe `output/stats_<reporte>_<marca>.md` (o `--out`). Un `-` es "sin
 Además, cuando Yahoo publica **pre-market y after-market** aparece la sección
 **Horario extendido (Pre/Post Market)** con el precio (variación contra el cierre regular y
 hora ET) y el volumen de cada lado; sin dato la sección no se muestra.
+El informe abre con el **Panel de cumplimiento** (P1-P11): stop inicial anclado a la
+entrada, stop vigente, distancias, R, riesgo % del patrimonio, peso máximo al abrir y
+estado (`OK`, `SOBRE_PESO`, `SOBRE_RIESGO`, `STOP_TOCADO`, `HEREDADA_EN_PERDIDA`,
+`SIN_STOP`). Es la única fuente de verdad para stops y riesgo; el ledger
+(`state/ledger.json`) hace que el stop vigente solo suba entre corridas.
+
 Por defecto el informe **oculta el contexto informativo** (dividendos, desempeño,
-liquidez/propiedad, insiders, driver, mercado y materias primas) y deja solo lo que decide
-(decisión, niveles y puntaje); `--contexto` muestra la ficha completa. Con `--contexto`
-también aparecen el **régimen de mercado** del Paso 1 de `Prompt portafolio v6` (VIX, SPY
-bajo su SMA200, 10Y y DXY sobre su SMA200, más USD/CLP y las señales a menos de un punto
-porcentual del umbral), el **mapa de liquidez** de la cartera y el detalle de **alertas SL**
-(Tipo A/B, alerta 1 y 2, distancias a precio y entrada, y riesgo teórico % del patrimonio).
+liquidez/propiedad, insiders, mercado y materias primas) y deja solo lo que decide
+(panel, decisión, niveles y puntaje); `--contexto` muestra la ficha completa. Con
+`--contexto` también aparecen el **régimen v7 de 6 señales** (VIX, SPY, 10Y, DXY, QQQ y
+VIX a 1 mes; los benchmarks sospechosos no cuentan; más USD/CLP y amplitud de la
+cartera), los factores y la diversificación (correlación media y beta vs SPY/QQQ).
 La IA de `review` recibe el contexto igual. Con `--offline` solo lee cache.
 
 ## Como leer el informe

@@ -283,8 +283,8 @@ def test_materias_primas_en_el_informe_y_en_el_json() -> None:
     assert "## Materias primas" in text
     assert "| Oro | Trading Economics (USD/t.oz) | 2,400.00 | +3.50 % | +12.00 % | 2,500.00 | 2,000.00 |" in text
     assert "| Cobre | Trading Economics (CNY/T) | 115,400.00 | -16.77 % | - | - | - |" in text
-    # La fila de FCX trae su driver de materia prima.
-    assert "| FCX | Cobre | -16.77 % |" in text
+    # El prompt v7 manda ignorar el driver: la seccion ya no se renderiza.
+    assert "## Driver de materia prima" not in text
     assert StatsReport.from_dict(json.loads(json.dumps(report.to_dict()))).commodities == commodities
 
 
@@ -295,105 +295,115 @@ def test_materias_primas_sin_datos_no_inventa_precio() -> None:
     assert "| Cobre | - | - | - | - | - | - |" in text
 
 
-def test_render_panel_derivado_y_resumen_de_cartera() -> None:
+def test_render_panel_de_cumplimiento_y_resumen() -> None:
     row = PositionStats(
         ticker="AAA",
         context={
             "name": "Acorp",
             "value_clp": 800_000.0,
-            "weight_pct": 80.0,
             "weight_invested_pct": 100.0,
             "ret_clp_pct": 12.5,
             "ret_usd_pct": 9.0,
             "entry_usd": 100.0,
-            "stop_rule": 90.0,
-            "risk_pct": 12.0,
         },
-        fields={},
+        fields={"atr_pct": 4.0},
     )
     report = replace(
         _report((row,)),
-        panel={
-            "patrimonio_clp": 1_000_000.0,
-            "cash_clp": 200_000.0,
-            "cash_pct": 20.0,
-            "invested_clp": 800_000.0,
-            "invested_pct": 80.0,
-            "themes": {"IA": 60.0, "semiconductores": 25.0},
-            "max_theme_pct": 30.0,
-            "clusters": {"semis": {"pct": 25.0, "max_pct": 35.0}},
+        compliance={
+            "summary": {
+                "open_risk_pct": 1.2,
+                "max_open_risk_pct": 10.0,
+                "cash_pct": 20.0,
+                "min_cash_pct": 10.0,
+                "cash_band_max_pct": 20.0,
+                "factor_pcts": {"ia_ampliada": 44.0},
+                "factor_max_pct": {"ia_ampliada": 40.0},
+                "theme_pcts": {"IA": 100.0},
+                "max_theme_pct": 25.0,
+                "biggest_theme": "IA",
+                "biggest_theme_pct": 44.0,
+                "infractions": 1,
+                "mode": "cautela",
+                "breadth_pct": 40.0,
+                "avg_correlation": 0.71,
+                "beta_spy": 1.12,
+                "beta_qqq": 1.08,
+                "earnings_5": ["AAA"],
+                "earnings_10": ["AAA"],
+                "earnings_15": ["AAA"],
+                "drawdown_pct": -9.0,
+                "drawdown_mode": "cautela",
+                "regime_mode": "normal",
+                "sessions_to_purchases": 45,
+                "sessions_to_liquidation": 75,
+                "purchases_until": "2027-01-15",
+                "liquidate_until": "2027-03-01",
+                "equity_curve": {
+                    "max_unit_value": 110.0,
+                    "current_unit_value": 100.1,
+                    "drawdown_pct": -9.0,
+                    "days_since_peak": 12,
+                    "mode": "cautela",
+                    "points": 100,
+                },
+            },
+            "positions": [
+                {
+                    "ticker": "AAA",
+                    "weight_invested_pct": 100.0,
+                    "atr_pct": 4.0,
+                    "initial_stop": 90.0,
+                    "current_stop": 92.0,
+                    "stop_dist_price_pct": 8.0,
+                    "stop_dist_entry_pct": 8.0,
+                    "r_multiple": 0.8,
+                    "risk_pct": 1.2,
+                    "max_weight_open_pct": 9.4,
+                    "take_profit": 130.0,
+                    "status": "OK",
+                }
+            ],
         },
     )
     text = render_stats(report)
-    assert "## Panel de posicion (derivado)" in text
-    assert "## Resumen de cartera (derivado)" in text
-    assert "| patrimonio | 1,000,000 CLP |" in text
-    assert "| caja | 200,000 CLP (20.00 %) |" in text
-    assert "| invertido | 800,000 CLP (80.00 %) |" in text
-    assert "| tope por tema | 30.00 % |" in text
-    # El tema sobre el tope se marca; el cluster se suma aparte.
-    assert "| IA | 60.00 % **+** | 30.00 % |" in text
-    assert "| semiconductores | 25.00 % | 30.00 % |" in text
-    assert "| semis | 25.00 % | 35.00 % | - |" in text
-    # Los campos derivados de la fila salen en la tabla del panel.
-    assert "+12.50 %" in text
+    assert "## Panel de cumplimiento" in text
+    assert "| AAA | 100.00 % | 4.00 % | 90.00 | 92.00 |" in text
+    assert "| 0.80 | 1.20 % | 9.40 % | 130.00 | OK |" in text
+    assert "- Riesgo abierto total: 1.20 % (P5 10.00 %)." in text
+    assert "- Factor ia_ampliada: 44.00 % (tope 40.00 %)." in text
+    assert "- Modo vigente: **cautela**" in text
+    assert "- Infracciones: 1." in text
+    assert "- Amplitud de la cartera: 40.00 % bajo su SMA200." in text
+    assert "- Diversificacion: correlacion media por pares 0.71" in text
+    assert "- Earnings <= 5 sesiones: AAA." in text
+    assert "- Calendario P10: compras hasta 2027-01-15 (45 sesiones)" in text
+    assert "- Curva ajustada por aportes (valor cuota base 100): maximo 110.00" in text
 
 
-def test_render_panel_marca_el_stop_perforado() -> None:
-    row = PositionStats(
-        ticker="MU",
-        context={
-            "entry_usd": 100.0,
-            "stop_rule": 82.0,
-            "stop_dist_pct": -2.5,
-            "risk_patrimonio_pct": -0.5,
-            "stop_perforated": True,
-        },
-        fields={},
-    )
-    text = render_stats(_report((row,)))
-    # El nivel se marca y las dos columnas que saldrian negativas quedan sin dato.
-    assert "| MU | - | - | - | 100.00 | 82.00 (perforado) | - | - |" in text
-
-
-def test_render_resumen_determinista() -> None:
-    from swing.core.briefing import Briefing, PositionBrief
-
-    row = PositionStats(ticker="AAA", context={}, fields={})
+def test_render_panel_marca_la_heredada_en_perdida() -> None:
+    row = PositionStats(ticker="MU", context={"price_usd": 80.0, "entry_usd": 100.0}, fields={})
     report = replace(
         _report((row,)),
-        briefing=Briefing(
-            positions=(
-                PositionBrief(
-                    ticker="AAA",
-                    flags=("ganancia>25%", "bajo SMA200"),
-                    stop=85.0,
-                    stop_dist_pct=4.0,
-                    stop_rule="Min 20 ses - 0.5xATR",
-                    risk_pct=1.2,
-                    take_profit=120.0,
-                    tp_label="max 52S",
-                ),
-            ),
-            alerts=("caja 14.00 % bajo el piso 15 %",),
-            cash_pct=14.0,
-            cash_min_pct=15.0,
-            cash_max_pct=20.0,
-            semis_pct=30.0,
-            semis_max_pct=35.0,
-            ia_pct=44.0,
-            ia_max_pct=45.0,
-        ),
+        compliance={
+            "summary": {},
+            "positions": [
+                {
+                    "ticker": "MU",
+                    "price": 80.0,
+                    "entry": 100.0,
+                    "initial_stop": 82.0,
+                    "current_stop": 82.0,
+                    "stop_dist_price_pct": -2.5,
+                    "stop_dist_entry_pct": 18.0,
+                    "status": "HEREDADA_EN_PERDIDA",
+                }
+            ],
+        },
     )
     text = render_stats(report)
-    assert "## Resumen determinista (calculado por el motor)" in text
-    assert "- Caja 14.00 % (banda 15.00 % - 20.00 %)." in text
-    assert "semis 30.00 % (tope 35.00 %)" in text
-    assert "caja 14.00 % bajo el piso 15 %" in text
-    assert (
-        "| AAA | A | ganancia>25%, bajo SMA200 | 85.00 | 4.00 % | Min 20 ses - 0.5xATR | "
-        "1.20 % | 120.00 (max 52S) | - | - |"
-    ) in text
+    assert "HEREDADA_EN_PERDIDA" in text
+    assert "| MU | - | - | 82.00 | 82.00 | -2.50 % | +18.00 % |" in text
 
 
 def test_render_cantidad_con_decimales() -> None:
@@ -428,11 +438,16 @@ def test_render_regimen_de_mercado_del_paso_1() -> None:
         count=2,
         signals=("VIX", "SPY<SMA200"),
         near_threshold=("10Y>SMA200+10% (+9.81 vs 10)",),
+        suspicious=("Semis (SOXX)",),
         usdclp=950.25,
         vix=22.0,
         spy_vs_sma200_pct=-1.5,
         tnx_vs_sma200_pct=9.81,
         dxy_vs_sma200_pct=1.0,
+        qqq_1m_pct=-4.0,
+        vix_1m_pct=12.0,
+        portfolio_breadth_pct=55.0,
+        mode="cautela",
     )
     report = replace(
         _report((row,)),
@@ -441,31 +456,20 @@ def test_render_regimen_de_mercado_del_paso_1() -> None:
     )
     text = render_stats(report, show_context=True)
     assert "### Regimen (Paso 1)" in text
-    assert "- Nivel **medio** (2 senales de estres de 4)." in text
+    assert "- Nivel **medio** (2 senales de estres de 6)." in text
     assert "Senales cumplidas: VIX, SPY<SMA200." in text
     assert "A menos de 1 pp del umbral" in text
+    assert "Benchmarks con dato sospechoso (no cuentan): Semis (SOXX)." in text
+    assert "Amplitud de la cartera: 55.00 % bajo su SMA200." in text
     assert "USD/CLP: 950.25" in text
 
 
-def test_render_alertas_sl_tipo_b() -> None:
-    from swing.core.briefing import Briefing, PositionBrief
-
-    brief = PositionBrief(
-        ticker="MU",
-        flags=("ATR%>4",),
-        sl_type="B",
-        alarm_1=92.5,
-        alarm_1_dist_pct=7.5,
-        alarm_1_entry_dist_pct=2.5,
-        alarm_1_rule="piso 2.5xATR",
-        alarm_2=82.0,
-        alarm_2_dist_pct=18.0,
-        alarm_2_entry_dist_pct=13.0,
-        risk_theoretical_pct=1.8,
-    )
-    text = render_stats(replace(_report((PositionStats(ticker="MU", context={}, fields={}),)), briefing=Briefing(positions=(brief,))))
-    assert "### Alertas SL (solo alertas, no ordenes)" in text
-    assert "| MU | B | 92.50 | 7.50 % | 2.50 % | piso 2.5xATR | 82.00 | 18.00 % | 13.00 % | 1.80 % |" in text
+def test_render_ya_no_trae_las_tablas_de_stops_antiguas() -> None:
+    text = render_stats(_report((PositionStats(ticker="MU", context={}, fields={}),)))
+    assert "## Panel de posicion (derivado)" not in text
+    assert "### Alertas SL" not in text
+    assert "### Niveles de vigilancia" not in text
+    assert "## Resumen determinista" not in text
 
 
 def test_stats_report_json_round_trip_mercado_y_panel() -> None:

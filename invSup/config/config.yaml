@@ -1,0 +1,48 @@
+# Parametros P1-P11 del PROMPT PORTAFOLIO v7 (seccion 2) y calendario del horizonte.
+# Son politica del usuario: el motor solo los aplica. Cambiarlos aca, no en el codigo.
+
+# P1: riesgo al abrir o anadir, % del patrimonio.
+risk_per_open_pct: 0.75
+# P2: peso maximo al abrir; con ATR % sobre high_atr_pct baja a max_weight_open_high_atr_pct.
+max_weight_open_pct: 8
+high_atr_pct: 7
+max_weight_open_high_atr_pct: 3
+# P3: peso maximo de mantenimiento (y el objetivo al recortar).
+max_weight_hold_pct: 12
+max_weight_hold_trim_pct: 10
+# P4 / P5: riesgo maximo por posicion y riesgo abierto total.
+max_risk_position_pct: 1.5
+max_open_risk_pct: 10
+# P6: tope del factor IA ampliada y de cada tema/sector.
+max_factor_pct: 40
+max_theme_pct: 25
+# P7: caja minima (banda).
+min_cash_pct: 10
+cash_band_max_pct: 20
+# P8: stop inicial = entrada - clamp(mult x ATR14, min %, max % de la entrada).
+stop_atr_mult: 2.5
+stop_min_pct: 8
+stop_max_pct: 18
+# Una posicion sin stop inicial a mas de esta distancia bajo el precio es heredada en perdida.
+inherited_stop_max_distance_pct: 15
+# Stop de transicion de una heredada que se mantiene recortada (<= 10 % bajo el precio).
+transition_stop_max_pct: 10
+# Stop vigente: break-even a +1,5R, entrada +1R a +3R, luego max 20 sesiones - 3 ATR.
+breakeven_r: 1.5
+enhancer_r: 3
+trailing_sessions: 20
+trailing_atr_mult: 3
+# P9: modo cautela / defensivo por caida del patrimonio ajustada por aportes.
+caution_drawdown_pct: 8
+defensive_drawdown_pct: 15
+# P10: compras nuevas hasta / liquidacion escalonada.
+purchases_until: 2027-01-15
+liquidate_until: 2027-03-01
+# TP realista: tope de +30 % sobre el precio actual; objetivo de analistas si N >= 10.
+take_profit_max_upside_pct: 30
+take_profit_min_analysts: 10
+# Ventana de correlacion por pares y beta de la cartera.
+correlation_sessions: 60
+# Persistencia del ledger de stops anclados a la entrada.
+ledger_name: ledger.json
+factors_file: factors.yaml

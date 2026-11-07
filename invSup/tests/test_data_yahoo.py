@@ -300,9 +300,11 @@ def test_yfinance_bars_pasa_datetimes_al_provider(monkeypatch: pytest.MonkeyPatc
 
 
 def test_se_toma_el_reporte_futuro_mas_proximo() -> None:
+    near = dt.date.today() + dt.timedelta(days=30)
+    far = dt.date.today() + dt.timedelta(days=120)
     tabla = pd.DataFrame(
-        {"Earnings Date": [dt.datetime(2026, 11, 5), dt.datetime(2026, 2, 5)]},
-        index=pd.to_datetime(["2026-11-05", "2026-02-05"]),
+        {"Earnings Date": [dt.datetime.combine(far, dt.time()), dt.datetime.combine(near, dt.time())]},
+        index=pd.to_datetime([far.isoformat(), near.isoformat()]),
     )
     p = provider(Path("."), earnings=lambda s, n: tabla)
     info = p.earnings("AMD")

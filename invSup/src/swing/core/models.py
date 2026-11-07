@@ -194,15 +194,31 @@ class BriefingStopConfig(StrictModel):
 class BriefingRegimeConfig(StrictModel):
     """Umbrales del regimen de mercado que resume ``stats --contexto``.
 
-    Reproduce el Paso 1 de ``PROMPT PORTAFOLIO``: cuatro senales de estres y un
-    conteo 0-1 bajo, 2 medio, >=3 alto. ``near_threshold_pp`` marca la senal que
-    esta a menos de esos puntos porcentuales de su umbral.
+    Reproduce el Paso 1 de ``PROMPT PORTAFOLIO`` v7: seis senales de estres y un
+    conteo 0-1 bajo, 2-3 medio (cautela), >=4 alto (defensivo). Una senal de un
+    benchmark con dato sospechoso no cuenta. ``near_threshold_pp`` marca la senal
+    que esta a menos de esos puntos porcentuales de su umbral.
     """
 
     vix_max: float = Field(gt=0.0, le=200.0)
     tnx_above_sma200_pct: float = Field(ge=0.0, le=100.0)
     dxy_above_sma200_pct: float = Field(ge=0.0, le=100.0)
+    qqq_1m_max_pct: float = Field(gt=-100.0, lt=0.0)
+    """QQQ a esta variacion (o peor) en un mes cuenta como senal de estres (``-8``)."""
+    vix_1m_min_pct: float = Field(ge=0.0, le=1000.0)
+    """VIX con esta variacion (o mayor) en un mes cuenta como senal (``40``)."""
+    suspicious_1m_abs_pct: float = Field(gt=0.0, le=1000.0)
+    """Variacion a 1 mes mayor a esto en valor absoluto marca el benchmark como sospechoso."""
+    suspicious_sma_band: tuple[float, float] = (0.5, 2.0)
+    """Rango nivel/SMA200 aceptable; fuera de el el benchmark es sospechoso."""
     near_threshold_pp: float = Field(ge=0.0, le=100.0)
+
+    @model_validator(mode="after")
+    def _check(self) -> BriefingRegimeConfig:
+        low, high = self.suspicious_sma_band
+        if low <= 0.0 or high <= low:
+            raise ValueError("briefing.regime.suspicious_sma_band requiere 0 < piso < techo")
+        return self
 
 
 class BriefingConfig(StrictModel):
@@ -455,6 +471,99 @@ class ReviewConfig(StrictModel):
     horizon: ReviewHorizonConfig
     registry_name: str = "decisions.json"
     """Archivo del registro de decisiones dentro de ``state/``."""
+
+
+class ComplianceConfig(StrictModel):
+    """Parametros P1-P11 del ``PROMPT PORTAFOLIO`` v7.
+
+    Viven en ``config/config.yaml`` (no en el codigo) porque son la politica del
+    usuario: el motor solo los aplica. El ``stats`` los usa para calcular el panel
+    de cumplimiento, el stop anclado a la entrada y el modo vigente.
+    """
+
+    # P1 / P2: tamano de una entrada nueva.
+    risk_per_open_pct: float = Field(gt=0.0, le=100.0)
+    max_weight_open_pct: float = Field(gt=0.0, le=100.0)
+    high_atr_pct: float = Field(gt=0.0, le=100.0)
+    max_weight_open_high_atr_pct: float = Field(gt=0.0, le=100.0)
+    # P3 / P4 / P5: mantenimiento y riesgo abierto.
+    max_weight_hold_pct: float = Field(gt=0.0, le=100.0)
+    max_weight_hold_trim_pct: float = Field(gt=0.0, le=100.0)
+    max_risk_position_pct: float = Field(gt=0.0, le=100.0)
+    max_open_risk_pct: float = Field(gt=0.0, le=100.0)
+    # P6 / P7: concentracion y caja.
+    max_factor_pct: float = Field(gt=0.0, le=100.0)
+    max_theme_pct: float = Field(gt=0.0, le=100.0)
+    min_cash_pct: float = Field(ge=0.0, le=100.0)
+    cash_band_max_pct: float = Field(ge=0.0, le=100.0)
+    # P8: stop inicial anclado a la entrada.
+    stop_atr_mult: float = Field(gt=0.0, le=20.0)
+    stop_min_pct: float = Field(gt=0.0, le=100.0)
+    stop_max_pct: float = Field(gt=0.0, le=100.0)
+    inherited_stop_max_distance_pct: float = Field(gt=0.0, le=100.0)
+    transition_stop_max_pct: float = Field(gt=0.0, le=100.0)
+    breakeven_r: float = Field(gt=0.0, le=100.0)
+    enhancer_r: float = Field(gt=0.0, le=100.0)
+    trailing_sessions: int = Field(ge=1, le=250)
+    trailing_atr_mult: float = Field(gt=0.0, le=20.0)
+    # P9 / P10: modo y calendario.
+    caution_drawdown_pct: float = Field(gt=0.0, le=100.0)
+    defensive_drawdown_pct: float = Field(gt=0.0, le=100.0)
+    purchases_until: dt.date
+    liquidate_until: dt.date
+    # TP y medicion.
+    take_profit_max_upside_pct: float = Field(gt=0.0, le=200.0)
+    take_profit_min_analysts: int = Field(ge=0, le=1000)
+    correlation_sessions: int = Field(ge=5, le=500)
+    ledger_name: str = "ledger.json"
+    factors_file: str = "factors.yaml"
+
+    @model_validator(mode="after")
+    def _check(self) -> ComplianceConfig:
+        if self.cash_band_max_pct < self.min_cash_pct:
+            raise ValueError("compliance.cash_band_max_pct no puede ser menor que min_cash_pct")
+        if self.stop_min_pct >= self.stop_max_pct:
+            raise ValueError("compliance.stop_min_pct tiene que ser menor que stop_max_pct")
+        if self.defensive_drawdown_pct <= self.caution_drawdown_pct:
+            raise ValueError("compliance.defensive_drawdown_pct tiene que superar caution_drawdown_pct")
+        if self.enhancer_r <= self.breakeven_r:
+            raise ValueError("compliance.enhancer_r tiene que superar breakeven_r")
+        if self.max_weight_hold_pct < self.max_weight_open_pct:
+            raise ValueError("compliance.max_weight_hold_pct no puede ser menor que max_weight_open_pct")
+        if self.purchases_until >= self.liquidate_until:
+            raise ValueError("compliance.purchases_until tiene que ser anterior a liquidate_until")
+        if self.take_profit_min_analysts < 0:
+            raise ValueError("compliance.take_profit_min_analysts no puede ser negativo")
+        return self
+
+
+class FactorSpec(StrictModel):
+    """Un factor o cluster de diversificacion: tope, tickers curados y temas."""
+
+    max_pct: float = Field(gt=0.0, le=100.0)
+    tickers: tuple[str, ...] = ()
+    themes: tuple[str, ...] = ()
+
+
+class FactorsConfig(StrictModel):
+    """``config/factors.yaml``: definicion unica de factores y tema por ticker."""
+
+    max_factor_pct: float = Field(gt=0.0, le=100.0)
+    max_theme_pct: float = Field(gt=0.0, le=100.0)
+    factors: dict[str, FactorSpec]
+    themes: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _check(self) -> FactorsConfig:
+        if not self.factors:
+            raise ValueError("factors.yaml requiere al menos un factor")
+        for name, spec in self.factors.items():
+            if spec.max_pct > self.max_factor_pct:
+                raise ValueError(
+                    f"factors.{name}.max_pct ({spec.max_pct}) no puede superar max_factor_pct "
+                    f"({self.max_factor_pct})"
+                )
+        return self
 
 
 class RiskConfig(StrictModel):

@@ -26,7 +26,15 @@ from zoneinfo import ZoneInfo
 import typer
 
 from swing.adapters.cache import CacheError
-from swing.adapters.config_loader import ConfigError, load_broker, load_strategy, load_themes, load_watchlist
+from swing.adapters.config_loader import (
+    ConfigError,
+    load_broker,
+    load_compliance,
+    load_factors,
+    load_strategy,
+    load_themes,
+    load_watchlist,
+)
 from swing.adapters.data_yahoo import (
     MARKET_TZ,
     DataUnavailable,
@@ -86,6 +94,7 @@ from swing.core.stats import StatsReport
 from swing.core.stats import render_stats as _render_stats
 from swing.core.track import HORIZONS, PickRecord, evaluate, summarize
 from swing.core.verdict import DecisionRecord
+from swing.services.ledger import load_ledger as _load_ledger
 from swing.services.market_data import MARKET_CLOSE_NY
 from swing.services.market_data import broker_lots as _broker_lots
 from swing.services.market_data import collect_series as _collect_series
@@ -96,6 +105,7 @@ from swing.services.market_data import live_quotes as _live_quotes
 from swing.services.market_data import relative_strength as _relative_strength
 from swing.services.market_data import warn_jumps as _warn_jumps
 from swing.services.paths import candidate_path as _candidate_path
+from swing.services.paths import ledger_path as _ledger_path
 from swing.services.paths import newest_report as _newest_report
 from swing.services.paths import newest_report_or_none as _newest_report_or_none
 from swing.services.paths import output_dir as _output_dir
@@ -536,6 +546,7 @@ def _collect_and_save_stats(
     out: Path | None = None,
     out_dir: Path | None = None,
     show_context: bool = False,
+    config_dir: Path = DEFAULT_CONFIG_DIR,
 ) -> tuple[StatsReport, Path, Path]:
     """Arma, escribe (Markdown + JSON) y devuelve el informe de stats.
 
@@ -565,6 +576,13 @@ def _collect_and_save_stats(
         if missing:
             sectors = sectors_from(missing)
 
+    try:
+        compliance = load_compliance(config_dir / "config.yaml")
+        factors = load_factors(config_dir / "factors.yaml")
+    except ConfigError as exc:
+        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    ledger_file = _ledger_path(compliance.ledger_name)
     fprovider = fundamentals_provider_from_project(cache_dir, offline=offline)
     finviz = finviz_provider_from_project(offline=offline)
     te = te_provider_from_project(offline=offline)
@@ -578,6 +596,10 @@ def _collect_and_save_stats(
         bars=provider,
         te=te,
         sectors=sectors,
+        compliance=compliance,
+        factors=factors,
+        ledger=_load_ledger(ledger_file),
+        ledger_path=ledger_file,
     )
     informe = _render_stats(stats_report, show_context=show_context)
     if out is not None:
@@ -649,7 +671,16 @@ def stats(
 
     today = dt.date.today()
     _, path, json_path = _collect_and_save_stats(
-        model, report_path, strategy, themes.themes, cache_dir, offline, today, out, show_context=incluir_contexto
+        model,
+        report_path,
+        strategy,
+        themes.themes,
+        cache_dir,
+        offline,
+        today,
+        out,
+        show_context=incluir_contexto,
+        config_dir=config_dir,
     )
     typer.echo(path.read_text(encoding="utf-8").rstrip())
     typer.echo("")
@@ -916,6 +947,7 @@ def review(
         market.today,
         out_dir=out.parent if out is not None else None,
         show_context=incluir_contexto,
+        config_dir=config_dir,
     )
     typer.echo(f"  stats escrito en {stats_md} y {stats_json}")
     fundamentals: dict[str, Fundamentals] = {}

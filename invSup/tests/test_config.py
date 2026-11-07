@@ -12,7 +12,15 @@ from typing import Any
 import pytest
 import yaml
 
-from swing.adapters.config_loader import ConfigError, load_broker, load_strategy, load_themes, load_watchlist
+from swing.adapters.config_loader import (
+    ConfigError,
+    load_broker,
+    load_compliance,
+    load_factors,
+    load_strategy,
+    load_themes,
+    load_watchlist,
+)
 from swing.core.models import FxFeeModel, RegimeState, TrancheMode
 
 #: Minimo de universe para que el percentil de fuerza relativa tenga sentido
@@ -52,6 +60,24 @@ def test_strategy_de_entrega_respeta_el_invariante_de_earnings() -> None:
     config = load_strategy(CONFIG_DIR / "strategy.yaml")
     minimum = config.exits.stall.days + config.exits.earnings.lead_sessions
     assert config.gates.earnings_entry_blackout_sessions >= minimum
+
+
+def test_compliance_y_factors_de_entrega_cargan() -> None:
+    compliance = load_compliance(CONFIG_DIR / "config.yaml")
+    assert compliance.risk_per_open_pct == pytest.approx(0.75)
+    assert compliance.stop_max_pct == pytest.approx(18.0)
+    assert compliance.purchases_until.year == 2027
+    factors = load_factors(CONFIG_DIR / "factors.yaml")
+    assert "ia_ampliada" in factors.factors
+    assert "AMD" in factors.factors["ia_ampliada"].tickers
+
+
+def test_compliance_rechaza_banda_de_caja_invertida(tmp_path: Path) -> None:
+    data = _raw("config.yaml")
+    data["min_cash_pct"] = 25
+    data["cash_band_max_pct"] = 20
+    with pytest.raises(ConfigError, match="cash_band_max_pct"):
+        load_compliance(_write(tmp_path, "config.yaml", data))
 
 
 def test_broker_de_entrega_carga_y_declara_lo_no_verificado() -> None:

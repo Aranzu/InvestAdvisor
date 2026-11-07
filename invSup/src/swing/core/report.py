@@ -67,6 +67,7 @@ class OpenLot:
     open_date: dt.date
     stop_usd: float | None
     profit_clp: float
+    take_profit_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,19 +259,34 @@ class ClosedStats:
     top_winners: tuple[tuple[str, float], ...]
     top_losers: tuple[tuple[str, float], ...]
     avg_hold_sessions: float | None
+    avg_win_clp: float | None = None
+    avg_loss_clp: float | None = None
+    excluded_promo: int = 0
+    """Posiciones excluidas por precio de apertura ~0.01 (acciones de promocion)."""
 
     @property
     def has_losses(self) -> bool:
         return self.gross_loss_clp > 0.0
 
 
-def closed_stats(closed: tuple[ClosedPosition, ...], calendar: SessionCalendar) -> ClosedStats:
+def closed_stats(
+    closed: tuple[ClosedPosition, ...],
+    calendar: SessionCalendar,
+    *,
+    exclude_promo: bool = True,
+) -> ClosedStats:
     """Metricas de las posiciones cerradas.
 
     ``profit_factor`` es infinito cuando no hubo perdidas; ``payoff`` solo tiene
     sentido cuando ambos lados existen. ``avg_hold_sessions`` cuenta por sesiones
-    (la unidad del spec), no por dias calendario.
+    (la unidad del spec), no por dias calendario. Las acciones gratuitas de
+    promocion (precio de apertura ~0.01) no son una operacion y se excluyen.
     """
+    excluded = 0
+    if exclude_promo:
+        kept = tuple(pos for pos in closed if pos.open_price > 0.02)
+        excluded = len(closed) - len(kept)
+        closed = kept
     profits = [pos.profit_clp for pos in closed]
     n = len(profits)
     wins = [p for p in profits if p > 0.0]
@@ -295,4 +311,7 @@ def closed_stats(closed: tuple[ClosedPosition, ...], calendar: SessionCalendar) 
         top_winners=tuple((pos.ticker, pos.profit_clp) for pos in details[:3]),
         top_losers=tuple((pos.ticker, pos.profit_clp) for pos in details[-3:] if pos.profit_clp < 0.0),
         avg_hold_sessions=(sum(holds) / len(holds)) if holds else None,
+        avg_win_clp=(gross_win / len(wins)) if wins else None,
+        avg_loss_clp=(gross_loss / len(losses)) if losses else None,
+        excluded_promo=excluded,
     )

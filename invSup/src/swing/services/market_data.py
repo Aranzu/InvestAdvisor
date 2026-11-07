@@ -118,6 +118,7 @@ def live_quotes(model: PositionReport, provider: YahooDataProvider, today: dt.da
             price_source="provider",
             earnings_date=earnings.date if not earnings.is_missing else None,
             earnings_known=not earnings.is_missing,
+            earnings_confirmed=earnings.confirmed,
         )
     return quotes
 

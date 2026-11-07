@@ -65,11 +65,19 @@ class MarketRegime:
     count: int | None = None
     signals: tuple[str, ...] = ()
     near_threshold: tuple[str, ...] = ()
+    suspicious: tuple[str, ...] = ()
+    """Benchmarks excluidos del conteo por dato implausible (variacion o SMA200)."""
     usdclp: float | None = None
     vix: float | None = None
     spy_vs_sma200_pct: float | None = None
     tnx_vs_sma200_pct: float | None = None
     dxy_vs_sma200_pct: float | None = None
+    qqq_1m_pct: float | None = None
+    vix_1m_pct: float | None = None
+    portfolio_breadth_pct: float | None = None
+    """% de posiciones abiertas bajo su SMA200 (amplitud de la propia cartera)."""
+    mode: str = ""
+    """``normal``/``cautela``/``defensivo`` segun el conteo (P9 y regla 7)."""
 
 
 #: Benchmarks del contexto, en el orden en que se muestran. ``USDCLP=X`` pide solo
@@ -130,20 +138,42 @@ def regime(
     vix_max: float,
     tnx_above_sma200_pct: float,
     dxy_above_sma200_pct: float,
+    qqq_1m_max_pct: float,
+    vix_1m_min_pct: float,
+    suspicious_1m_abs_pct: float,
+    suspicious_sma_band: tuple[float, float],
     near_threshold_pp: float,
 ) -> MarketRegime:
-    """Cuenta las senales de estres del regimen y las que estan cerca del umbral.
+    """Cuenta las seis senales de estres del regimen v7 y las que estan cerca.
 
     Solo usa lo que trajeron los benchmarks: una senal sin dato no se cuenta ni se
-    inventa. El nivel se publica con las senales disponibles; sin ninguna, ``sin dato``.
+    inventa. Un benchmark con variacion a 1 mes implausible o un nivel fuera de la
+    banda de su SMA200 se marca ``sospechoso`` y **no cuenta** como senal.
     """
     by_symbol = {item.symbol: item for item in instruments}
     vix = by_symbol.get("^VIX")
     spy = by_symbol.get("SPY")
     tnx = by_symbol.get("^TNX")
     dxy = by_symbol.get("DX-Y.NYB")
+    qqq = by_symbol.get("QQQ")
     usdclp = by_symbol.get("USDCLP=X")
 
+    suspicious: list[str] = []
+    usable: dict[str, MarketInstrument] = {}
+    for item in (vix, spy, tnx, dxy, qqq):
+        if item is None:
+            continue
+        if _suspicious(item, abs_pct=suspicious_1m_abs_pct, band=suspicious_sma_band):
+            suspicious.append(item.label)
+        else:
+            usable[item.symbol] = item
+    vix = usable.get("^VIX")
+    spy = usable.get("SPY")
+    tnx = usable.get("^TNX")
+    dxy = usable.get("DX-Y.NYB")
+    qqq = usable.get("QQQ")
+
+    # (etiqueta, valor, umbral, direccion) donde ``above=True`` dispara con ``>``.
     checks: list[tuple[str, float | None, float, bool]] = [
         ("VIX", vix.price if vix is not None else None, vix_max, True),
         ("SPY<SMA200", spy.vs_sma200_pct if spy is not None else None, 0.0, False),
@@ -159,6 +189,8 @@ def regime(
             dxy_above_sma200_pct,
             True,
         ),
+        ("QQQ 1M<=-8%", qqq.chg_1m_pct if qqq is not None else None, qqq_1m_max_pct, False),
+        ("VIX 1M>=+40%", vix.chg_1m_pct if vix is not None else None, vix_1m_min_pct, True),
     ]
     signals: list[str] = []
     near: list[str] = []
@@ -177,20 +209,39 @@ def regime(
     count = len(signals) if available else None
     if count is None:
         level = "sin dato"
+        mode = ""
     elif count <= 1:
         level = "bajo"
-    elif count == 2:
+        mode = "normal"
+    elif count <= 3:
         level = "medio"
+        mode = "cautela"
     else:
         level = "alto"
+        mode = "defensivo"
     return MarketRegime(
         level=level,
         count=count,
         signals=tuple(signals),
         near_threshold=tuple(near),
+        suspicious=tuple(suspicious),
         usdclp=usdclp.price if usdclp is not None else None,
         vix=vix.price if vix is not None else None,
         spy_vs_sma200_pct=spy.vs_sma200_pct if spy is not None else None,
         tnx_vs_sma200_pct=tnx.vs_sma200_pct if tnx is not None else None,
         dxy_vs_sma200_pct=dxy.vs_sma200_pct if dxy is not None else None,
+        qqq_1m_pct=qqq.chg_1m_pct if qqq is not None else None,
+        vix_1m_pct=vix.chg_1m_pct if vix is not None else None,
+        mode=mode,
     )
+
+
+def _suspicious(item: MarketInstrument, *, abs_pct: float, band: tuple[float, float]) -> bool:
+    """Dato implausible: variacion a 1 mes absurda o nivel fuera de la banda de SMA200."""
+    if item.chg_1m_pct is not None and abs(item.chg_1m_pct) > abs_pct:
+        return True
+    low, high = band
+    if item.sma200 is not None and item.sma200 > 0.0 and item.price is not None:
+        ratio = item.price / item.sma200
+        return ratio < low or ratio > high
+    return False
