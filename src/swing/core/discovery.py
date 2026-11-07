@@ -304,7 +304,11 @@ def _apply_fundamentals(
 
 
 def theme_allowed(theme: str, counts: Mapping[str, int], max_per_theme: int | None) -> bool:
-    """``True`` si el tema todavia tiene cupo en el recorte final."""
-    if max_per_theme is None:
+    """``True`` si el tema todavia tiene cupo en el recorte final.
+
+    ``sin_tema`` no se capa: agrupa tickers de sectores desconocidos (watchlist sin
+    mapa de temas) y caparlos dejaria el recorte vacio sin explicar nada.
+    """
+    if max_per_theme is None or theme == DEFAULT_THEME:
         return True
     return counts.get(theme, 0) < max_per_theme

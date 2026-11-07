@@ -240,7 +240,8 @@ No hay una lista de observación curada. `screen` acepta `--breadth`:
 
 - `sp500` (por defecto): el índice vivo, cacheado en `cache/universe/sp500.json`; sin red
   usa la copia.
-- `watchlist`: `config/watchlist.yaml`, solo como respaldo.
+- `watchlist`: `config/watchlist.yaml`, solo como respaldo. Ahora contiene los **503
+  constituyentes del S&P 500 al 2026-11-07** (clases en formato Yahoo: `BRK-B`, `BF-B`).
 - `candidates`: los tickers de `state/candidates.json` de una corrida anterior.
 
 `watchlist.yaml` y `themes.yaml` quedan como respaldo local. Limitación declarada: el

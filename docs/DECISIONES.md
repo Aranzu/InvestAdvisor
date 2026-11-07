@@ -36,11 +36,12 @@ solucion es otra fuente de datos, no relajar el criterio.
 *cross-sectional*: el mismo ticker da un percentil distinto segun el universo, asi
 que define que se puede comprar. El spec no lo define.
 
-**Decision.** `config/watchlist.yaml` es la unica fuente del universo. Se carga una
-propuesta inicial de 69 large caps con su tema en `config/themes.yaml`, para que el
-usuario la apruebe o la edite antes de que se use. Si el universo tiene menos de
-`min_universe` (40), la puerta 4 se desactiva, se avisa en el informe y asi lo
-declara el backtest (seccion 11.1 ya lo pedia).
+**Decision.** `config/watchlist.yaml` es la fuente del universo de respaldo: hoy
+contiene el **S&P 500 vigente al 2026-11-07 (503 constituyentes)**. `config/themes.yaml`
+es el mapa de temas de respaldo; para el resto, `screen --breadth sp500` toma el sector
+GICS del universo vivo. Si el universo tiene menos de `min_universe` (40), la puerta 4
+se desactiva, se avisa en el informe y asi lo declara el backtest (seccion 11.1 ya lo
+pedia).
 
 **Mantenimiento.** La lista es estatica y envejece. Un ticker que deja de tener
 datos dispara `DATA_GAP`. La revision de membresia es manual; no hay logica que
@@ -423,7 +424,7 @@ lista fija.
 GICS Sector; de ahi sale tambien el tema), aplica un prefiltro (`core/discovery`: tendencia
 SMA200/stack, rango 52 semanas, liquidez, precio) y ordena por fuerza relativa; deja
 `state/candidates.json`. Hoy `screen` acepta
-`--breadth sp500|watchlist`.
+`--breadth sp500|watchlist|candidates`.
 
 **Por que Wikipedia y por que cache.** Es enumerable sin key; se cachea en
 `cache/universe/sp500.json` y sin red se usa la copia (o `watchlist.yaml`). Limitacion
@@ -634,7 +635,7 @@ campos depende de que Yahoo y Finviz cambien o no su formato.
   (D25) y **nunca se corrio sobre datos reales**; ningun parametro tiene evidencia a
   su favor. Resolverla implicaba revivir el backtest, bajar ~10-15 anos del universo
   y aceptar el sesgo de supervivencia (D12), con veredicto probablemente
-  `NO CONCLUYENTE` para 69 tickers. Se decide **no** hacerlo por ahora: el producto
+  `NO CONCLUYENTE` para el universo actual (503 tickers). Se decide **no** hacerlo por ahora: el producto
   queda **NO VALIDADO** y no debe operarse con dinero real. El camino y los
   prerequisitos se documentan en este archivo.
 - **Verificaciones de broker #4, #6 y #10.** Necesitan una cuenta demo real del

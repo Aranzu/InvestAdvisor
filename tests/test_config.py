@@ -96,10 +96,9 @@ def test_watchlist_y_themes_de_entrega_cargan() -> None:
     themes = load_themes(CONFIG_DIR / "themes.yaml")
 
     assert len(watchlist.universe) >= MIN_UNIVERSE
-    assert set(themes.themes) == set(watchlist.universe), (
-        "watchlist y themes se revisan juntos; un ticker sin tema cae al sector de "
-        "la fuente y eso hay que verlo en el informe, no descubrirlo al operar"
-    )
+    # themes.yaml es el mapa de respaldo: puede cubrir solo una parte del S&P 500;
+    # el resto toma el sector GICS del universo vivo.
+    assert set(themes.themes) <= set(watchlist.universe)
 
 
 def test_el_universo_no_repetit_tickers() -> None:
@@ -112,7 +111,9 @@ def test_el_conteo_del_universo_esta_fijado() -> None:
     # en D2. Un universo que crece por agregados silenciosos deja de ser el
     # universo que el usuario aprobo (decision D2).
     universe = load_watchlist(CONFIG_DIR / "watchlist.yaml").universe
-    assert len(universe) == 69, "cambio el universo: actualizar D2 en docs/DECISIONES.md"
+    assert len(universe) == 503, (
+        "cambio el universo: actualizar D2 en docs/DECISIONES.md y el S&P 500 de referencia"
+    )
 
 
 def test_las_exclusiones_no_estan_en_el_universo() -> None:

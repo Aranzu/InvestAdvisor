@@ -245,6 +245,7 @@ def test_tope_de_candidatos_por_tema() -> None:
     assert theme_allowed("semis", {"semis": 1}, 2) is True
     assert theme_allowed("semis", {"semis": 2}, 2) is False
     assert theme_allowed("semis", {"semis": 99}, None) is True
+    assert theme_allowed("sin_tema", {"sin_tema": 99}, 2) is True
 
 
 def test_screener_exige_fundamentales_si_la_config_lo_pide() -> None:
