@@ -244,12 +244,19 @@ def portfolio_narrative(
         return None
 
 
-def review_fields(review: LLMReview | None) -> dict[str, object]:
-    """Lo que la IA dijo de un candidato, para ``candidates.json``."""
+def review_fields(review: LLMReview | None, thesis_status: str = "ok") -> dict[str, object]:
+    """Lo que la IA dijo de un candidato, para ``candidates.json``.
+
+    ``thesis_status`` distingue una tesis real (``ok``) de una omitida por
+    presupuesto (``skipped``), un fallo de la IA (``failed``), falta de clave
+    (``no_key``) o un formato sin IA (``disabled``). Sin tesis, el veredicto es
+    ``None`` y el estado explica por que.
+    """
     if review is None:
-        return {"verdict": None}
+        return {"verdict": None, "thesis_status": thesis_status}
     return {
         "verdict": review.verdict.value,
+        "thesis_status": thesis_status,
         "confidence": review.confidence.value,
         "accion": review.accion,
         "fundamento": review.fundamento,
@@ -414,6 +421,9 @@ def review_candidates(
             "momentum_pct": round((candidate.momentum - 1.0) * 100, 1),
             "composite_score": None if candidate.composite is None else round(candidate.composite, 1),
             "fundamental_score": None if candidate.fundamental is None else round(candidate.fundamental, 1),
+            "coverage_pct": None if candidate.coverage is None else round(candidate.coverage * 100, 1),
+            "data_quality": candidate.data_quality,
+            "missing_fundamentals": list(candidate.fundamental_notes),
         }
         if technical is not None:
             facts.update(technical.get(candidate.ticker, {}))

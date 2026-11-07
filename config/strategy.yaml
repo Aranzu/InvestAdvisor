@@ -255,6 +255,13 @@ screener:
   # Piso de fuerza relativa: fuera lo que rinde peor que la mitad del universo.
   # null desactiva el piso.
   min_rs_percentile: 50
+  # Cobertura minima de fundamentales (0..1). Un score construido con demasiados
+  # huecos no se usa para rankear.
+  min_coverage: 0.50
+  # Extension maxima sobre la SMA50 en %. null desactiva el filtro.
+  max_pct_above_sma50: 20
+  # Maximo de candidatos por tema en el recorte final. null desactiva el tope.
+  max_per_theme: 4
   # Misma puerta G6 que el motor aplica a una entrada: quien reporta dentro de
   # gates.earnings_entry_blackout_sessions sale del recorte y entra el siguiente.
   exclude_earnings_blackout: true

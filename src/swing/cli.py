@@ -9,6 +9,7 @@ cero que parece exito.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import sys
 from collections.abc import Mapping, Sequence
@@ -50,6 +51,7 @@ from swing.core.discovery import (
     earnings_gate_rejection,
     rank_candidates,
     technical_survivors,
+    theme_allowed,
 )
 from swing.core.engine import (
     IndicatorFrame,
@@ -124,6 +126,9 @@ app = typer.Typer(
 #: donde vive ``config/``. Con la instalacion editable ese es el unico lugar
 #: razonable; con una instalacion normal hay que pasar ``--config-dir``.
 DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+
+#: Version del documento ``state/candidates.json``. Sube cuando cambia la forma.
+CANDIDATES_SCHEMA = 1
 
 def _force_utf8_stdout() -> None:
     """Alinea la consola con UTF-8 para que el informe no aborte al imprimirse.
@@ -371,15 +376,14 @@ def _resolve_universe(
                 fg=typer.colors.YELLOW,
             )
             return watchlist.universe, themes_file, "watchlist"
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = []
-        tickers = tuple(str(item["ticker"]) for item in data if "ticker" in item)
+        rows = _candidate_rows(path)
+        tickers = tuple(str(row["ticker"]) for row in rows if "ticker" in row)
         if not tickers:
             typer.secho(f"  aviso: {path} sin candidatos; uso watchlist.yaml", fg=typer.colors.YELLOW)
             return watchlist.universe, themes_file, "watchlist"
-        themes = ThemesConfig(themes={str(item["ticker"]): str(item.get("theme", "sin_tema")) for item in data})
+        themes = ThemesConfig(
+            themes={str(row["ticker"]): str(row.get("theme", "sin_tema")) for row in rows if "ticker" in row}
+        )
         return tickers, themes, "candidates"
     if source != "sp500":
         return watchlist.universe, themes_file, "watchlist"
@@ -795,7 +799,7 @@ def screen(
     ] = None,
     breadth: Annotated[
         str,
-        typer.Option("--breadth", help="Conjunto base a rastrear: sp500 (vivo) o watchlist."),
+        typer.Option("--breadth", help="Conjunto base a rastrear: sp500 (vivo), watchlist o candidates."),
     ] = "sp500",
     out: Annotated[
         Path | None,
@@ -913,6 +917,9 @@ def _run_screener(
     in_blackout: list[str] = []
     no_date: list[str] = []
     held_out: list[str] = []
+    theme_capped: list[str] = []
+    theme_counts: dict[str, int] = {}
+    max_per_theme = strategy.screener.max_per_theme
     earnings: dict[str, dt.date] = {}
     to_earnings: dict[str, int | None] = {}
     # Cruce con la cartera (best effort): los tickers abiertos no se proponen de nuevo y
@@ -929,6 +936,9 @@ def _run_screener(
             break
         if strategy.screener.exclude_held and to_yahoo_symbol(candidate.ticker) in held:
             held_out.append(candidate.ticker)
+            continue
+        if not theme_allowed(candidate.theme, theme_counts, max_per_theme):
+            theme_capped.append(candidate.ticker)
             continue
         earnings.update(_candidate_earnings(provider, [candidate.ticker], offline))
         day = earnings.get(candidate.ticker)
@@ -948,12 +958,13 @@ def _run_screener(
                     no_date.append(candidate.ticker)
                 continue
         candidates.append(candidate)
+        theme_counts[candidate.theme] = theme_counts.get(candidate.theme, 0) + 1
 
     typer.echo("")
     typer.echo(
-        "| score | fund | valor | calidad | crec | proy | upside% | cobert% | RS% | earn (ses) | ADV MUSD | ticker | tema |"
+        "| score | fund | valor | calidad | crec | proy | upside% | cobert% | datos | RS% | earn (ses) | ADV MUSD | ticker | tema |"
     )
-    typer.echo("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    typer.echo("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for candidate in candidates:
         sessions = to_earnings.get(candidate.ticker)
         earn = "-" if sessions is None else (f"{sessions} !" if sessions <= blackout else str(sessions))
@@ -961,7 +972,7 @@ def _run_screener(
             f"| {_num(candidate.composite)} | {_num(candidate.fundamental)} | {_num(candidate.value)} | "
             f"{_num(candidate.quality)} | {_num(candidate.growth)} | {_num(candidate.projections)} | "
             f"{_pct(candidate.target_upside)} | {_num(None if candidate.coverage is None else candidate.coverage * 100)} | "
-            f"{candidate.rs_percentile:.1f} | "
+            f"{candidate.data_quality} | {candidate.rs_percentile:.1f} | "
             f"{earn} | {candidate.adv_usd / 1e6:.1f} | {candidate.ticker} | {candidate.theme} |"
         )
     typer.echo("")
@@ -981,6 +992,11 @@ def _run_screener(
         )
     if held_out:
         typer.secho(f"  fuera por ya estar en cartera: {', '.join(held_out)}", fg=typer.colors.YELLOW)
+    if theme_capped:
+        typer.secho(
+            f"  fuera por tope de {max_per_theme} candidato(s) por tema: {', '.join(theme_capped)}",
+            fg=typer.colors.YELLOW,
+        )
     over_cap = {theme: pct for theme, pct in theme_pct.items() if pct > strategy.risk.max_theme_pct}
     if over_cap and candidates:
         temas = ", ".join(f"{theme} {pct:.1f} %" for theme, pct in sorted(over_cap.items(), key=lambda kv: -kv[1]))
@@ -997,24 +1013,45 @@ def _run_screener(
             fg=typer.colors.YELLOW,
         )
     if result.rejected:
-        muestra = ", ".join(f"{r.ticker}({r.reasons[0].reason.value})" for r in result.rejected[:8])
+        muestra = ", ".join(
+            f"{r.ticker}({r.reasons[0].reason.value}: {r.reasons[0].detail})" for r in result.rejected[:8]
+        )
         typer.secho(f"  rechazados por fundamentales: {muestra}", fg=typer.colors.YELLOW)
     if missing:
         typer.secho(f"  aviso: {len(missing)} ticker(s) sin velas", fg=typer.colors.YELLOW)
 
     path = out if out is not None else _candidate_path()
+    previous_rows = _candidate_rows(path)
     # El ranking determinista se escribe ANTES de la IA. La tesis puede tardar o
     # fallar, y no debe llevarse por delante el trabajo ya hecho: una corrida real
     # de 10 minutos se perdio porque el archivo se escribia al final del bloque de IA.
-    _write_candidates(path, _candidate_payload(candidates, earnings, to_earnings, {}))
+    pending = {candidate.ticker: "pending" for candidate in candidates}
+    initial_payload = _candidate_payload(candidates, earnings, to_earnings, {}, pending)
+    diff = _diff_candidates(previous_rows, initial_payload)
+    meta = _candidate_meta(
+        today=today,
+        origin=origin,
+        universe_size=len(tickers),
+        limit=limit,
+        threshold=threshold,
+        strategy=strategy,
+        config_dir=config_dir,
+        blackout=blackout,
+        diff=diff,
+    )
+    _write_candidates(path, initial_payload, {**meta, "thesis": _thesis_summary(pending)})
     if out is None:
         _prune_outputs(_output_dir())
     typer.echo(f"Candidatos escritos en {path}")
+    _echo_diff(diff)
 
     reviews: dict[str, LLMReview] = {}
+    skipped: tuple[str, ...] = ()
+    thesis_status: dict[str, str]
     if llm and candidates:
         client = client_from_env(web_search=web_search, max_searches=strategy.llm.max_searches_per_ticker)
         if client is None:
+            thesis_status = {c.ticker: "no_key" for c in candidates}
             typer.secho("  aviso: sin clave del LLM; la tesis de compra se omite", fg=typer.colors.YELLOW)
         else:
             if web_search and search_from_env() is None:
@@ -1036,6 +1073,10 @@ def _run_screener(
                 macro_context=macro.fundamento if macro is not None else "",
                 budget_s=strategy.llm.screen_budget_s,
             )
+            thesis_status = {
+                c.ticker: "ok" if c.ticker in reviews else "skipped" if c.ticker in skipped else "failed"
+                for c in candidates
+            }
             typer.echo("")
             for candidate in candidates:
                 review = reviews.get(candidate.ticker)
@@ -1050,10 +1091,22 @@ def _run_screener(
                     fg=typer.colors.YELLOW,
                 )
             _echo_llm_usage(client)
-            if reviews:
-                # La tesis se anexa sobre el archivo ya escrito, sin volver a calcular el ranking.
-                _write_candidates(path, _candidate_payload(candidates, earnings, to_earnings, reviews))
-                typer.echo(f"Tesis de la IA anexada en {path}")
+    else:
+        thesis_status = {c.ticker: "disabled" for c in candidates}
+
+    # La tesis se anexa sobre el archivo ya escrito, sin volver a calcular el ranking.
+    final_payload = _candidate_payload(candidates, earnings, to_earnings, reviews, thesis_status)
+    final_meta = {**meta, "thesis": _thesis_summary(thesis_status)}
+    _write_candidates(path, final_payload, final_meta)
+    if reviews:
+        typer.echo(f"Tesis de la IA anexada en {path}")
+    summary = _thesis_summary(thesis_status)
+    if summary:
+        typer.echo(
+            "Tesis: "
+            + ", ".join(f"{count} {status}" for status, count in sorted(summary.items()))
+            + "."
+        )
 
 
 def _candidate_payload(
@@ -1061,12 +1114,16 @@ def _candidate_payload(
     earnings: Mapping[str, dt.date],
     to_earnings: Mapping[str, int | None],
     reviews: Mapping[str, LLMReview],
+    thesis_status: Mapping[str, str] | None = None,
 ) -> list[dict[str, object]]:
     """Filas de ``candidates.json``. Con ``reviews`` vacio el veredicto queda en ``None``.
 
     Separar el ranking (determinista) de la tesis (IA) permite escribir el primero en
-    cuanto esta listo y anexar la segunda cuando llega.
+    cuanto esta listo y anexar la segunda cuando llega. ``thesis_status`` distingue
+    ``ok`` de ``skipped`` (presupuesto), ``failed`` (error de la IA), ``no_key`` y
+    ``disabled``.
     """
+    statuses = thesis_status or {}
     return [
         {
             "ticker": c.ticker,
@@ -1080,21 +1137,141 @@ def _candidate_payload(
             "growth": None if c.growth is None else round(c.growth, 1),
             "projections": None if c.projections is None else round(c.projections, 1),
             "coverage": None if c.coverage is None else round(c.coverage, 2),
+            "data_quality": c.data_quality,
+            "missing_count": len(c.fundamental_notes),
+            "fundamental_missing": list(c.fundamental_notes),
             "target_upside_pct": None if c.target_upside is None else round(c.target_upside * 100.0, 2),
             "close": round(c.close, 2),
             "atr_pct": round(c.atr_pct, 2),
             "earnings_date": earnings[c.ticker].isoformat() if c.ticker in earnings else None,
             "earnings_sessions": to_earnings.get(c.ticker),
-            **_review_fields(reviews.get(c.ticker)),
+            **_review_fields(reviews.get(c.ticker), statuses.get(c.ticker, "pending")),
         }
         for c in candidates
     ]
 
 
-def _write_candidates(path: Path, payload: Sequence[Mapping[str, object]]) -> None:
-    """Escribe ``candidates.json`` en un solo ``write_text`` (el archivo es chico)."""
+def _candidate_rows(path: Path) -> list[dict[str, object]]:
+    """Filas del ``candidates.json`` actual; acepta el formato viejo (lista)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = data.get("candidates") if isinstance(data, dict) else data
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _diff_candidates(
+    previous: Sequence[Mapping[str, object]],
+    current: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Entradas, salidas y cambios de puesto contra la corrida anterior."""
+    old = {str(row.get("ticker")): index for index, row in enumerate(previous) if row.get("ticker")}
+    new = {str(row.get("ticker")): index for index, row in enumerate(current) if row.get("ticker")}
+    return {
+        "entered": [ticker for ticker in new if ticker not in old],
+        "exited": [ticker for ticker in old if ticker not in new],
+        "up": [
+            {"ticker": ticker, "from": old[ticker] + 1, "to": new[ticker] + 1}
+            for ticker in new
+            if ticker in old and new[ticker] < old[ticker]
+        ],
+        "down": [
+            {"ticker": ticker, "from": old[ticker] + 1, "to": new[ticker] + 1}
+            for ticker in new
+            if ticker in old and new[ticker] > old[ticker]
+        ],
+    }
+
+
+def _echo_diff(diff: Mapping[str, object]) -> None:
+    """Resume el diff de candidatos sin llenar la consola."""
+    parts: list[str] = []
+    entered = diff.get("entered")
+    exited = diff.get("exited")
+    up = diff.get("up")
+    down = diff.get("down")
+    if isinstance(entered, list) and entered:
+        parts.append(f"entran {', '.join(str(t) for t in entered[:6])}")
+    if isinstance(exited, list) and exited:
+        parts.append(f"salen {', '.join(str(t) for t in exited[:6])}")
+    if isinstance(up, list) and up:
+        parts.append(f"suben {', '.join(str(item.get('ticker')) for item in up[:6] if isinstance(item, Mapping))}")
+    if isinstance(down, list) and down:
+        parts.append(f"bajan {', '.join(str(item.get('ticker')) for item in down[:6] if isinstance(item, Mapping))}")
+    if parts:
+        typer.echo("  diff vs corrida anterior: " + "; ".join(parts) + ".")
+
+
+def _thesis_summary(statuses: Mapping[str, str]) -> dict[str, int]:
+    """Conteo por estado de tesis, sin estados vacios."""
+    counts: dict[str, int] = {}
+    for status in statuses.values():
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _config_hash(config_dir: Path) -> str | None:
+    """Hash corto de los YAML que afectan al screener, para comparar corridas."""
+    hasher = hashlib.sha256()
+    found = False
+    for name in ("strategy.yaml", "factors.yaml", "watchlist.yaml", "themes.yaml"):
+        path = config_dir / name
+        if not path.is_file():
+            continue
+        found = True
+        hasher.update(name.encode("utf-8"))
+        hasher.update(path.read_bytes())
+    return hasher.hexdigest()[:16] if found else None
+
+
+def _candidate_meta(
+    *,
+    today: dt.date,
+    origin: str,
+    universe_size: int,
+    limit: int,
+    threshold: float,
+    strategy: StrategyConfig,
+    config_dir: Path,
+    blackout: int,
+    diff: Mapping[str, object],
+) -> dict[str, object]:
+    """Metadatos para reproducir y comparar una corrida del screener."""
+    return {
+        "generated_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+        "data_date": today.isoformat(),
+        "universe": {"source": origin, "count": universe_size},
+        "settings": {
+            "top": limit,
+            "min_composite_score": threshold,
+            "momentum_weight": strategy.screener.momentum_weight,
+            "min_rs_percentile": strategy.screener.min_rs_percentile,
+            "min_coverage": strategy.screener.min_coverage,
+            "max_pct_above_sma50": strategy.screener.max_pct_above_sma50,
+            "max_per_theme": strategy.screener.max_per_theme,
+            "earnings_blackout_sessions": blackout,
+        },
+        "config_hash": _config_hash(config_dir),
+        "diff": dict(diff),
+    }
+
+
+def _write_candidates(
+    path: Path,
+    payload: Sequence[Mapping[str, object]],
+    meta: Mapping[str, object] | None = None,
+) -> None:
+    """Escribe ``candidates.json`` con metadatos y la lista de candidatos."""
+    document: dict[str, object] = {
+        "schema": CANDIDATES_SCHEMA,
+        **(dict(meta) if meta is not None else {}),
+        "candidates": list(payload),
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
 def _echo_llm_usage(client: object) -> None:

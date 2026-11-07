@@ -75,20 +75,24 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
 
 ### 3.3 `screen` — recomendador de acciones
 
-1. Universo amplio: S&P 500 vivo desde Wikipedia (GICS → tema) o watchlist local.
+1. Universo amplio: S&P 500 vivo desde Wikipedia (GICS → tema), watchlist local o los
+   `candidates` de una corrida anterior.
 2. Prefiltro técnico (`core/discovery`): tendencia SMA200, stack, rango 52 semanas,
-   liquidez y precio.
+   liquidez, precio y extensión máxima sobre la SMA50 (`screener.max_pct_above_sma50`).
 3. Fundamentales y proyecciones (`adapters/fundamentals`, cacheados con TTL):
-   puertas (`fundamentals:` en `strategy.yaml`) y **score compuesto** por bloque
+   puertas (`fundamentals:` en `strategy.yaml`), cobertura mínima
+   (`screener.min_coverage`) y **score compuesto** por bloque
    (valor/calidad/crecimiento/proyecciones; `core/fundamentals.py`). El P/B está apagado
    por defecto (`use_price_to_book`): no es comparable entre sectores.
 4. Cruce con la cartera (best effort, `--portfolio` o el export más nuevo): los tickers
-   abiertos salen del recorte y se avisa si un candidato cae en un tema sobre
-   `risk.max_theme_pct`.
+   abiertos salen del recorte, se aplica `screener.max_per_theme` y se avisa si un
+   candidato cae en un tema sobre `risk.max_theme_pct`.
 5. Ranking por score → los `top` mejores y `min_composite_score` se escriben en
-   `state/candidates.json` **antes** de la IA; después la IA (obligatoria cuando hay clave)
-   emite su tesis de compra (`BUY/WATCH`) por candidato y se **anexa** al mismo archivo,
-   con la fase acotada por `llm.screen_budget_s`.
+   `state/candidates.json` **antes** de la IA, con metadatos (`schema`, `generated_at`,
+   `data_date`, `universe`, `settings`, `config_hash` y `diff` contra la corrida anterior).
+   Después la IA (obligatoria cuando hay clave) emite su tesis de compra (`BUY/WATCH`)
+   por candidato y se **anexa** al mismo archivo, con la fase acotada por
+   `llm.screen_budget_s` y `thesis_status` (`ok`/`skipped`/`failed`/`no_key`/`disabled`).
 
 ## 4. El motor `decide()` (`core/engine.py`)
 
@@ -172,7 +176,7 @@ El CLI expone **solo tres comandos**: `stats`, `review` y `screen`.
 |---|---|
 | `stats` | ficha por posición con todos los campos posibles (tipo Finviz), **panel de cumplimiento P1-P13 (base P12)** (stop inicial anclado a la entrada, stop vigente, R, riesgo, peso pat/max abrir, heredadas 0/A/B, stop viable P13 y estado), lotes completos, promedio a la baja, ledger, curva de patrimonio ajustada con máximo explícito, historial cerrado y aportes/caja, insiders resumidos, **horario extendido**, materias primas, **mapas de factor/tema**, **V1/earnings**, **factibilidad con calendario** y **estado de datos**; el **régimen v8 de 6 señales** (VIX/SPY/10Y/DXY/QQQ/VIX 1M, benchmarks sospechosos, amplitud y USD/CLP) se muestra siempre. Emite `stats_<reporte>_<marca>.md` y, con `--json`, el `.json` (`schema: 10`) |
 | `review` | **función 1**: usa `stats`; el motor decide niveles + la IA el veredicto. `--formato informe` (11 secciones, por defecto), `detalle`, `tabla` o `acciones` |
-| `screen` | **función 2**: recomendador de acciones (técnico + fundamentales + proyecciones) |
+| `screen` | recomendador de acciones (técnico + fundamentales + proyecciones, con calidad de datos y tope por tema) |
 
 Los comandos históricos (`daily`, `scan`, `allocate`, `confirm`, `backtest`, `nightly`,
 `schedule`, `track`, `discover`, diagnósticos) ya no existen ni forman parte del paquete.

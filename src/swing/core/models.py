@@ -968,6 +968,14 @@ class ScreenerConfig(StrictModel):
     require_fundamentals: bool
     momentum_weight: float = Field(default=0.0, ge=0.0, le=1.0)
     min_rs_percentile: float | None = Field(default=None, ge=0.0, le=100.0)
+    min_coverage: float = Field(default=0.5, ge=0.0, le=1.0)
+    """Cobertura minima de campos fundamentales (0..1). Bajo ese piso el candidato
+    no se rankea por un score construido con demasiados huecos."""
+    max_pct_above_sma50: float | None = Field(default=20.0, gt=0.0, le=100.0)
+    """Extension maxima sobre la SMA50 en % (``None`` desactiva el filtro). Evita
+    comprar un impulso ya estirado."""
+    max_per_theme: int | None = Field(default=4, ge=1, le=100)
+    """Maximo de candidatos por tema en el recorte final (``None`` desactiva)."""
     exclude_earnings_blackout: bool = False
     """Saca del recorte a quien reporta dentro de ``gates.earnings_entry_blackout_sessions``
     (la misma puerta G6 que el motor aplica a una entrada) y rellena con los siguientes."""

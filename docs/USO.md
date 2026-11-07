@@ -111,11 +111,24 @@ nunca los fija.
 En `screen`, lee la tabla por **score** (sobre 100): mezcla el score fundamental `fund`
 (valor/calidad/crecimiento/proyecciones) con la fuerza relativa `RS%` segun
 `screener.momentum_weight`. `upside%` = potencial al objetivo de analistas, `cobert%` =
-cuántas métricas tenía el ticker y `earn (ses)` = sesiones hasta el próximo reporte (`!` =
+cuántas métricas tenía el ticker, `datos` = calidad de esa cobertura (`ok`/`sin_datos`),
+`calidad` = score de calidad y `earn (ses)` = sesiones hasta el próximo reporte (`!` =
 dentro del blackout de entrada). Con `exclude_earnings_blackout: true` esos quedan fuera
 del recorte y entra el siguiente; con `fail_closed_earnings: true` (por defecto) un `-`
 (earnings sin fecha) también queda fuera cuando la fuente se consultó (no `--offline`),
 igual que la puerta G6 del motor. Un `-` significa "sin dato" (nunca un cero).
+
+El prefiltro también descarta una extensión mayor a `screener.max_pct_above_sma50` sobre
+la SMA50 y, si `screener.min_coverage` no se cumple, el candidato no se rankea por un score
+construido con demasiados huecos. `screener.max_per_theme` limita cuántos candidatos del
+mismo tema entran al recorte final.
+
+`state/candidates.json` guarda `schema`, `generated_at`, `data_date`, `universe`,
+`settings`, `config_hash` y el `diff` contra la corrida anterior (entraron/salieron/
+subieron/bajaron). Cada candidato lleva `data_quality`, `missing_count`,
+`fundamental_missing` y `thesis_status` (`ok`, `skipped`, `failed`, `no_key`,
+`disabled`), para distinguir una tesis real de una omitida por presupuesto o por un
+fallo de la IA.
 `--min-score` filtra antes del recorte y `--top` (por defecto `screener.top`) lo fija.
 El P/B está apagado por defecto (`fundamentals.use_price_to_book`), así que `cobert%` no lo
 cuenta y el valor lo mide el P/E. Con el export de XTB (`--portfolio` o el más nuevo) los

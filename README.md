@@ -39,6 +39,8 @@ Los tests de red piden `RUN_LIVE=1`:
 $env:RUN_LIVE = "1"; .venv\Scripts\python.exe -m pytest -m live
 ```
 
+## `stats`
+
 `stats` no decide nada: reúne la **mayor cantidad de campos posible** de cada posición
 abierta para un análisis posterior, en el estilo de Finviz. Yahoo es la base
 (valoración, márgenes, proyecciones), los técnicos (SMA20/50/200, RSI con su **percentil del
@@ -112,7 +114,7 @@ Además, **todo lo que se puede derivar se calcula en código** (no lo inventa l
 Los insiders se reducen al resumen por ticker (compras, ventas y neto 90 d) y las tres
 transacciones más recientes. El informe ya no trae las cuatro tablas de stops que se
 contradecían: el panel de cumplimiento es la única fuente. También se quitaron los
-campos que el prompt manda ignorar (empresa y clasificación, quick, P/Cash,
+campos que el prompt manda ignorar (clasificación, driver, quick, P/Cash,
 objetivo mín/máx, SHA, volatilidad realizada y peso eq de XTB).
 
 Las cantidades usan 4 decimales (acciones fraccionarias). Escribe `output/stats_<reporte>_<marca>.md`
@@ -127,10 +129,12 @@ liquidez/propiedad, insiders y materias primas), y `--sin-contexto` lo oculta. L
 El informe termina con un bloque JSON estable (esquema `stats` v10) con los mismos datos
 del panel.
 
-`review` es la **función 1**: primero escribe el informe de `stats` (y reutiliza sus
-fundamentales) y después recomienda sobre tus posiciones. Adopta lo abierto y corre las
-diez reglas de salida de §5.7 (las mismas del backtest) sin mirar el universo ni proponer
-entradas. La IA (siempre encendida cuando hay clave; sin clave el informe sale igual, con
+## `review`
+
+`review` es la **función de gestión**: primero escribe el informe de `stats` (y reutiliza
+sus fundamentales) y después recomienda sobre tus posiciones. Adopta lo abierto y corre
+las diez reglas de salida del prompt v8 sin mirar el universo ni proponer entradas. La IA
+(siempre encendida cuando hay clave; sin clave el informe sale igual, con
 un aviso) entrega su veredicto (`BUY/HOLD/SELL/WATCH`) y **decide** mantener o vender;
 el motor sigue fijando stop, meta y tamaño. Hay cuatro formatos con `--formato`:
 
@@ -168,24 +172,79 @@ posición**. Un veredicto `WEAKENED` aparece como `TESIS DEBILITADA` (vigilar); 
 (con evidencia fechada y con fuente) entra al motor como la regla `THESIS_EXIT` y sale en
 la sección de Alertas.
 
-`screen` es la **función 2**: el **recomendador de acciones**. Rastrea el S&P 500 vivo, aplica el
-prefiltro técnico de tendencia/rango/liquidez y las **puertas fundamentales**
-(`fundamentals:` en `strategy.yaml`: valoración, ROE, margen, deuda, crecimiento y
-potencial al objetivo de analistas) y ordena por **score compuesto** (valor/calidad/
-crecimiento/proyecciones mezclado con la fuerza relativa del universo). El P/B está
-**apagado por defecto** (`use_price_to_book`): no es comparable entre sectores y su tope
-absoluto descartaba empresas asset-light de alto ROE (AAPL, ANET); el valor lo mide el P/E.
-Saca a quien reporta resultados dentro del blackout de entrada (la misma puerta G6 del motor):
-con la fuente de earnings consultada, una fecha ausente también queda fuera
-(`INDICATOR_NOT_READY`) en vez de recomendar a ciegas. Deja una sola clase de acción por
-empresa. Con el export de XTB (`--portfolio` o el más nuevo de `posiciones/`) **no propone
-lo que ya tenés** y avisa si un candidato cae en un tema que ya está sobre
-`risk.max_theme_pct`. Con `--min-score` filtra por ese score; la IA (obligatoria cuando hay
-clave) agrega la tesis de compra (veredicto `BUY/WATCH`) y la deja en el JSON. El ranking
-determinista se escribe en `state/candidates.json` **antes** de la IA y la tesis se anexa
-después: la corrida no se pierde si la tesis tarda o falla. La fase de tesis está acotada por
-`llm.screen_budget_s` (240 s por defecto): agotado el presupuesto, los candidatos que falten
-quedan en el JSON con `verdict: null` en vez de alargar la corrida.
+## `screen`
+
+### Flujo
+
+`screen` es el **recomendador de acciones para comprar**. No gestiona lo que ya tenés: eso
+es `review`. Tampoco genera órdenes ni tamaños: deja una lista de candidatos con score y
+tesis para que después se conviertan en una entrada real.
+
+1. **Universo.** Por defecto usa el **S&P 500 vivo** (Wikipedia, con el **sector GICS**
+   como tema). `--breadth watchlist` usa `config/watchlist.yaml`; `--breadth candidates`
+   reutiliza `state/candidates.json` de una corrida anterior. Si el universo vivo falla,
+   cae a la watchlist y lo avisa.
+2. **Velas y prefiltro técnico.** Baja velas diarias y solo deja pasar los que tienen
+   datos usables, precio ≥ SMA200, SMA50 ≥ SMA200, precio ≥ `gates.min_price`, liquidez
+   ≥ `gates.min_avg_volume`, precio ≥ 1,30× el mínimo de 52 semanas, precio ≥ 0,75× el
+   máximo de 52 semanas, extensión ≤ `screener.max_pct_above_sma50` sobre la SMA50 y
+   percentil de fuerza relativa ≥ `screener.min_rs_percentile`.
+3. **Fundamentales y proyecciones.** Solo para los sobrevivientes técnicos pide
+   fundamentales a Yahoo (caché con TTL): valoración, ROE, margen, deuda, crecimiento,
+   objetivo de analistas. Aplica las puertas de `fundamentals:` y exige
+   `screener.min_coverage` de cobertura: un score construido con demasiados huecos no
+   se usa para rankear.
+4. **Score y ranking.** Calcula el score fundamental 0-100 (valor, calidad, crecimiento,
+   proyecciones) y lo mezcla con la fuerza relativa:
+   `(1 - momentum_weight) × fundamental + momentum_weight × percentil_RS`.
+   Ordena, deja **una sola clase de acción por empresa** y recorta con `--top`
+   (25 por defecto) y `--min-score`.
+5. **Filtros de entrada.** Excluye earnings dentro del blackout (la misma puerta G6 del
+   motor, 20 sesiones); con la fuente viva y `fail_closed_earnings: true`, una fecha
+   ausente también queda fuera. Con `--portfolio` (o el export más nuevo de `posiciones/`)
+   no propone tickers que ya tenés. Aplica `screener.max_per_theme` al recorte final y
+   avisa si un candidato cae en un tema sobre `risk.max_theme_pct`.
+6. **Tesis de la IA.** Si hay clave, hace una llamada por candidato y devuelve
+   `BUY/WATCH` con fundamento y catalizador. `--web-search` habilita búsqueda web
+   (Tavily), acotada por `llm.screen_budget_s`; si se agota, los que falten quedan con
+   `verdict: null`.
+7. **Salida.** Imprime una tabla con score, score fundamental, valor/calidad/crecimiento/
+   proyecciones, upside %, cobertura %, calidad de datos, RS %, earnings en sesiones,
+   ADV, ticker y tema. Escribe `state/candidates.json` (o `--out`) con el ranking
+   **antes** de la IA y anexa la tesis después.
+   El JSON es un documento estable con `schema`, `generated_at`, `data_date`,
+   `universe`, `settings`, `config_hash`, `diff` contra la corrida anterior,
+   `thesis` y la lista `candidates`. Cada candidato lleva `data_quality`,
+   `missing_count`, `fundamental_missing` y `thesis_status`
+   (`ok | skipped | failed | no_key | disabled`).
+
+```powershell
+swing screen                                  # S&P 500, top 25, tesis IA
+swing screen --top 10 --min-score 60          # recorte mas exigente
+swing screen --breadth watchlist              # universo local
+swing screen --portfolio posiciones/CLP_....xlsx
+swing screen --web-search                     # tesis con busqueda web
+swing screen --offline                        # solo cache
+```
+
+El P/B está **apagado por defecto** (`use_price_to_book`): no es comparable entre sectores
+y su tope absoluto descartaba empresas asset-light de alto ROE (AAPL, ANET); el valor lo
+mide el P/E.
+
+### Universo del recomendador
+
+No hay una lista de observación curada. `screen` acepta `--breadth`:
+
+- `sp500` (por defecto): el índice vivo, cacheado en `cache/universe/sp500.json`; sin red
+  usa la copia.
+- `watchlist`: `config/watchlist.yaml`, solo como respaldo.
+- `candidates`: los tickers de `state/candidates.json` de una corrida anterior.
+
+`watchlist.yaml` y `themes.yaml` quedan como respaldo local. Limitación declarada: el
+S&P 500 son los constituyentes **de hoy**; cualquier medición histórica arrastra el sesgo
+de supervivencia del §11.1.
+
+## Inteligencia artificial
 
 ### Clave del LLM
 
@@ -239,26 +298,6 @@ revisión de los demás.
 Tavily (plan gratis). La IA la usa para anclarse en **hechos con fuente** y emitir su
 veredicto.
 
-### Universo del recomendador
-
-No hay una lista de observación curada. `swing screen` rastrea un conjunto amplio (el
-S&P 500 vivo, de Wikipedia, que trae el **sector GICS** y de ahí sale el tema de cada
-ticker), aplica el prefiltro de tendencia/rango de 52 semanas/liquidez/precio, baja los
-**fundamentales y proyecciones** de analistas (yfinance, cacheados en
-`cache/fundamentals/` con TTL) y ordena por **score compuesto** (configurable en
-`fundamentals:` y `screener:` de `strategy.yaml`); deja los mejores en
-`state/candidates.json`.
-
-`screen` acepta `--breadth sp500|watchlist`:
-
-- `sp500` (por defecto): el índice vivo, cacheado en `cache/universe/sp500.json`; sin red
-  usa la copia.
-- `watchlist`: el archivo local, solo como respaldo.
-
-`watchlist.yaml` y `themes.yaml` quedan como respaldo local. Limitación declarada: el
-S&P 500 son los constituyentes **de hoy**; cualquier medición histórica arrastra el sesgo de
-supervivencia del §11.1.
-
 ## Estructura
 
 `core/` es puro: sin disco, sin red, sin imports de `adapters/`. Un test lo verifica.
@@ -294,8 +333,7 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `core/llm.py` | 12 | Esquema del veredicto LLM; la IA decide, el motor fija niveles |
 | `core/discovery.py` | 5.2 | Prefiltro técnico + puertas/score fundamentales y ranking del recomendador |
 | `core/commodities.py` | 5.2 | Specs de oro/plata/cobre (Trading Economics, respaldo Yahoo) |
-| `core/market_context.py` | — | Contexto de mercado determinista (VIX, SPY, QQQ, SOXX, Chile, 10Y, DXY) |
-| `core/market_context.py` | - | Contexto de mercado y régimen de seis señales (base determinista) |
+| `core/market_context.py` | — | Contexto de mercado y régimen de seis señales (VIX, SPY, QQQ, SOXX, Chile, 10Y, DXY) |
 | `core/feasibility.py` | - | Paso 0b: escenarios y calendario semanal de reducción |
 | `core/stats.py` | - | Ficha por posición: specs de campos, derivados, panel, mapas y render Markdown |
 | `core/briefing.py` | — | Bloque determinista de la revisión: banderas, stop técnico, take profit y alertas |

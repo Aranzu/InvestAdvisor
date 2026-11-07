@@ -13,7 +13,7 @@ from pathlib import Path
 
 from swing import cli
 from swing.adapters.config_loader import load_strategy
-from swing.core.discovery import DiscoveredCandidate, earnings_gate_rejection, rank_candidates
+from swing.core.discovery import DiscoveredCandidate, earnings_gate_rejection, rank_candidates, theme_allowed
 from swing.core.engine import IndicatorFrame
 from swing.core.fundamentals import Fundamentals
 from swing.core.market import Bar, PriceSeries
@@ -80,6 +80,26 @@ def test_resolve_universe_desde_candidatos(tmp_path: Path, monkeypatch) -> None:
     tickers, resolved, origin = cli._resolve_universe("candidates", watchlist, themes, None, True)
     assert tickers == ("AMD", "NVDA")
     assert resolved.themes["NVDA"] == "semiconductors_ai"
+    assert origin == "candidates"
+
+
+def test_resolve_universe_desde_el_documento_nuevo(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "candidates.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "candidates": [{"ticker": "AMD", "theme": "semiconductors"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_candidate_path", lambda: path)
+    watchlist = WatchlistConfig(universe=("AAPL",), excluded=())
+    themes = ThemesConfig(themes={"AAPL": "x"})
+    tickers, resolved, origin = cli._resolve_universe("candidates", watchlist, themes, None, True)
+    assert tickers == ("AMD",)
+    assert resolved.themes["AMD"] == "semiconductors"
     assert origin == "candidates"
 
 
@@ -166,6 +186,65 @@ def test_screener_rechaza_por_puerta_fundamental() -> None:
     result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals={"GOOD": good, "BAD": caro})
     assert [c.ticker for c in result.candidates] == ["GOOD"]
     assert [r.ticker for r in result.rejected] == ["BAD"]
+
+
+def test_screener_rechaza_por_cobertura_baja() -> None:
+    frames, themes = _two_in_trend()
+    sparse = _fund(
+        "GOOD",
+        price_to_book=None,
+        return_on_equity=None,
+        profit_margin=None,
+        revenue_growth=None,
+        earnings_growth=None,
+        debt_to_equity=None,
+        eps_growth_estimate=None,
+        target_mean=None,
+        recommendation_mean=None,
+    )
+    result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals={"GOOD": sparse})
+    rejected = {r.ticker: r for r in result.rejected}
+    assert "GOOD" in rejected
+    assert "cobertura" in rejected["GOOD"].reasons[0].detail
+
+
+def test_sin_fundamentales_sigue_rankendo_por_rs() -> None:
+    frames, themes = _two_in_trend()
+    empty = Fundamentals.missing("GOOD", "test", START)
+    result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals={"GOOD": empty})
+    by_ticker = {c.ticker: c for c in result.candidates}
+    assert "GOOD" in by_ticker
+    assert by_ticker["GOOD"].data_quality == "sin_datos"
+
+
+def test_filtro_de_extension_sobre_sma50() -> None:
+    base = _series("SPIKE", 0.003, bars=400)
+    last = base.bars[-1]
+    spike = Bar(
+        last.date + dt.timedelta(days=1),
+        last.close * 1.30,
+        last.close * 1.32,
+        last.close * 1.28,
+        last.close * 1.30,
+        5_000_000.0,
+    )
+    frame = IndicatorFrame.build(PriceSeries("SPIKE", (*base.bars, spike)), STRATEGY)
+    assert frame is not None
+    strict = STRATEGY.model_copy(
+        update={"screener": STRATEGY.screener.model_copy(update={"max_pct_above_sma50": 10.0})}
+    )
+    assert rank_candidates({"SPIKE": frame}, {}, strict, top=10).candidates == ()
+    libre = STRATEGY.model_copy(
+        update={"screener": STRATEGY.screener.model_copy(update={"max_pct_above_sma50": None})}
+    )
+    assert [c.ticker for c in rank_candidates({"SPIKE": frame}, {}, libre, top=10).candidates] == ["SPIKE"]
+
+
+def test_tope_de_candidatos_por_tema() -> None:
+    assert theme_allowed("semis", {}, 2) is True
+    assert theme_allowed("semis", {"semis": 1}, 2) is True
+    assert theme_allowed("semis", {"semis": 2}, 2) is False
+    assert theme_allowed("semis", {"semis": 99}, None) is True
 
 
 def test_screener_exige_fundamentales_si_la_config_lo_pide() -> None:
@@ -322,12 +401,15 @@ def test_candidate_payload_escribe_ranking_y_anexa_veredicto() -> None:
     earnings = {"GOOD": dt.date(2026, 11, 1)}
     to_earnings: dict[str, int | None] = {"GOOD": 12}
 
-    base = cli._candidate_payload([candidate], earnings, to_earnings, {})
+    base = cli._candidate_payload([candidate], earnings, to_earnings, {}, {"GOOD": "skipped"})
     assert base[0]["ticker"] == "GOOD"
     assert base[0]["earnings_sessions"] == 12
     assert base[0]["composite"] == 70.0
-    # Sin tesis todavia, el veredicto queda declarado en None (no se inventa).
+    assert base[0]["data_quality"] == "sin_datos"
+    # Sin tesis todavia, el veredicto queda declarado en None (no se inventa)
+    # y el estado distingue presupuesto agotado de un fallo.
     assert base[0]["verdict"] is None
+    assert base[0]["thesis_status"] == "skipped"
 
     review = LLMReview(
         ticker="GOOD",
@@ -343,9 +425,57 @@ def test_candidate_payload_escribe_ranking_y_anexa_veredicto() -> None:
         verdict=Verdict.BUY,
         fundamento="crecimiento solido",
     )
-    enriched = cli._candidate_payload([candidate], earnings, to_earnings, {"GOOD": review})
+    enriched = cli._candidate_payload([candidate], earnings, to_earnings, {"GOOD": review}, {"GOOD": "ok"})
     assert enriched[0]["verdict"] == "BUY"
+    assert enriched[0]["thesis_status"] == "ok"
     assert enriched[0]["fundamento"] == "crecimiento solido"
+
+
+def test_candidates_json_guarda_metadatos_y_diff(tmp_path: Path) -> None:
+    candidate = DiscoveredCandidate(
+        ticker="GOOD",
+        theme="tema",
+        close=100.0,
+        momentum=1.3,
+        rs_percentile=90.0,
+        adv_usd=5_000_000.0,
+        atr_pct=2.0,
+        composite=70.0,
+        fundamental=60.0,
+        data_quality="ok",
+    )
+    payload = cli._candidate_payload([candidate], {}, {}, {}, {"GOOD": "ok"})
+    previous = [{"ticker": "OLD"}]
+    diff = cli._diff_candidates(previous, payload)
+    meta = cli._candidate_meta(
+        today=dt.date(2026, 11, 7),
+        origin="sp500",
+        universe_size=500,
+        limit=25,
+        threshold=50.0,
+        strategy=STRATEGY,
+        config_dir=CONFIG_DIR,
+        blackout=20,
+        diff=diff,
+    )
+    path = tmp_path / "candidates.json"
+    cli._write_candidates(path, payload, {**meta, "thesis": cli._thesis_summary({"GOOD": "ok"})})
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["schema"] == cli.CANDIDATES_SCHEMA
+    assert document["data_date"] == "2026-11-07"
+    assert document["universe"] == {"source": "sp500", "count": 500}
+    assert document["settings"]["min_coverage"] == STRATEGY.screener.min_coverage
+    assert document["config_hash"]
+    assert document["diff"]["entered"] == ["GOOD"]
+    assert document["diff"]["exited"] == ["OLD"]
+    assert document["thesis"] == {"ok": 1}
+    assert cli._candidate_rows(path)[0]["ticker"] == "GOOD"
+
+
+def test_candidate_rows_acepta_el_formato_viejo(tmp_path: Path) -> None:
+    path = tmp_path / "candidates.json"
+    path.write_text(json.dumps([{"ticker": "AMD"}]), encoding="utf-8")
+    assert cli._candidate_rows(path) == [{"ticker": "AMD"}]
 
 
 def test_presupuesto_de_tesis_corta_y_deja_los_restantes_sin_veredicto(monkeypatch) -> None:

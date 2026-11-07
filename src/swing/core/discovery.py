@@ -56,6 +56,8 @@ class DiscoveredCandidate:
     target_upside: float | None = None
     """Potencial al objetivo de analistas (fraccion)."""
     fundamental_notes: tuple[str, ...] = ()
+    data_quality: str = "sin_datos"
+    """``ok`` con cobertura suficiente, ``sin_datos`` si no hubo fundamentales."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +235,11 @@ def _prefilter(
             continue
         if close / feature.high52 < gates.min_vs_52w_high:
             continue
+        max_extension = strategy.screener.max_pct_above_sma50
+        if max_extension is not None and feature.sma50 > 0.0:
+            extension = (close / feature.sma50 - 1.0) * 100.0
+            if extension > max_extension:
+                continue
         momentum = frame.returns(gates.rs_lookback_days)
         rs = rs_by_ticker.get(ticker)
         if momentum is None or rs is None:
@@ -262,6 +269,16 @@ def _apply_fundamentals(
     if gate.rejections:
         return candidate, gate.rejections
     score = score_fundamentals(f, candidate.close, config)
+    if score.composite is not None and score.coverage < strategy.screener.min_coverage:
+        return candidate, (
+            Rejected(
+                reason=Reason.FUNDAMENTALS_MISSING,
+                detail=(
+                    f"cobertura de fundamentales {score.coverage * 100:.0f}% "
+                    f"< {strategy.screener.min_coverage * 100:.0f}%"
+                ),
+            ),
+        )
     weight = strategy.screener.momentum_weight
     composite = None if score.composite is None else (1.0 - weight) * score.composite + weight * candidate.rs_percentile
     updated = DiscoveredCandidate(
@@ -281,5 +298,13 @@ def _apply_fundamentals(
         coverage=score.coverage,
         target_upside=f.target_upside(candidate.close),
         fundamental_notes=score.missing,
+        data_quality="ok" if score.composite is not None else "sin_datos",
     )
     return updated, ()
+
+
+def theme_allowed(theme: str, counts: Mapping[str, int], max_per_theme: int | None) -> bool:
+    """``True`` si el tema todavia tiene cupo en el recorte final."""
+    if max_per_theme is None:
+        return True
+    return counts.get(theme, 0) < max_per_theme

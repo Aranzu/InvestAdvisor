@@ -114,7 +114,8 @@ SCREEN_PROMPT = (
     "contra; (4) considera el contexto macro si viene. En 'fundamento' explica la tesis "
     "en 2-3 frases citando las cifras de 'facts' (valorizacion, crecimiento, "
     "proyecciones) y el riesgo principal. En 'catalizador' el proximo evento con fecha. "
-    "Calibra 'confidence' como en una posicion. No fijas stops ni metas."
+    "Si 'data_quality' no es 'ok' o 'coverage_pct' es bajo, dilo en 'fundamento' y "
+    "baja 'confidence'. Calibra 'confidence' como en una posicion. No fijas stops ni metas."
 )
 
 #: Instruccion extra en modo busqueda: la IA decide cuando buscar, con evidencia fechada.
