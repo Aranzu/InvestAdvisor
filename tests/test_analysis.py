@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from swing.adapters.config_loader import load_strategy, load_themes
-from swing.core.analysis import Market, Quote, analyze, render_markdown
+from swing.core.analysis import Market, Quote, analyze
 from swing.core.calendar import SessionCalendar
 from swing.core.reasons import Action, Reason
 from swing.core.report import CashOp, OpenLot, PositionReport
@@ -249,10 +249,6 @@ def test_recomendacion_mantener_editar_stop_y_vender() -> None:
     assert verdict["BOLT"] == "EDITAR STOP"
     assert verdict["OLD"] == "VENDER"
     assert verdict["CLN"] == "MANTENER"
-    # El informe lista el veredicto de cada posicion, no solo las que actuan.
-    informe = render_markdown(analysis)
-    assert "## Recomendacion por posicion" in informe
-    assert "**CLN**: MANTENER" in informe
 
 
 def test_recomendacion_trim_a_ciegas_es_revisar_no_vender() -> None:
@@ -271,13 +267,3 @@ def test_recomendacion_trim_a_ciegas_es_revisar_no_vender() -> None:
     verdicts = {view.verdict for view in analysis.positions}
     assert "VENDER" not in verdicts
     assert "REVISAR" in verdicts
-
-
-def test_render_markdown_incluye_secciones_y_limites() -> None:
-    escenario = Scenario(lots=(lot("AAA"),), balance=10_000_000.0)
-    market = Market(today=TODAY, fx=900.0, fx_source="tax")
-    informe = render_markdown(run(escenario, market))
-    assert "# Analisis de posiciones" in informe
-    assert "## Hallazgos" in informe
-    assert "## Cuenta" in informe
-    assert "perdida mensual no evaluable" in informe

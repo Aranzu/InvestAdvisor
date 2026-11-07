@@ -20,7 +20,6 @@ from swing.adapters.config_loader import load_strategy
 from swing.adapters.data_yahoo import DataUnavailable
 from swing.adapters.finviz import InsiderTrade
 from swing.adapters.tradingeconomics import TeCommodity
-from swing.core.commodities import Commodity
 from swing.core.fundamentals import Fundamentals
 from swing.core.market import Bar, PriceSeries
 from swing.core.market_context import MarketInstrument
@@ -29,7 +28,6 @@ from swing.services.stats import (
     _change_pct,
     _commodities,
     _context,
-    _driver_fields,
     _enrich_extended_hours,
     _enrich_panel,
     _ext_from_quote,
@@ -109,12 +107,6 @@ def _bar(day: dt.date, price: float) -> Bar:
 
 def _trading_bar(day: dt.date, price: float) -> Bar:
     return Bar(date=day, open=price, high=price * 1.01, low=price * 0.99, close=price, volume=1_000_000.0)
-
-
-def test_driver_fields_mapea_el_ticker_y_toma_el_mes() -> None:
-    index = {"cobre": Commodity(key="cobre", name="Cobre", symbol="HG=F", chg_1m_pct=-2.0)}
-    assert _driver_fields("FCX", {}, index) == {"driver": "Cobre", "driver_1m_pct": -2.0}
-    assert _driver_fields("AAPL", {}, index) == {}
 
 
 def test_ytd_pct_contra_el_primer_cierre_del_ano() -> None:

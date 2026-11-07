@@ -64,12 +64,10 @@ from swing.core.models import BrokerConfig, RegimeState, StrategyConfig, ThemesC
 from swing.core.planner import (
     adopt_positions,
     build_review_report,
-    plan_tickets,
     render_action_table,
     render_review,
     render_review_report,
     render_table,
-    render_tickets,
     review_narrative_facts,
 )
 from swing.core.portfolio import PortfolioState
@@ -257,7 +255,7 @@ def stats(
         bool,
         typer.Option(
             "--contexto/--sin-contexto",
-            help="Incluye el contexto informativo (dividendos, desempeno, liquidez, insiders, driver, mercado, materias primas). Por defecto se oculta.",
+            help="Incluye el contexto informativo (dividendos, desempeno, liquidez, insiders, mercado, materias primas). Por defecto se oculta.",
         ),
     ] = False,
 ) -> None:
@@ -266,7 +264,7 @@ def stats(
     No decide nada: reune valuacion, rentabilidad, salud financiera, crecimiento,
     tecnico, liquidez y analistas de cada posicion abierta para un analisis posterior.
     Por defecto oculta el contexto informativo (dividendos, desempeno, propiedad,
-    insiders, driver, mercado y materias primas); ``--contexto`` muestra la ficha
+    insiders, mercado y materias primas); ``--contexto`` muestra la ficha
     completa. Yahoo es la base, Finviz aporta lo que Yahoo no publica y los tecnicos
     se calculan localmente desde las velas. Escribe el informe en Markdown
     (``output/stats_<reporte>_<marca>.md`` salvo ``--out``).
@@ -468,7 +466,7 @@ def review(
         str,
         typer.Option(
             "--formato",
-            help="Formato del informe: informe (10 secciones), detalle, tabla o acciones (tabla unica, sin tickets).",
+            help="Formato del informe: informe (prompt v7), detalle, tabla o acciones (tabla unica).",
         ),
     ] = "informe",
     refresh_contexto: Annotated[
@@ -479,7 +477,7 @@ def review(
         bool,
         typer.Option(
             "--contexto/--sin-contexto",
-            help="Escribe el informe de stats con el contexto informativo completo (dividendos, desempeno, liquidez, insiders, driver, mercado). Por defecto se oculta.",
+            help="Escribe el informe de stats con el contexto informativo completo (dividendos, desempeno, liquidez, insiders, mercado). Por defecto se oculta.",
         ),
     ] = False,
 ) -> None:
@@ -736,9 +734,6 @@ def review(
         informe = render_action_table(report) if formato == "acciones" else render_review_report(report)
         if registry is not None and report.records:
             _append_records(registry, report.records)
-    ticket_plan = plan_tickets(plan, market.broker, market.strategy)
-    if formato != "acciones":
-        informe = informe.rstrip() + "\n\n" + "\n".join(render_tickets(ticket_plan))
     for issue in recon.issues:
         typer.secho(f"  {issue.kind.value}: {issue.detail}", fg=typer.colors.YELLOW)
 

@@ -90,19 +90,6 @@ POSITION_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("averaged_down", "Promedio a la baja", "text", role="decision"),
 )
 
-#: Panel **derivado** de cada posicion: se calcula en codigo (``services/stats``), no
-#: en la IA, y vive en el ``context`` de la fila. Evita aritmetica manual y la
-#: duplica en la narrativa.
-PANEL_FIELDS: tuple[FieldSpec, ...] = (
-    FieldSpec("weight_invested_pct", "Peso inv", "pct", role="decision"),
-    FieldSpec("ret_clp_pct", "Ret. CLP", "pct_signed", role="decision"),
-    FieldSpec("ret_usd_pct", "Ret. USD", "pct_signed", role="decision"),
-    FieldSpec("entry_usd", "Entrada USD", "num", role="decision"),
-    FieldSpec("stop_rule", "Stop regla (max. perdida)", "num", role="levels"),
-    FieldSpec("stop_dist_pct", "Dist. stop", "pct", role="levels"),
-    FieldSpec("risk_patrimonio_pct", "Riesgo patrim", "pct", role="levels"),
-)
-
 #: Secciones de campos externos, en el orden en que se leen.
 SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
     (
@@ -337,7 +324,7 @@ class StatsReport:
     briefing: Briefing | None = None
     """Bloque determinista de la revision manual (banderas, stops, alertas). ``None`` si no hay politica."""
 
-    generated_at: dt.datetime = field(default_factory=dt.datetime.utcnow)
+    generated_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.UTC).replace(tzinfo=None))
     """Momento de generación del informe (UTC). Útil para saber si los datos son de cierre."""
 
     @property
@@ -384,7 +371,7 @@ class StatsReport:
         if schema != STATS_SCHEMA:
             raise ValueError(f"schema de stats inesperado: {schema!r} (se esperaba {STATS_SCHEMA})")
         gen = data.get("generated_at")
-        generated_at = dt.datetime.utcnow()
+        generated_at = dt.datetime.now(dt.UTC).replace(tzinfo=None)
         if gen:
             try:
                 s = str(gen)
@@ -392,7 +379,7 @@ class StatsReport:
                 s2 = s2.replace(" ", "T")
                 generated_at = dt.datetime.fromisoformat(s2.strip())
             except Exception:
-                generated_at = dt.datetime.utcnow()
+                generated_at = dt.datetime.now(dt.UTC).replace(tzinfo=None)
         return cls(
             account=_text(data.get("account")),
             today=_date(data.get("today")),
@@ -1076,186 +1063,6 @@ def _closed_history_section(report: StatsReport) -> list[str]:
     return lines
 
 
-def _briefing_section(briefing: Briefing | None) -> list[str]:
-    """Bloque determinista de la revision: agregados, alertas y tabla por posicion."""
-    if briefing is None:
-        return []
-    lines = ["## Resumen determinista (calculado por el motor)", ""]
-    if briefing.cash_pct is not None:
-        band = ""
-        if briefing.cash_min_pct is not None and briefing.cash_max_pct is not None:
-            band = f" (banda {_format('pct', briefing.cash_min_pct)} - {_format('pct', briefing.cash_max_pct)})"
-        lines.append(f"- Caja {_format('pct', briefing.cash_pct)}{band}.")
-    topes: list[str] = []
-    if briefing.position_max_pct is not None:
-        topes.append(f"posicion {_format('pct', briefing.position_max_pct)}")
-    if briefing.theme_max_pct is not None:
-        topes.append(f"tema {_format('pct', briefing.theme_max_pct)}")
-    if briefing.ia_max_pct is not None:
-        topes.append(f"IA ampliada {_format('pct', briefing.ia_max_pct)}")
-    if topes:
-        lines.append(
-            f"- Topes de la revision (solo alerta, no son motivo de venta): {', '.join(topes)}. "
-            "La tabla 'Resumen de cartera' lleva el tope del motor, que puede diferir."
-        )
-    clusters: list[str] = []
-    if briefing.semis_pct is not None:
-        clusters.append(f"semis {_format('pct', briefing.semis_pct)} (tope {_format('pct', briefing.semis_max_pct)})")
-    if briefing.ia_pct is not None:
-        clusters.append(
-            f"IA ampliada {_format('pct', briefing.ia_pct)} (tope {_format('pct', briefing.ia_max_pct)})"
-        )
-    if clusters:
-        lines.append(f"- Concentracion por cluster: {'; '.join(clusters)}.")
-    if briefing.liquidity_tp_pct is not None:
-        near = briefing.liquidity_near_tp_pct
-        threshold = f" a <={_format('pct', near)} del precio" if near is not None else ""
-        cash = _format("clp", briefing.liquidity_cash_clp)
-        lines.append(
-            f"- Mapa de liquidez: {_format('pct', briefing.liquidity_tp_pct)} de la cartera invertida "
-            f"con TP{threshold}; caja si se ejecutan todos los TP: {cash}."
-        )
-    if briefing.alerts:
-        lines.append("- Alertas (solo informativas, no son motivo de venta por si solas):")
-        lines.extend(f"  - {alert}" for alert in briefing.alerts)
-    else:
-        lines.append("- Sin alertas de concentracion, caja, earnings ni riesgo teorico.")
-    lines.append("")
-    if briefing.positions:
-        lines.append(
-            "| Ticker | Tipo SL | Banderas | Stop tecnico | Dist. stop | Regla del stop | "
-            "Riesgo patrim. | Take profit | Dist. TP | R:R TP |"
-        )
-        lines.append("|---|---|---|---:|---|---:|---:|---:|---:|---:|")
-        for brief in briefing.positions:
-            flags = ", ".join(brief.flags) if brief.flags else "sin banderas"
-            take_profit = _format("num", brief.take_profit)
-            if brief.tp_label:
-                take_profit = f"{take_profit} ({brief.tp_label})"
-            lines.append(
-                f"| {brief.ticker} | {brief.sl_type} | {flags} | {_format('num', brief.stop)} | "
-                f"{_format('pct', brief.stop_dist_pct)} | {brief.stop_rule or '-'} | "
-                f"{_format('pct', brief.risk_pct)} | {take_profit} | "
-                f"{_format('pct', brief.tp_distance_pct)} | {_format('ratio', brief.tp_rr)} |"
-            )
-        lines.append("")
-        lines.extend(_flags_table(briefing.positions))
-        lines.extend(_sl_alerts_table(briefing.positions))
-        lines.extend(_levels_table(briefing.positions))
-    return lines
-
-
-def _sl_alerts_table(positions: Sequence[PositionBrief]) -> list[str]:
-    """Alertas SL del prompt v6: Tipo A/B, distancias y riesgo teorico.
-
-    Es una tabla **informativa**: las alertas obligan a reevaluar, no venden. El
-    riesgo teorico se mide contra la alerta que manda (la 2 en Tipo B).
-    """
-    with_alerts = [brief for brief in positions if brief.alarm_1 is not None or brief.alarm_2 is not None]
-    if not with_alerts:
-        return []
-    lines = ["### Alertas SL (solo alertas, no ordenes)", ""]
-    lines.append(
-        "| Ticker | Tipo | Alerta 1 | Dist. precio | Dist. entrada | Regla A1 | "
-        "Alerta 2 | Dist. precio | Dist. entrada | Riesgo teorico |"
-    )
-    lines.append("|---|---|---:|---:|---:|---|---:|---:|---:|---:|")
-    for brief in with_alerts:
-        lines.append(
-            f"| {brief.ticker} | {brief.sl_type} | {_format('num', brief.alarm_1)} | "
-            f"{_format('pct', brief.alarm_1_dist_pct)} | {_format('pct', brief.alarm_1_entry_dist_pct)} | "
-            f"{brief.alarm_1_rule or '-'} | {_format('num', brief.alarm_2)} | "
-            f"{_format('pct', brief.alarm_2_dist_pct)} | {_format('pct', brief.alarm_2_entry_dist_pct)} | "
-            f"{_format('pct', brief.risk_theoretical_pct)} |"
-        )
-    lines.append("")
-    return lines
-
-
-def _flags_table(positions: Sequence[PositionBrief]) -> list[str]:
-    """Banderas clasificadas como pide el Paso 1 del prompt v6."""
-    with_flags = [brief for brief in positions if brief.flags]
-    if not with_flags:
-        return []
-    lines = ["### Banderas por tipo", ""]
-    lines.append("| Ticker | Tecnicas (ajustan tamano/tiempo) | Fundamentales/valorizacion | Contexto |")
-    lines.append("|---|---|---|---|")
-    for brief in with_flags:
-        technical = ", ".join(brief.flags_technical) or "-"
-        fundamental = ", ".join(brief.flags_fundamental) or "-"
-        contextual = ", ".join(brief.flags_context) or "-"
-        lines.append(f"| {brief.ticker} | {technical} | {fundamental} | {contextual} |")
-    lines.append("")
-    return lines
-
-
-def _levels_table(positions: Sequence[PositionBrief]) -> list[str]:
-    """Niveles de ``PROMPT PORTAFOLIO``: revision, alarma, zona tactica y objetivo.
-
-    Son **niveles de vigilancia**, no ordenes: el unico nivel accionable es el stop
-    y la meta del motor (bloque de arriba). El nivel de alarma usa el maximo de 20
-    sesiones como aproximacion del maximo cierre de 22 sesiones del prompt.
-    """
-    with_levels = [brief for brief in positions if brief.levels is not None and brief.levels.alarm is not None]
-    if not with_levels:
-        return []
-    lines = ["### Niveles de vigilancia (no son ordenes)", ""]
-    lines.append(
-        "| Ticker | Nivel revision | Dist. rev | Nivel alarma | Dist. alarma | Regla | "
-        "Riesgo patrim. | Zona tactica | R:R | Objetivo | Estado | Piso catastrofe | "
-        "Dist. cat. precio | Dist. cat. entrada |"
-    )
-    lines.append("|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---|---:|---:|---:|")
-    for brief in with_levels:
-        levels = brief.levels
-        assert levels is not None
-        revision = _format("num", levels.review)
-        if levels.review_perforated:
-            revision = f"{revision} (perforado)"
-        zone = _format("num", levels.tactical_zone) if levels.tactical_zone is not None else "recorrido insuficiente"
-        rr = f"{levels.tactical_rr:.2f}" if levels.tactical_rr is not None else "-"
-        lines.append(
-            f"| {brief.ticker} | {revision} | {_format('pct', levels.review_distance_pct)} | "
-            f"{_format('num', levels.alarm)} | {_format('pct', levels.alarm_distance_pct)} | "
-            f"{levels.alarm_rule or '-'} | {_format('pct', levels.risk_pct)} | {zone} | {rr} | "
-            f"{_format('num', levels.objective)} | {levels.objective_state} | "
-            f"{_format('num', levels.catastrophe_floor)} | "
-            f"{_format('pct', levels.catastrophe_distance_pct)} | "
-            f"{_format('pct', levels.catastrophe_entry_distance_pct)} |"
-        )
-    lines.append("")
-    return lines
-
-
-def _panel_section(report: StatsReport, *, show_context: bool = False) -> list[str]:
-    """Tabla derivada por posicion + resumen de cartera, todo calculado en codigo."""
-    specs = _visible(PANEL_FIELDS, show_context=show_context)
-    lines = (
-        _section("Panel de posicion (derivado)", specs, report.rows, "context", cell_format=_panel_cell)
-        if specs
-        else []
-    )
-    lines.extend(_portfolio_summary(report.panel))
-    return lines
-
-
-def _panel_cell(row: PositionStats, spec: FieldSpec) -> str:
-    """Celda del panel derivado, con el stop ya perforado marcado.
-
-    ``stop_rule`` es ``entrada x (1 - max_loss)``, no un nivel de mercado: si el
-    precio cayo por debajo, la distancia y el "riesgo" salen negativos y no
-    significan nada operativo. Se marca el nivel y se dejan esas dos celdas como
-    "sin dato" en vez de inventar un riesgo pendiente que ya se materializo.
-    """
-    perforated = row.context.get("stop_perforated") is True
-    if perforated:
-        if spec.key == "stop_rule":
-            return f"{_format(spec.kind, row.context.get(spec.key))} (perforado)"
-        if spec.key in {"stop_dist_pct", "risk_patrimonio_pct"}:
-            return "-"
-    return _format(spec.kind, row.context.get(spec.key))
-
-
 def _et_stamp(value: dt.datetime) -> str:
     """Momento de generacion en hora del mercado (ET), con respaldo UTC."""
     instant = value if value.tzinfo is not None else value.replace(tzinfo=dt.UTC)
@@ -1361,49 +1168,6 @@ def _extended_hours_section(report: StatsReport) -> list[str]:
 
 #: Nombre visible de cada clúster del resumen de cartera.
 _CLUSTER_LABELS: dict[str, str] = {"semis": "semis", "ia_ampliada": "IA ampliada"}
-
-
-def _portfolio_summary(panel: Mapping[str, object]) -> list[str]:
-    if not panel:
-        return []
-    max_theme = _num(panel.get("max_theme_pct"))
-    lines = ["## Resumen de cartera (derivado)", ""]
-    lines.append("| metrica | valor |")
-    lines.append("|---|---|")
-    lines.append(f"| patrimonio | {_format('clp', _num(panel.get('patrimonio_clp')))} |")
-    cash_pct = _format("pct", _num(panel.get("cash_pct")))
-    invested_pct = _format("pct", _num(panel.get("invested_pct")))
-    lines.append(f"| caja | {_format('clp', _num(panel.get('cash_clp')))} ({cash_pct}) |")
-    lines.append(f"| invertido | {_format('clp', _num(panel.get('invested_clp')))} ({invested_pct}) |")
-    if max_theme is not None:
-        lines.append(f"| tope por tema | {_format('pct', max_theme)} |")
-    lines.append("")
-    themes = panel.get("themes")
-    if isinstance(themes, Mapping) and themes:
-        lines.append("| tema | peso | tope |")
-        lines.append("|---|---:|---:|")
-        for theme, raw in sorted(themes.items(), key=lambda kv: -float(kv[1])):
-            pct = _num(raw)
-            flag = " **+**" if (max_theme is not None and pct is not None and pct > max_theme) else ""
-            lines.append(f"| {theme} | {_format('pct', pct)}{flag} | {_format('pct', max_theme)} |")
-        lines.append("")
-    clusters = panel.get("clusters")
-    if isinstance(clusters, Mapping) and clusters:
-        lines.append("| cluster | peso | tope | miembros |")
-        lines.append("|---|---:|---:|---|")
-        for name, raw in clusters.items():
-            values = raw if isinstance(raw, Mapping) else {}
-            pct = _num(values.get("pct"))
-            cap = _num(values.get("max_pct"))
-            flag = " **+**" if (cap is not None and pct is not None and pct > cap) else ""
-            members = values.get("members")
-            joined = ", ".join(str(item) for item in members) if isinstance(members, (list, tuple)) else ""
-            lines.append(
-                f"| {_CLUSTER_LABELS.get(name, name)} | {_format('pct', pct)}{flag} | "
-                f"{_format('pct', cap)} | {joined or '-'} |"
-            )
-        lines.append("")
-    return lines
 
 
 def _market_section(report: StatsReport) -> list[str]:

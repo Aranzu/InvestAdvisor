@@ -26,7 +26,7 @@ class Reason(StrEnum):
     Los nombres que el spec ya fija (STOP_TOO_WIDE, EARNINGS_NEAR,
     VOLUME_TOO_SMALL, DATA_GAP, SINGLE, RECURRING, NEEDS_CONFIRMATION,
     UNMANAGED_LOT, RIESGO_SIN_COBERTURA) se respetan literalmente porque aparecen
-    en los tickets y en los ejemplos del informe.
+    en los ejemplos del informe.
     """
 
     # --- Puertas de tendencia (seccion 5.2) ---

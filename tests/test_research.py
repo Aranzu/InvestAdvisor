@@ -22,7 +22,7 @@ def _stats() -> StatsReport:
     row = PositionStats(
         ticker="FCX",
         context={"weight_pct": 10.0, "value_clp": 500.0},
-        fields={"pe": 5.0, "sha_trend": "alcista", "driver": "Cobre", "rsi": None},
+        fields={"pe": 5.0, "sha_trend": "alcista", "rsi": None},
     )
     return StatsReport(
         account="1",
@@ -47,7 +47,6 @@ def test_stats_facts_incluye_contexto_campos_y_materias_primas() -> None:
     assert facts["stats"]["context"] == {"weight_pct": 10.0, "value_clp": 500.0}
     fields = facts["stats"]["fields"]
     assert fields["sha_trend"] == "alcista"
-    assert fields["driver"] == "Cobre"
     assert fields["rsi"] is None  # sin dato se declara, no se omite ni se inventa
     assert facts["materias_primas"][0]["source"] == "tradingeconomics"
     assert facts["materias_primas"][0]["unit"] == "USD/lb"

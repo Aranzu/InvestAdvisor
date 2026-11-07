@@ -40,7 +40,7 @@ from swing.adapters.tradingeconomics import TeCommodity, TradingEconomicsProvide
 from swing.core.analysis import Analysis, ExtMarket, Market, PositionView, Quote, analyze
 from swing.core.briefing import build as build_briefing
 from swing.core.calendar import SessionCalendar
-from swing.core.commodities import COMMODITIES, Commodity, CommoditySpec, commodity_driver
+from swing.core.commodities import COMMODITIES, Commodity, CommoditySpec
 from swing.core.compliance import (
     ComplianceRow,
     ComplianceSummary,
@@ -126,7 +126,6 @@ def collect_stats(
     technical_gaps: list[str] = []
     price_series: dict[str, PriceSeries] = {}
     commodity_rows = _commodities(bars, te.get(today=market.today) if te is not None else {}, market.today, window_days)
-    commodity_index = {item.key: item for item in commodity_rows}
     spy_series = _series(bars, "SPY", market.today, window_days)[0]
     rs_lookback = strategy.gates.rs_lookback_days
     for view in positions:
@@ -147,7 +146,6 @@ def collect_stats(
             snapshot.values,
         )
         merged.update(derive_fields(merged, view.price_usd))
-        merged.update(_driver_fields(view.ticker, merged, commodity_index))
         rows.append(
             PositionStats(
                 ticker=view.ticker,
@@ -259,7 +257,7 @@ def collect_stats(
         ),
         compliance=_compliance_to_dict(compliance_rows, summary, curve, today=market.today, compliance=compliance),
         closed_history=closed,
-        generated_at=dt.datetime.utcnow(),
+        generated_at=dt.datetime.now(dt.UTC).replace(tzinfo=None),
     )
     report = _enrich_extended_hours(report, bars)
     return report
@@ -903,19 +901,6 @@ def _ytd_pct(series: PriceSeries, today: dt.date) -> float | None:
     if first is None or first <= 0.0:
         return None
     return (last / first - 1.0) * 100.0
-
-
-def _driver_fields(ticker: str, fields: Mapping[str, object], index: Mapping[str, Commodity]) -> dict[str, object]:
-    """Driver de materia prima de una posicion y su variacion a 1 mes."""
-    key = commodity_driver(
-        ticker,
-        sector=str(fields.get("sector") or ""),
-        industry=str(fields.get("industry") or ""),
-    )
-    item = index.get(key) if key is not None else None
-    if item is None:
-        return {}
-    return {"driver": item.name, "driver_1m_pct": item.chg_1m_pct}
 
 
 def _yahoo_fields(f: Fundamentals) -> dict[str, object]:

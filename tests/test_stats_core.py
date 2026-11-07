@@ -16,7 +16,6 @@ import pytest
 from swing.core.commodities import Commodity
 from swing.core.market_context import MarketInstrument, MarketRegime
 from swing.core.stats import (
-    PANEL_FIELDS,
     POSITION_FIELDS,
     ROLES,
     SECTIONS,
@@ -277,7 +276,7 @@ def test_materias_primas_en_el_informe_y_en_el_json() -> None:
             chg_1m_pct=-16.77,
         ),
     )
-    row = PositionStats(ticker="FCX", context={}, fields={"driver": "Cobre", "driver_1m_pct": -16.77})
+    row = PositionStats(ticker="FCX", context={}, fields={})
     report = replace(_report((row,)), commodities=commodities)
     text = render_stats(report, show_context=True)
     assert "## Materias primas" in text
@@ -523,7 +522,7 @@ def test_render_conserva_los_campos_que_deciden() -> None:
 
 
 def test_todos_los_campos_tienen_un_rol_valido() -> None:
-    specs = [*POSITION_FIELDS, *PANEL_FIELDS, *(spec for _, group in SECTIONS for spec in group)]
+    specs = [*POSITION_FIELDS, *(spec for _, group in SECTIONS for spec in group)]
     assert specs
     assert {spec.role for spec in specs} <= ROLES
 

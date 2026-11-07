@@ -12,8 +12,8 @@ cada posición), `review` (usa `stats` y recomienda mantener/recortar/vender) y 
 determinista y auditable; la IA es opcional y **decide** (`BUY/HOLD/SELL/WATCH`, D27),
 pero nunca fija niveles: stop, meta y tamaño los calcula siempre el motor.
 
-El producto original (backtest, plan de tickets, journal) se **archivó** en `legacy/`: su
-código queda como referencia y ya no se instala ni expone comandos.
+El producto original (backtest, plan de tickets, journal) se **retiró** del proyecto:
+ya no se instala, no se expone como comando y su código no forma parte del paquete.
 
 ## 2. Capas
 
@@ -22,12 +22,11 @@ core/         nucleo PURO: sin disco, sin red, sin importar adapters/ (un test l
 adapters/     I/O: Yahoo, cache, config YAML, parser XTB, fundamentales, LLM, busqueda, universo
 services/     orquestacion del CLI: rutas, armado de datos, informes y research (no importa cli)
 cli.py        comandos (Typer); es la capa que toca disco/red y arma los objetos de core
-legacy/       codigo archivado (backtest, journal); fuera del paquete, solo referencia
 ```
 
 Regla de oro: **`core/` no importa `adapters/`**. Los datos entran ya resueltos
 (`Bar`, `PriceSeries`, `TradeState`, `PositionReport`) y la salida son objetos
-(`NightPlan`, `Analysis`, `Ticket`). Eso permite que las dos funciones compartan
+(`NightPlan`, `Analysis`, `ReviewReport`). Eso permite que las funciones compartan
 exactamente la misma función de decisión. Sobre esa base, `services/` concentra la
 lógica de orquestación (resolver rutas, juntar velas/FX/fundamentales, escribir el
 informe) para que `cli.py` quede con los comandos y los argumentos; un test fija que
@@ -67,7 +66,7 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
    - `detalle`: bloques explicados por posición.
    - `tabla`: `Activo · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`.
    - `acciones`: una sola tabla `Activo · Retorno · Peso (actual → post) · Acción ·
-     Puntaje · Conf. · Fundamento`, sin secciones ni tickets y sin narrativa de cartera
+     Puntaje · Conf. · Fundamento`, sin secciones y sin narrativa de cartera
      (ahorra una consulta). Peso sobre el capital invertido (suma 100 %); `post` renormaliza
      tras aplicar las ventas. El porcentaje/volumen lo fija el motor.
 
@@ -105,9 +104,6 @@ Orden de trabajo (cambiarlo cambia el resultado; hay un test que lo fija):
    rango 52w, fuerza relativa cross-sectional, liquidez, earnings) + setup pullback
    (`_detect_setup`), sizing (`core/sizing`), stops (`core/stops`).
 
-Semántica de relleno (`core/orders`): Buy Limit, Sell Stop, venta a mercado y Sell
-Limit; la misma que usaba el simulador archivado.
-
 ## 5. Capa de IA (`core/llm.py` + `adapters/llm.py` + `adapters/search.py`)
 
 - **Veredicto** (`core/llm.Verdict`): `BUY/HOLD/SELL/WATCH/UNKNOWN`. La IA decide
@@ -136,8 +132,6 @@ Limit; la misma que usaba el simulador archivado.
 ## 6. Journal y métricas (archivado)
 
 El journal SQLite (`state/journal.db`) + `state/journal.csv` y el cálculo de métricas y
-**kill switch** (`core/metrics.py`, `OK`/`WARN`/`DEFENSIVE`) se **archivaron**:
-`legacy/adapters_journal.py`. `core/metrics.py` sigue en el paquete porque
 `core/engine.decide()` lo usa para el `KillState`.
 
 ## 7. Datos
@@ -177,9 +171,8 @@ El CLI expone **solo tres comandos**: `stats`, `review` y `screen`.
 | `review` | **función 1**: usa `stats`; el motor decide niveles + la IA el veredicto. `--formato informe` (11 secciones, por defecto), `detalle`, `tabla` o `acciones` |
 | `screen` | **función 2**: recomendador de acciones (técnico + fundamentales + proyecciones) |
 
-Los comandos retirados (`daily`, `scan`, `allocate`, `confirm`, `backtest`, `nightly`,
-`schedule`, `track`, `discover`, diagnósticos) ya no existen; su código histórico está en
-`legacy/`.
+Los comandos históricos (`daily`, `scan`, `allocate`, `confirm`, `backtest`, `nightly`,
+`schedule`, `track`, `discover`, diagnósticos) ya no existen ni forman parte del paquete.
 
 Códigos de salida: `0` limpio, `1` error de config/datos, `2` hallazgos/acciones,
 `3` fallo de IA (el informe determinista igual se escribe).

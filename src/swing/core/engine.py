@@ -1,10 +1,8 @@
-"""Motor puro: ``decide()`` (spec v3.1 secciones 5 y 11.3: "la usa el backtest y produccion").
+"""Motor puro: ``decide()`` (spec v3.1 secciones 5 y 11.3).
 
-El motor es **una sola funcion** y el backtest y la corrida programada la llaman con
-el mismo estado y la misma configuracion. La equivalencia sim/produccion no es un
-deseo: es la consecuencia de que la semantica de relleno (``core/orders``), el
-estado de posicion (``core/state``) y la traduccion de decisiones a tickets
-(``planner/order_planner``) sean siempre los mismos objetos.
+El motor es **una sola funcion**: ``review`` le pasa el estado y la configuracion
+resueltos, y el estado de posicion (``core/state``) y las reglas de salida
+(``core/exits``) son los mismos objetos que usa el resto del sistema.
 
 Reglas de este modulo:
 

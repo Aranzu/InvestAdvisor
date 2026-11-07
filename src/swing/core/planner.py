@@ -1,4 +1,4 @@
-"""Planificacion programada: adapta el libro del broker y arma los tickets (spec 4, 5 y 9).
+"""Adopcion de posiciones, informes de review y tabla de acciones (spec 4, 5 y 9).
 
 Es la capa pura entre ``decide()`` (que decide) y la CLI (que lee disco y red):
 
@@ -10,18 +10,14 @@ Es la capa pura entre ``decide()`` (que decide) y la CLI (que lee disco y red):
   que el plan tiene que reparar. El stop **objetivo** ya incluye el trail de
   proteccion de ganancia (``protect_gain``), para que la reparacion coloque el
   nivel que cuida la utilidad y no el piso de perdida.
-- ``plan_tickets`` traduce un ``NightPlan`` a tickets de orden (seccion 9). El
-  sistema recomienda; nunca envia.
-- ``render_tickets`` presenta esos tickets para copiar en el broker.
-- ``render_review`` y ``render_table`` arman los informes de posiciones en Markdown.
+- ``render_review`` y ``render_table`` arman los formatos ``detalle`` y ``tabla``.
 - ``build_review_report`` y ``render_review_report`` arman el informe del comando
-  ``review``: con la politica ``review`` y narrativa de la IA siguen las once secciones
-  de ``PROMPT PORTAFOLIO v6`` (veredicto y liquidez, decision, auditoria de ventas,
-  TP/SL, cobertura, alertas, supuestos, fuentes, registro, que cambio y oportunidades);
-  sin politica se muestran las secciones deterministas con los datos disponibles.
+  ``review`` con el formato del ``PROMPT PORTAFOLIO v7``: cobertura, veredicto,
+  panel P1-P11, tabla de decision, auditoria, cobertura de datos, alertas, supuestos,
+  fuentes, registro, que cambio, desvios y oportunidades.
 - ``render_action_table`` resume ese mismo informe en una tabla unica de acciones
   (``review --formato acciones``): peso actual -> post, accion con volumen, puntaje
-  por ejes y fundamento, sin tickets.
+  por ejes y fundamento.
 
 Todo es puro: los datos llegan resueltos y ninguna funcion toca disco ni red.
 """
@@ -30,7 +26,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from swing.core.calendar import SessionCalendar
@@ -38,8 +34,7 @@ from swing.core.engine import IndicatorFrame, NightPlan, TradeExitJudgment
 from swing.core.exits import ExitEvaluation, ExitSignal
 from swing.core.fundamentals import AxisRatings, format_rating
 from swing.core.llm import KeyFact, LLMReview, ThesisStatus
-from swing.core.models import BrokerConfig, ReviewConfig, StrategyConfig
-from swing.core.orders import OrderExpiry, OrderKind, Ticket, expiry_from_config
+from swing.core.models import ReviewConfig, StrategyConfig
 from swing.core.reasons import Action, Reason
 from swing.core.reconcile import BrokerPosition
 from swing.core.state import TradeState, TrancheState
@@ -157,171 +152,6 @@ def _adopted_tranches(volume: float, entry: float, risk: float, strategy: Strate
     if not tranches:
         tranches.append(TrancheState(name="R", volume=volume, tp_r=None))
     return tuple(tranches)
-
-
-@dataclass(frozen=True, slots=True)
-class TicketPlan:
-    """Tickets de la corrida, ya acotados al tope de acciones (seccion 4.4).
-
-    ``tickets`` es lo que hay que colocar esta corrida; ``deferred`` lo que quedo
-    fuera del tope y pasa a la corrida siguiente (marcado ``RECURRING``). Las
-    acciones de seguridad **nunca** se difieren.
-    """
-
-    tickets: tuple[Ticket, ...]
-    deferred: tuple[Ticket, ...]
-
-    @property
-    def is_empty(self) -> bool:
-        return not self.tickets and not self.deferred
-
-
-#: Prioridad de precedencia de la corrida (seccion 4.4): seguridad > salidas >
-#: subidas de stop > entradas nuevas. Mas chico = antes (y nunca se difiere).
-_PRIORITY_SAFETY = 0
-_PRIORITY_EXIT = 1
-_PRIORITY_STOP = 2
-_PRIORITY_ENTRY = 3
-
-#: Causas que son seguridad y no se difieren aunque se pase del tope.
-_SAFETY_CAUSES = frozenset({Reason.STOP_BREACH, Reason.STOP_MISSING})
-
-
-def plan_tickets(
-    plan: NightPlan,
-    broker: BrokerConfig,
-    strategy: StrategyConfig,
-) -> TicketPlan:
-    """Traduce el ``NightPlan`` a tickets, ya acotados y en orden de precedencia.
-
-    - **Precio de las ventas.** Si ``queued_market_orders`` no esta confirmado
-      (seccion 4.3), la venta sale como Sell Limit de respaldo a
-      ``cierre - exit_limit_atr x ATR`` y lleva ``RIESGO_SIN_COBERTURA``: si no
-      se llena, esas acciones pasan la sesion sin stop.
-    - **Tope de acciones.** Se aplica ``max_actions_per_run`` salvo para las
-      acciones de seguridad (``STOP_BREACH``/``STOP_MISSING``), que nunca se
-      difieren. Lo que sobra pasa a ``deferred`` para la corrida siguiente.
-    """
-    expiry = expiry_from_config(broker.order_expiry)
-    market_sells = broker.queued_market_orders is True
-    limit_atr = strategy.exits.exit_limit_atr
-    by_ticker = {judgment.ticker: judgment.trade for judgment in plan.exits}
-
-    def sell(ticker: str, volume: float, cause: Reason) -> Ticket:
-        trade = by_ticker.get(ticker)
-        if market_sells or trade is None:
-            price: float | None = None
-            flag: str | None = None
-        else:
-            price = max(trade.close - limit_atr * trade.atr, 0.0)
-            flag = "RIESGO_SIN_COBERTURA"
-        priority = _PRIORITY_SAFETY if cause in _SAFETY_CAUSES else _PRIORITY_EXIT
-        return Ticket(
-            kind=OrderKind.SELL,
-            ticker=ticker,
-            volume=volume,
-            price=price,
-            reason=cause,
-            expiry=expiry,
-            priority=priority,
-            flag=flag,
-        )
-
-    tickets: list[Ticket] = []
-
-    for trim in plan.cap_trims:
-        tickets.append(sell(trim.ticker, trim.volume, Reason.CAP_TRIM))
-
-    for judgment in plan.exits:
-        primary = judgment.evaluation.primary
-        if primary is None or not primary.execute:
-            continue
-        if primary.action is Action.SELL:
-            tickets.append(sell(judgment.ticker, primary.volume, primary.cause))
-        elif primary.action is Action.EDIT_STOP and primary.new_stop is not None:
-            tickets.append(
-                Ticket(
-                    kind=OrderKind.EDIT_STOP,
-                    ticker=judgment.ticker,
-                    volume=judgment.state_after.open_volume,
-                    price=primary.new_stop,
-                    reason=primary.cause,
-                    expiry=expiry,
-                    priority=(_PRIORITY_SAFETY if primary.cause in _SAFETY_CAUSES else _PRIORITY_STOP),
-                )
-            )
-
-    for entry in plan.entries:
-        tickets.append(
-            Ticket(
-                kind=OrderKind.BUY,
-                ticker=entry.ticker,
-                volume=entry.volume,
-                price=entry.limit_price,
-                reason=Reason.ENTERING,
-                detail=entry.detail,
-                expiry=OrderExpiry.DAY,
-                priority=_PRIORITY_ENTRY,
-            )
-        )
-
-    ordered = sorted(tickets, key=lambda ticket: (ticket.priority, ticket.ticker))
-    max_actions = strategy.operations.max_actions_per_run
-    kept: list[Ticket] = []
-    deferred: list[Ticket] = []
-    used = 0
-    for ticket in ordered:
-        if ticket.priority == _PRIORITY_SAFETY or used < max_actions:
-            kept.append(ticket)
-            used += 1
-        else:
-            deferred.append(replace(ticket, recurring_count=ticket.recurring_count + 1))
-    return TicketPlan(tickets=tuple(kept), deferred=tuple(deferred))
-
-
-_ACTION_LABEL = {
-    OrderKind.BUY: "COMPRAR",
-    OrderKind.SELL: "VENDER",
-    OrderKind.EDIT_STOP: "SUBIR STOP",
-    OrderKind.CANCEL: "CANCELAR",
-}
-
-_ORDER_LABEL = {
-    OrderKind.BUY: "Buy Limit",
-    OrderKind.SELL: "Vender a mercado",
-    OrderKind.EDIT_STOP: "editar Sell Stop",
-    OrderKind.CANCEL: "Cancelar",
-}
-
-_EXPIRY_LABEL = {
-    OrderExpiry.DAY: "proxima sesion",
-    OrderExpiry.GTC: "hasta cancelar",
-    OrderExpiry.UNKNOWN: "proxima sesion (cancelar si no se ejecuta)",
-}
-
-
-def render_tickets(ticket_plan: TicketPlan) -> list[str]:
-    """Seccion de tickets para copiar en el broker (seccion 9)."""
-    lines: list[str] = ["## Tickets de esta corrida", ""]
-    if ticket_plan.tickets:
-        lines.append("| # | Accion | Ticker | Orden | Volumen | Precio | Vigencia | Motivo | Aviso |")
-        lines.append("|---|---|---|---|---|---|---|---|---|")
-        for index, ticket in enumerate(ticket_plan.tickets, start=1):
-            price = f"{ticket.price:.2f}" if ticket.price is not None else "mercado"
-            lines.append(
-                f"| {index} | {_ACTION_LABEL[ticket.kind]} | {ticket.ticker} | "
-                f"{_ORDER_LABEL[ticket.kind]} | {ticket.volume:.4f} | {price} | "
-                f"{_EXPIRY_LABEL[ticket.expiry]} | {ticket.reason.value} | {ticket.flag or ''} |"
-            )
-    else:
-        lines.append("Sin acciones que colocar esta corrida.")
-    lines.append("")
-    if ticket_plan.deferred:
-        lines.append("Diferido a la proxima corrida (RECURRING, tope de acciones):")
-        for ticket in ticket_plan.deferred:
-            lines.append(f"- {_ACTION_LABEL[ticket.kind]} {ticket.ticker} ({ticket.reason.value})")
-        lines.append("")
-    return lines
 
 
 #: Explicacion corta de cada regla, en lenguaje llano.
@@ -1288,27 +1118,8 @@ def _risk_line(report: ReviewReport) -> str:
     return "- **Mayores riesgos:** " + "; ".join(parts) + "."
 
 
-def _liquidity_line(report: ReviewReport) -> str:
-    """Mapa de liquidez v6: TP cerca del precio y caja que liberaria ejecutarlos todos."""
-    brief = report.briefing
-    if brief is None or brief.liquidity_tp_pct is None:
-        return "- **Mapa de liquidez:** sin datos de TP para esta corrida."
-    near = brief.liquidity_near_tp_pct if brief.liquidity_near_tp_pct is not None else 15.0
-    tail = ""
-    if brief.liquidity_cash_clp is not None and report.equity_clp > 0.0:
-        pct = brief.liquidity_cash_clp / report.equity_clp * 100.0
-        tail = (
-            f"; si se ejecutan todos los TP generaria {brief.liquidity_cash_clp:,.0f} CLP "
-            f"({pct:.1f} % del equity)"
-        )
-    return (
-        f"- **Mapa de liquidez:** {brief.liquidity_tp_pct:.1f} % de la cartera invertida tiene "
-        f"TP a menos de {near:g} % del precio{tail}."
-    )
-
-
 def render_action_table(report: ReviewReport) -> str:
-    """Tabla unica de acciones del review (``--formato acciones``), sin secciones ni tickets.
+    """Tabla unica de acciones del review (``--formato acciones``), sin secciones.
 
     Columnas: activo, retorno, peso actual -> post, accion (con el volumen
     que fija el motor), puntaje por ejes y confianza. El peso es sobre el **capital
@@ -1631,123 +1442,6 @@ def _is_sell_candidate(asset: AssetReview) -> bool:
     if asset.verdict is not None and "vender" in asset.verdict.action.lower():
         return True
     return "vender" in (asset.decision or "").lower()
-
-
-def _section_tp_sl(report: ReviewReport) -> list[str]:
-    """## 4. TP como ordenes reales y SL como alertas de vigilancia."""
-    lines = ["## 4. Tabla de TP y SL", ""]
-    lines.append(
-        "| Activo | Tipo | TP orden | Objetivo de tesis | SL alerta(s) | Riesgo teorico % patrim. | "
-        "Proximo catalizador |"
-    )
-    lines.append("|---|---|---|---|---|---:|---|")
-    for asset in sorted(report.assets, key=lambda item: item.ticker):
-        brief = asset.briefing
-        tipo = brief.sl_type if brief is not None else "-"
-        lines.append(
-            f"| {asset.ticker} | {tipo} | {_cell(_tp_cell(brief))} | "
-            f"{_cell(_objective_cell(asset))} | {_cell(_sl_cell(asset))} | "
-            f"{_risk_cell(brief)} | {_cell(_catalyst_cell(asset))} |"
-        )
-    lines.append("")
-    lines.append(
-        "**TP = orden real de venta** en la plataforma. Base: objetivo de tesis/analistas "
-        "contrastado con el techo tecnico; acotado al maximo de 52 semanas y a +30 % en Tipo A "
-        "o +40 % en Tipo B desde el precio actual. El R:R contra la Alerta 1 debe ser >= 1,5; "
-        "si no, el TP sube una vez al siguiente techo valido o se declara la excepcion."
-    )
-    lines.append("")
-    lines.append(
-        "**SL = alertas de precio, sin ejecucion automatica.** Tipo A: una alerta (alarma del "
-        "motor). Tipo B (ATR% >= 4 o cluster de semis): Alerta 1 de vigilancia y Alerta 2 de "
-        "catastrofe (18-20 % bajo el precio, sin superar 25 % bajo la entrada). Las alertas "
-        "solo suben; el riesgo teorico usa la alerta que manda (la 2 en Tipo B)."
-    )
-    lines.append("")
-    return lines
-
-
-def _tp_cell(brief: PositionBrief | None) -> str:
-    if brief is None or brief.take_profit is None:
-        return "sin TP"
-    parts = [f"{brief.take_profit:.2f}"]
-    if brief.tp_distance_pct is not None:
-        parts[0] += f" ({brief.tp_distance_pct:+.1f} % vs actual)"
-    parts.append(brief.tp_label or "sin origen")
-    if brief.tp_rr is not None:
-        parts.append(f"R:R {brief.tp_rr:.2f}")
-    if brief.tp_note:
-        parts.append(brief.tp_note)
-    return "; ".join(parts)
-
-
-def _objective_cell(asset: AssetReview) -> str:
-    verdict = asset.verdict
-    if verdict is not None and verdict.levels.objective is not None and verdict.levels.objective_valid:
-        levels = verdict.levels
-        upside = _fmt_pct(asset.upside_pct)
-        return f"{levels.objective:.2f} ({levels.objective_state}; {upside})"
-    if asset.target is not None:
-        return f"{asset.target:.2f} (meta del motor)"
-    return "-"
-
-
-def _sl_cell(asset: AssetReview) -> str:
-    brief = asset.briefing
-    if brief is None:
-        return "-"
-    first = _level_text(
-        brief.alarm_1,
-        brief.alarm_1_dist_pct,
-        brief.alarm_1_entry_dist_pct,
-        brief.alarm_1_rule,
-    )
-    if brief.sl_type != "B":
-        return f"Alerta 1: {first}" if first else "-"
-    second = _level_text(
-        brief.alarm_2,
-        brief.alarm_2_dist_pct,
-        brief.alarm_2_entry_dist_pct,
-        "catastrofe",
-    )
-    if first and second:
-        return f"Alerta 1: {first} / Alerta 2: {second}"
-    return f"Alerta 1: {first}" if first else (f"Alerta 2: {second}" if second else "-")
-
-
-def _level_text(
-    level: float | None,
-    distance_pct: float | None,
-    entry_distance_pct: float | None,
-    rule: str,
-) -> str:
-    if level is None:
-        return ""
-    parts = [f"{level:.2f}"]
-    if distance_pct is not None:
-        parts.append(f"{distance_pct:.1f} % bajo actual")
-    if entry_distance_pct is not None:
-        parts.append(f"{entry_distance_pct:.1f} % bajo entrada")
-    if rule:
-        parts.append(rule)
-    return ", ".join(parts)
-
-
-def _risk_cell(brief: PositionBrief | None) -> str:
-    if brief is None or brief.risk_theoretical_pct is None:
-        return "-"
-    return f"{brief.risk_theoretical_pct:.2f} %"
-
-
-def _catalyst_cell(asset: AssetReview) -> str:
-    parts: list[str] = []
-    if asset.catalyst and asset.catalyst != "-":
-        parts.append(asset.catalyst)
-    if asset.earnings_sessions is not None:
-        parts.append(f"earnings en {asset.earnings_sessions:g} sesiones")
-    elif asset.earnings and asset.earnings != "-":
-        parts.append(f"earnings {asset.earnings} (estimada, stats)")
-    return "; ".join(parts) if parts else "-"
 
 
 def _section_cobertura(report: ReviewReport) -> list[str]:

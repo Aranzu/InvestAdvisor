@@ -10,8 +10,8 @@ Tres funciones, nada más:
 
 ## Estado
 
-**NO VALIDADO. No operar con dinero real.** El backtest existe en `legacy/`, pero la
-puerta de validación no se corrió sobre datos reales, así que ningún parámetro tiene
+**NO VALIDADO. No operar con dinero real.** El backtest histórico se retiró del proyecto;
+la puerta de validación no se corrió sobre datos reales, así que ningún parámetro tiene
 evidencia a su favor.
 
 Las verificaciones de broker (`docs/VERIFICACION_BROKER.md`) necesitan una cuenta demo
@@ -94,7 +94,7 @@ Además, **todo lo que se puede derivar se calcula en código** (no lo inventa l
 Los insiders se reducen al resumen por ticker (compras, ventas y neto 90 d) y las tres
 transacciones más recientes. El informe ya no trae las cuatro tablas de stops que se
 contradecían: el panel de cumplimiento es la única fuente. También se quitaron los
-campos que el prompt manda ignorar (empresa y clasificación, driver, quick, P/Cash,
+campos que el prompt manda ignorar (empresa y clasificación, quick, P/Cash,
 objetivo mín/máx, SHA, volatilidad realizada y peso eq de XTB).
 
 Las cantidades usan 4 decimales (acciones fraccionarias). Escribe `output/stats_<reporte>_<marca>.md`
@@ -129,7 +129,7 @@ el motor sigue fijando stop, meta y tamaño. Hay cuatro formatos con `--formato`
   **stop y el TP siempre salen del motor**.
 - `acciones`: **una sola tabla** —
   `Activo · Retorno · Peso (actual → post) · Acción · Puntaje · Conf. · Fundamento`—
-  sin las secciones del informe y **sin tickets**. No llama al LLM para la narrativa de cartera (ahorra
+  sin las secciones del informe. No llama al LLM para la narrativa de cartera (ahorra
   una consulta). El **peso** es sobre el capital invertido (suma 100 %) y la columna `post`
   aplica las ventas de la tabla y renormaliza, así que vender una posición sube el peso del
   resto. El **porcentaje y el volumen** de venta los fija el motor (la IA solo propone cuando
@@ -258,17 +258,15 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `core/compliance.py` | — | Panel P1-P11: stop inicial/vigente anclado a la entrada, TP, estados y resumen |
 | `core/equity_curve.py` | — | Curva de patrimonio ajustada por aportes (valor cuota base 100) y modo P9 |
 | `core/verdict.py` | — | `PROMPT PORTAFOLIO` v6/v7 como código puro: niveles, disparadores y ejes |
-| `core/orders.py` | 4.2, 11.2 | Semántica de relleno (Buy Limit, Sell Stop, ventas) y `Ticket` |
 | `core/engine.py` | 5, 11.3 | `decide()`: la única función que decide (entradas y salidas) |
 | `core/report.py` | — | Modelo del export de XTB y agregación filas → posiciones |
 | `core/analysis.py` | 5.7, 5.8 | Valua la cartera y genera hallazgos, acciones y veredicto por posición |
-| `core/planner.py` | 4, 9 | Adopta posiciones del reporte, arma tickets y el informe de la corrida |
+| `core/planner.py` | 4, 9 | Adopta posiciones del reporte y arma los informes de `review` |
 | `core/reconcile.py` | 9 | Libro vs reporte del broker: `UNMANAGED_LOT`, `STOP_MISSING`, cierres |
-| `core/metrics.py` | 13 | Expectativa, PF, SQN, drawdown y kill switch |
 | `core/fundamentals.py` | 5.2 | `Fundamentals`, puertas y score compuesto (valor/calidad/crecimiento/proyecciones) |
 | `core/llm.py` | 12 | Esquema del veredicto LLM; la IA decide, el motor fija niveles |
 | `core/discovery.py` | 5.2 | Prefiltro técnico + puertas/score fundamentales y ranking del recomendador |
-| `core/commodities.py` | 5.2 | Specs de oro/plata/cobre (Trading Economics, respaldo Yahoo) y driver por posición |
+| `core/commodities.py` | 5.2 | Specs de oro/plata/cobre (Trading Economics, respaldo Yahoo) |
 | `core/market_context.py` | — | Contexto de mercado determinista (VIX, SPY, QQQ, SOXX, Chile, 10Y, DXY) |
 | `core/stats.py` | — | Ficha por posición: specs de campos, derivados y render Markdown |
 | `core/briefing.py` | — | Bloque determinista de la revisión: banderas, stop técnico, take profit y alertas |
@@ -326,7 +324,7 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 - `docs/ARQUITECTURA.md` — **cómo funciona todo**: capas, flujo de una corrida, el motor
   `decide()`, la capa de IA y los datos. Empezar por acá.
 - `docs/USO.md` — guía operativa: flujo semanal, formatos, códigos de salida y claves.
-- `docs/DECISIONES.md` — D1 a D36. Cada ambigüedad del spec que se resolvió y por qué.
+- `docs/DECISIONES.md` — D1 a D37. Cada ambigüedad del spec que se resolvió y por qué.
   Es lo que hay que leer antes de cuestionar un parámetro.
 - `docs/Prompt_portafolio_v7.md` — reglas y parámetros P1-P11 del prompt vigente.
 - `docs/Spec_stats_v7.md` — cambios del `stats` para que el motor entregue el panel y

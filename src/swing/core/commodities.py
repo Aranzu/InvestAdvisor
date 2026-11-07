@@ -5,8 +5,6 @@ variaciones mensual y YTD. Las velas de Yahoo quedan como **respaldo** del preci
 variacion, y como unica fuente del maximo/minimo de 52 semanas. Los simbolos son datos,
 no parametros: viven aca y no en ``strategy.yaml``, igual que ``^VIX`` o ``CLP=X``.
 
-Tambien mapea cada posicion a su driver de materia prima (FCX -> cobre, NEM -> oro).
-Un ticker sin driver conocido simplemente sale sin driver.
 """
 
 from __future__ import annotations
@@ -18,7 +16,6 @@ __all__ = [
     "Commodity",
     "CommoditySpec",
     "commodity_by_key",
-    "commodity_driver",
 ]
 
 
@@ -79,32 +76,9 @@ DRIVER_BY_TICKER: dict[str, str] = {
     "HL": "plata",
 }
 
-#: Palabras del sector/industria que caen al mismo driver cuando el ticker no esta.
-DRIVER_BY_INDUSTRY: tuple[tuple[str, str], ...] = (
-    ("copper", "cobre"),
-    ("gold", "oro"),
-    ("silver", "plata"),
-)
-
 _BY_KEY: dict[str, CommoditySpec] = {spec.key: spec for spec in COMMODITIES}
 
 
 def commodity_by_key(key: str) -> CommoditySpec | None:
-    """La spec de un driver, o ``None`` si la clave no existe."""
+    """La spec de una materia prima, o ``None`` si la clave no existe."""
     return _BY_KEY.get(key)
-
-
-def commodity_driver(ticker: str, *, sector: str = "", industry: str = "") -> str | None:
-    """Clave de la materia prima que mueve a una posicion, o ``None`` si no hay driver.
-
-    Primero el ticker (fuente exacta) y, si no esta, las palabras del sector/industria
-    que publican Yahoo y Finviz.
-    """
-    direct = DRIVER_BY_TICKER.get(ticker.strip().upper())
-    if direct is not None:
-        return direct
-    text = f"{sector} {industry}".lower()
-    for keyword, key in DRIVER_BY_INDUSTRY:
-        if keyword in text:
-            return key
-    return None

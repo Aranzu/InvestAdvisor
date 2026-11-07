@@ -15,9 +15,7 @@ from swing.adapters.data_yahoo import MARKET_TZ, DataUnavailable, YahooDataProvi
 from swing.core.analysis import Quote
 from swing.core.calendar import SessionCalendar
 from swing.core.dataquality import find_unadjusted_jumps
-from swing.core.engine import IndicatorFrame, relative_strength_percentiles
 from swing.core.market import PriceSeries
-from swing.core.models import StrategyConfig
 from swing.core.reconcile import BrokerLot
 from swing.core.report import PositionReport
 
@@ -121,35 +119,6 @@ def live_quotes(model: PositionReport, provider: YahooDataProvider, today: dt.da
             earnings_confirmed=earnings.confirmed,
         )
     return quotes
-
-
-def relative_strength(
-    model: PositionReport,
-    universe: tuple[str, ...],
-    provider: YahooDataProvider,
-    strategy: StrategyConfig,
-    today: dt.date,
-) -> dict[str, float] | None:
-    """Percentil de fuerza relativa de las mantenidas dentro del universo (puerta G4).
-
-    El percentil se calcula sobre el mismo universo que corre el motor (D2), mas
-    las posiciones abiertas: el ``CAP_TRIM`` ordena por fuerza relativa y un ticker
-    sin percentil no se vende a ciegas, se pide el dato.
-    """
-    held = sorted({lot.ticker for lot in model.lots})
-    lookback = strategy.gates.rs_lookback_days
-    start = today - dt.timedelta(days=lookback * 2)
-    frames: dict[str, IndicatorFrame] = {}
-    for ticker in dict.fromkeys((*universe, *held)):
-        try:
-            series = provider.daily_bars(ticker, start=start, end=today)
-        except (CacheError, DataUnavailable, ValueError):
-            continue
-        frame = IndicatorFrame.build(series, strategy)
-        if frame is not None:
-            frames[ticker] = frame
-    percentiles = relative_strength_percentiles(frames, lookback)
-    return percentiles or None
 
 
 def implied_fx(model: PositionReport) -> float:

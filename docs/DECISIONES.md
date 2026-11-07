@@ -470,9 +470,9 @@ datos, una revision de posiciones con IA y un recomendador de compras.
   **fundamentales** y ordena por score compuesto; la IA agrega la tesis de compra.
 
 El resto (`backtest`, `allocate`, `confirm`, journal, `scan`, `daily`, `nightly`,
-`schedule`, `track`, `discover` y diagnosticos) se **poda**: su codigo historico queda
-archivado en `legacy/` (fuera del paquete, no se instala) y sus comandos salen del CLI.
-La superficie publica queda en `stats`, `review` y `screen`.
+`schedule`, `track`, `discover` y diagnosticos) se **poda**: su codigo se retira del
+proyecto y sus comandos salen del CLI. La superficie publica queda en `stats`, `review`
+y `screen`.
 
 ## D26. Fundamentales y proyecciones: yfinance + cache con TTL
 
@@ -644,9 +644,8 @@ campos depende de que Yahoo y Finviz cambien o no su formato.
 - **Si `SINGLE` resulta ser una fraccion relevante del libro.** La palanca es el
   riesgo por trade o el equity (D10), no un tope de precio.
 - ~~**Poda de comandos (D25).**~~ **Resuelto: se poda.** `backtest`, `allocate`,
-  `confirm`, journal, `scan` y `daily` salen del CLI y su codigo se archiva en
-  `legacy/` (`legacy/backtest/`, `legacy/adapters_journal.py`, `legacy/tests/`). El
-  paquete `swing` queda con las tres funciones de D25.
+  `confirm`, journal, `scan` y `daily` salen del CLI y su codigo se retira del proyecto.
+  El paquete `swing` queda con las tres funciones de D25.
 
 ---
 
@@ -736,7 +735,7 @@ porque no arregla el consumo de tokens (lo aumenta) ni la falta de reproducibili
 `strategy.yaml`, en el modelo y en los tests, pero **ningun modulo lo leia**: la IA nunca decidia
 de verdad y su `accion` ("Vender 40 %") era solo texto de informe, sin ticket. (2) El informe de
 `stats` y el prompt de la IA mezclaban los campos que deciden (stop, R, ATR, puntaje) con
-contexto informativo (dividendos, desempeño, liquidez/propiedad, insiders, driver, mercado,
+contexto informativo (dividendos, desempeño, liquidez/propiedad, insiders, mercado,
 materias primas), y el prompt mandaba **el mismo dato dos veces**: en plano y dentro de `stats`.
 (3) El informe de `review` mostraba dos tablas de niveles (motor y `PROMPT PORTAFOLIO`) sin
 dejar claro cual es una orden.
@@ -754,7 +753,7 @@ dejar claro cual es una orden.
   motor actua.
 - **Contexto separado en el informe (`stats` y `review`).** Cada `FieldSpec` gana un `role`
   (`decision`, `levels`, `score`, `context`). Por defecto se **ocultan** los campos de rol
-  `context` (dividendos, desempeño, liquidez/propiedad, insiders, driver, mercado, materias
+  `context` (dividendos, desempeño, liquidez/propiedad, insiders, mercado, materias
   primas) y quedan los que deciden, puntuan o fijan niveles; `--contexto` (`--sin-contexto` es el
   defecto) muestra la ficha completa. Los niveles de `PROMPT PORTAFOLIO` pasan a rotularse
   **"Niveles de vigilancia (no son ordenes)"**, separados de la tabla del motor.
@@ -821,3 +820,20 @@ ejecuta. `protect_gain` no cambia la R, la meta ni el tamano: solo el nivel del 
 ## D36. (retirado) Medicion forward del screener
 
 El journal y la medicion forward se retiraron. El producto tiene solo `stats`, `review` y `screen`.
+
+---
+
+## D37. Limpieza final: solo tres funciones y sin codigo muerto
+
+**Decision.** La superficie publica queda en `stats`, `review` y `screen` (el recomendador
+de acciones). Se retiraron del proyecto los comandos de diagnostico, automatizacion y
+medicion (`check-config`, `verify-broker`, `data-health`, `analyze-positions`, `discover`,
+`track`, `nightly`, `schedule`), sus modulos (`core.track`, `core.metrics`,
+`core.orders`, `services.picks_log`, `services.reporting`, `adapters.notify`), sus tests y
+la carpeta historica `legacy/`. Tambien se quitaron las tablas de stops antiguas de
+`stats`, los tickets del informe de `review` y el render Markdown de `analysis`.
+
+**Modelos.** `review` y la tesis del recomendador usan **DeepSeek Pro** para el analisis;
+**DeepSeek Flash** se reserva para las rondas rudimentarias de busqueda. Se configura en
+`.secrets/llm.json` (`model_analysis`/`model_search`) o por entorno
+(`SWING_LLM_MODEL_PRO`/`SWING_LLM_MODEL_FLASH`).

@@ -52,9 +52,8 @@ line-length = 120
 target-version = "py311"
 # El informe emite texto en espanol con acentos y flechas a proposito; el archivo
 # esta en UTF-8 (mismo criterio que el proyecto hermano).
-# `legacy/` es codigo archivado (no se empaqueta ni se corre); `cache/`, `output/`
-# y `reports/` son datos generados.
-exclude = [".venv", "cache", "output", "reports", "legacy"]
+# `cache/`, `output/` y `reports/` son datos generados.
+exclude = [".venv", "cache", "output", "reports"]
 
 [tool.ruff.lint]
 select = [
@@ -86,7 +85,7 @@ warn_unused_ignores = true
 # yfinance no publica tipos; se prefiere no ensuciar el codigo con un ignore
 # por llamada.
 ignore_missing_imports = true
-exclude = ["^\\.venv/", "^cache/", "^output/", "^reports/", "^legacy/"]
+exclude = ["^\\.venv/", "^cache/", "^output/", "^reports/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
