@@ -63,6 +63,8 @@ class MarketRegime:
 
     level: str = "sin dato"
     count: int | None = None
+    bucket: str = "sin dato"
+    """Tramo del conteo: ``0-1``, ``2-3`` o ``>=4`` (P9 y regla 7)."""
     signals: tuple[str, ...] = ()
     near_threshold: tuple[str, ...] = ()
     suspicious: tuple[str, ...] = ()
@@ -209,19 +211,24 @@ def regime(
     count = len(signals) if available else None
     if count is None:
         level = "sin dato"
+        bucket = "sin dato"
         mode = ""
     elif count <= 1:
         level = "bajo"
+        bucket = "0-1"
         mode = "normal"
     elif count <= 3:
         level = "medio"
+        bucket = "2-3"
         mode = "cautela"
     else:
         level = "alto"
+        bucket = ">=4"
         mode = "defensivo"
     return MarketRegime(
         level=level,
         count=count,
+        bucket=bucket,
         signals=tuple(signals),
         near_threshold=tuple(near),
         suspicious=tuple(suspicious),

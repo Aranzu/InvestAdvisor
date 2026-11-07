@@ -13,8 +13,24 @@ from swing.services.ledger import load_ledger, save_ledger
 def test_round_trip_y_orden(tmp_path: Path) -> None:
     path = tmp_path / "ledger.json"
     entries = [
-        LedgerEntry("NVDA", 100.0, dt.date(2026, 1, 2), 90.0, 95.0, 130.0, None, False),
-        LedgerEntry("AMD", 50.0, dt.date(2026, 2, 3), 45.0, 46.0, 65.0, 47.0, True),
+        LedgerEntry(
+            ticker="NVDA",
+            entry_usd=100.0,
+            first_entry=dt.date(2026, 1, 2),
+            initial_stop=90.0,
+            current_stop=95.0,
+            take_profit=130.0,
+        ),
+        LedgerEntry(
+            ticker="AMD",
+            entry_usd=50.0,
+            first_entry=dt.date(2026, 2, 3),
+            initial_stop=45.0,
+            current_stop=46.0,
+            take_profit=65.0,
+            transition_stop=47.0,
+            inherited_type="A",
+        ),
     ]
     save_ledger(path, entries)
     loaded = load_ledger(path)

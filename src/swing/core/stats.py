@@ -22,6 +22,7 @@ Convenciones de unidad (fijas, para que mezclar fuentes no sume errores):
 from __future__ import annotations
 
 import datetime as dt
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -35,7 +36,7 @@ from swing.core.verdict import Levels
 FORMATS = frozenset({"text", "int", "qty", "num", "pct", "pct_signed", "ratio", "money", "clp"})
 
 #: Version del contrato JSON de ``StatsReport``. Sube cuando cambia la forma.
-STATS_SCHEMA = 9
+STATS_SCHEMA = 10
 
 #: Ventana (dias de calendario) de las transacciones de insiders que entran al informe.
 #: Vive aca porque el render la cita y ``services`` la usa para filtrar: una sola
@@ -81,6 +82,13 @@ POSITION_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("pl_clp", "P/L CLP", "clp", role="decision"),
     FieldSpec("price_effect_clp", "Ef. precio", "clp", role="decision"),
     FieldSpec("fx_effect_clp", "Ef. FX", "clp", role="decision"),
+    FieldSpec("entry_usd", "Entrada USD", "num", role="decision"),
+    FieldSpec("first_entry", "Primera entrada", "text", role="decision"),
+    FieldSpec("days_since_first_entry", "Dias desde entrada", "int", role="decision"),
+    FieldSpec("ret_usd_pct", "Ret. USD", "pct_signed", role="decision"),
+    FieldSpec("ret_clp_pct", "Ret. CLP", "pct_signed", role="decision"),
+    FieldSpec("weight_pct", "Peso pat", "pct", role="decision"),
+    FieldSpec("weight_invested_pct", "Peso inv", "pct", role="context"),
     FieldSpec("sessions_open", "Sesiones", "int", role="decision"),
     FieldSpec("earnings", "Earnings", "text", role="decision"),
     FieldSpec("lots", "Lotes", "int", role="decision"),
@@ -88,6 +96,8 @@ POSITION_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("last_lot_price", "Precio ultimo lote", "num", role="decision"),
     FieldSpec("last_lot_vs_entry_pct", "Ultimo vs entrada", "pct_signed", role="decision"),
     FieldSpec("averaged_down", "Promedio a la baja", "text", role="decision"),
+    FieldSpec("avg_down_lot_date", "Lote promedio a la baja", "text", role="decision"),
+    FieldSpec("avg_down_lot_price", "Precio lote promedio", "num", role="decision"),
 )
 
 #: Secciones de campos externos, en el orden en que se leen.
@@ -316,7 +326,16 @@ class StatsReport:
     """Resumen de cartera derivado (patrimonio, caja %, pesos por tema, concentracion)."""
 
     compliance: Mapping[str, object] = field(default_factory=dict)
-    """Panel de cumplimiento v7: resumen P1-P11 y una fila por posicion."""
+    """Panel de cumplimiento v8: resumen P1-P13 y una fila por posicion."""
+
+    maps: Mapping[str, object] = field(default_factory=dict)
+    """Mapas editables: factor IA por ticker, tema por ticker y agregado sectorial."""
+
+    feasibility: Mapping[str, object] = field(default_factory=dict)
+    """Prueba de factibilidad del Paso 0b y calendario semanal de reduccion."""
+
+    data_status: Mapping[str, object] = field(default_factory=dict)
+    """Estado de los datos: cierre confirmado, siguiente sesion, reintentos y huecos."""
 
     closed_history: Mapping[str, object] = field(default_factory=dict)
     """Historial cerrado y comparacion con la cartera abierta (revision mensual)."""
@@ -357,6 +376,9 @@ class StatsReport:
             "regime": _regime_to_dict(self.regime),
             "panel": dict(self.panel),
             "compliance": dict(self.compliance),
+            "maps": dict(self.maps),
+            "feasibility": dict(self.feasibility),
+            "data_status": dict(self.data_status),
             "closed_history": dict(self.closed_history),
             "briefing": _briefing_to_dict(self.briefing),
             "rows": [_position_to_dict(row) for row in self.rows],
@@ -402,6 +424,9 @@ class StatsReport:
             regime=_regime_from_dict(data.get("regime")),
             panel=_mapping(data.get("panel")),
             compliance=_mapping(data.get("compliance")),
+            maps=_mapping(data.get("maps")),
+            feasibility=_mapping(data.get("feasibility")),
+            data_status=_mapping(data.get("data_status")),
             closed_history=_mapping(data.get("closed_history")),
             briefing=_briefing_from_dict(data.get("briefing")),
         )
@@ -495,6 +520,7 @@ def _regime_to_dict(item: MarketRegime | None) -> dict[str, object] | None:
     return {
         "level": item.level,
         "count": item.count,
+        "bucket": item.bucket,
         "signals": list(item.signals),
         "near_threshold": list(item.near_threshold),
         "suspicious": list(item.suspicious),
@@ -517,6 +543,7 @@ def _regime_from_dict(data: object) -> MarketRegime | None:
     return MarketRegime(
         level=_text(data.get("level")) or "sin dato",
         count=int(raw_count) if raw_count is not None else None,
+        bucket=_text(data.get("bucket")) or "sin dato",
         signals=tuple(_text(item) for item in _list(data.get("signals"))),
         near_threshold=tuple(_text(item) for item in _list(data.get("near_threshold"))),
         suspicious=tuple(_text(item) for item in _list(data.get("suspicious"))),
@@ -871,7 +898,7 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
         hora_str = gen.astimezone(dt.UTC).strftime("%H:%M:%S UTC")
     lines.append(
         f"Datos al {report.today} {hora_str} - modalidad {report.mode} - FX {fx} ({report.fx_source}) - "
-        f"equity XTB {report.equity_clp:,.0f} CLP"
+        f"equity XTB {report.equity_clp:,.0f} CLP - esquema stats v{STATS_SCHEMA}"
     )
     lines.append(f"Generado {_et_stamp(report.generated_at)} - {_session_hint(report.generated_at)}.")
     lines.append("")
@@ -883,10 +910,13 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
     lines.append("")
     if not show_context:
         lines.append(
-            "Contexto oculto (dividendos, desempeno, liquidez/propiedad, insiders, "
-            "mercado y materias primas): vuelve a generar con ``--contexto`` para verlo."
+            "Contexto informativo adicional (dividendos, desempeno, liquidez/propiedad, insiders "
+            "y materias primas) oculto: usa ``--contexto`` para verlo. Mercado, mapas, lots, "
+            "ledger, factibilidad y estado de datos se muestran siempre."
         )
         lines.append("")
+    lines.extend(_market_section(report))
+    lines.extend(_maps_section(report))
     lines.extend(_compliance_section(report))
 
     if not report.rows:
@@ -896,17 +926,22 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
         position_specs = _visible(POSITION_FIELDS, show_context=show_context)
         if position_specs:
             lines.extend(_section("Posicion y valuacion", position_specs, report.rows, "context"))
+        lines.extend(_lots_section(report))
         lines.extend(_extended_hours_section(report))
         for title, specs in SECTIONS:
             visible = _visible(specs, show_context=show_context)
             if not visible:
                 continue
             lines.extend(_section(title, visible, report.rows, "fields"))
+        lines.extend(_ledger_section(report))
+        lines.extend(_earnings_section(report))
         lines.extend(_closed_history_section(report))
+        lines.extend(_cash_section(report))
         if show_context:
-            lines.extend(_market_section(report))
             lines.extend(_commodities_section(report))
             lines.extend(_insiders_section(report))
+        lines.extend(_feasibility_section(report))
+        lines.extend(_data_status_section(report))
         lines.extend(_coverage_section(report))
 
     if report.notes:
@@ -923,36 +958,58 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
             lines.append(f"- {limitation}")
         lines.append("")
 
+    lines.extend(_panel_json_section(report))
     return "\n".join(lines) + "\n"
 
 
 def _compliance_section(report: StatsReport) -> list[str]:
-    """Panel de cumplimiento v7: niveles anclados a la entrada y reglas P1-P11."""
+    """Panel de cumplimiento v8: niveles anclados a la entrada y reglas P1-P13."""
     data = report.compliance
     if not data:
         return []
     summary = _mapping(data.get("summary"))
     positions = [item for item in _list(data.get("positions")) if isinstance(item, Mapping)]
-    lines = ["## Panel de cumplimiento", ""]
+    lines = ["## Panel de cumplimiento (base P12 = equity XTB)", ""]
     if not positions:
         lines.append("Sin posiciones abiertas.")
         lines.append("")
         return lines
     lines.append(
-        "| Ticker | Peso inv | ATR % | Stop inicial | Stop vigente | Dist. stop precio | "
-        "Dist. stop entrada | R | Riesgo % | Peso max abrir | TP | Estado |"
+        "| Ticker | Peso pat | Peso inv | ATR % | Stop inicial | Stop vigente | Dist. stop precio | "
+        "Dist. stop entrada | R | Riesgo % | Peso max abrir | Entrada nueva CLP | Acciones | TP | "
+        "Tipo heredada | Stop viable | Estado |"
     )
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|")
     for item in positions:
         lines.append(
-            f"| {item.get('ticker', '')} | {_format('pct', item.get('weight_invested_pct'))} | "
+            f"| {item.get('ticker', '')} | {_format('pct', item.get('weight_equity_pct'))} | "
+            f"{_format('pct', item.get('weight_invested_pct'))} | "
             f"{_format('pct', item.get('atr_pct'))} | {_format('num', item.get('initial_stop'))} | "
             f"{_format('num', item.get('current_stop'))} | {_format('pct_signed', item.get('stop_dist_price_pct'))} | "
             f"{_format('pct_signed', item.get('stop_dist_entry_pct'))} | {_format('ratio', item.get('r_multiple'))} | "
-            f"{_format('pct', item.get('risk_pct'))} | {_format('pct', item.get('max_weight_open_pct'))} | "
-            f"{_format('num', item.get('take_profit'))} | {item.get('status', '')} |"
+            f"{_format('pct', item.get('risk_pct'))} | {_format('pct', item.get('new_entry_pct'))} | "
+            f"{_format('clp', item.get('new_entry_clp'))} | {_format('qty', item.get('new_entry_shares'))} | "
+            f"{_format('num', item.get('take_profit'))} | {item.get('inherited_type') or '-'} | "
+            f"{'si' if item.get('stop_viable') else 'no'} | {item.get('status', '')} |"
         )
     lines.append("")
+    dynamic = [
+        item
+        for item in positions
+        if item.get("break_even") is not None or item.get("trailing_stop") is not None
+    ]
+    if dynamic:
+        lines.append("### Stops dinamicos (solo suben)")
+        lines.append("")
+        lines.append("| Ticker | R | Break-even (+1,5R) | Trailing (min 20 ses - 3 ATR) | Stop vigente |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for item in dynamic:
+            lines.append(
+                f"| {item.get('ticker')} | {_format('ratio', item.get('r_multiple'))} | "
+                f"{_format('num', item.get('break_even'))} | {_format('num', item.get('trailing_stop'))} | "
+                f"{_format('num', item.get('current_stop'))} |"
+            )
+        lines.append("")
 
     lines.extend(_compliance_summary_lines(summary))
     diffs = [item for item in positions if item.get("stop_xtb_differs") or item.get("tp_xtb_differs")]
@@ -979,10 +1036,26 @@ def _compliance_summary_lines(summary: Mapping[str, object]) -> list[str]:
         f"(P7 minimo {_format('pct', summary.get('min_cash_pct'))}; banda hasta "
         f"{_format('pct', summary.get('cash_band_max_pct'))})."
     )
+    overweight = _list(summary.get("overweight"))
+    if overweight:
+        lines.append(
+            f"- P3 (Peso pat > {_format('pct', summary.get('max_weight_hold_pct'))}): "
+            f"{', '.join(str(t) for t in overweight)}; recortar a "
+            f"{_format('pct', summary.get('max_weight_trim_pct'))}."
+        )
+    overrisk = _list(summary.get("overrisk"))
+    if overrisk:
+        lines.append(
+            f"- P4 (Riesgo > {_format('pct', summary.get('max_risk_position_pct'))}): "
+            f"{', '.join(str(t) for t in overrisk)}."
+        )
     factor_pcts = _mapping(summary.get("factor_pcts"))
     factor_max = _mapping(summary.get("factor_max_pct"))
     for name, pct in factor_pcts.items():
-        lines.append(f"- Factor {name}: {_format('pct', pct)} (tope {_format('pct', factor_max.get(name))}).")
+        lines.append(f"- Factor {name}: {_format('pct', pct)} (tope {_format('pct', factor_max.get(name))}, base P12).")
+    aggregate = _mapping(summary.get("aggregate_theme_pcts"))
+    for name, pct in aggregate.items():
+        lines.append(f"- Tema agregado {name}: {_format('pct', pct)} (tope {_format('pct', summary.get('max_theme_pct'))}).")
     if summary.get("biggest_theme"):
         lines.append(
             f"- Mayor tema: {summary.get('biggest_theme')} {_format('pct', summary.get('biggest_theme_pct'))} "
@@ -994,6 +1067,15 @@ def _compliance_summary_lines(summary: Mapping[str, object]) -> list[str]:
         f"regimen {summary.get('regime_mode') or 'normal'})."
     )
     lines.append(f"- Infracciones: {summary.get('infractions', 0)}.")
+    inherited = _mapping(summary.get("inherited_counts"))
+    if inherited:
+        lines.append(
+            f"- Heredadas: tipo 0 {_format('int', inherited.get('0'))}, "
+            f"tipo A {_format('int', inherited.get('A'))}, tipo B {_format('int', inherited.get('B'))}."
+        )
+    pending = _list(summary.get("decision_pending"))
+    if pending:
+        lines.append(f"- Heredadas A/B sin decision: {', '.join(str(t) for t in pending)}.")
     if summary.get("breadth_pct") is not None:
         lines.append(f"- Amplitud de la cartera: {_format('pct', summary.get('breadth_pct'))} bajo su SMA200.")
     if summary.get("avg_correlation") is not None:
@@ -1023,8 +1105,316 @@ def _compliance_summary_lines(summary: Mapping[str, object]) -> list[str]:
             f"{_format('pct_signed', curve.get('drawdown_pct'))}, "
             f"{_format('int', curve.get('days_since_peak'))} dias desde el maximo."
         )
+        if curve.get("max_equity_clp") is not None:
+            lines.append(
+                f"- Patrimonio maximo: {_format('clp', curve.get('max_equity_clp'))} "
+                f"el {curve.get('max_equity_date') or '-'}; ajustado por aportes "
+                f"{_format('clp', curve.get('max_equity_adjusted_clp'))} "
+                f"(actual {_format('clp', curve.get('current_equity_clp'))})."
+            )
     if summary.get("drawdown_mode") and summary.get("drawdown_mode") != "normal":
         lines.append(f"- Modo por caida del patrimonio: {summary.get('drawdown_mode')}.")
+    return lines
+
+
+def _maps_section(report: StatsReport) -> list[str]:
+    """Mapas editables de factor y tema (v8, seccion 6)."""
+    data = report.maps
+    if not data:
+        return []
+    rows = [item for item in _list(data.get("rows")) if isinstance(item, Mapping)]
+    lines = ["## Mapas de factor y tema (base P12)", ""]
+    factor_name = str(data.get("factor_name") or "factor")
+    lines.append(
+        f"- Factor **{factor_name}**: {_format('pct', data.get('factor_pct'))} del patrimonio "
+        f"(tope {_format('pct', data.get('factor_max_pct'))})."
+    )
+    tickers = _list(data.get("factor_tickers"))
+    if tickers:
+        lines.append(f"- Tickers del factor: {', '.join(str(t) for t in tickers)}.")
+    aggregate = _mapping(data.get("aggregate_theme"))
+    lines.append(
+        f"- Tema agregado **{aggregate.get('name') or 'semiconductores y equipos'}**: "
+        f"{_format('pct', aggregate.get('pct'))} del patrimonio "
+        f"(tope {_format('pct', aggregate.get('max_pct'))}); miembros: "
+        f"{', '.join(str(t) for t in _list(aggregate.get('members'))) or '-'}."
+    )
+    lines.append("")
+    lines.append("| Ticker | Factor IA | Tema | Peso pat |")
+    lines.append("|---|---|---|---:|")
+    for item in rows:
+        lines.append(
+            f"| {item.get('ticker')} | {item.get('factor_ia')} | {item.get('theme')} | "
+            f"{_format('pct', item.get('weight_pct'))} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _lots_section(report: StatsReport) -> list[str]:
+    """Detalle de lotes y promedios a la baja por posicion (regla 8 de v8)."""
+    rows = [row for row in report.rows if _list(row.context.get("lots_detail"))]
+    if not rows:
+        return []
+    lines = ["## Lotes y promedio a la baja", ""]
+    lines.append(
+        "| Ticker | Entrada media USD | Primera entrada | Dias | Ret. USD | Ret. CLP | "
+        "Lote promedio a la baja | Precio del lote |"
+    )
+    lines.append("|---|---:|---|---:|---:|---:|---|---:|")
+    for row in rows:
+        context = row.context
+        avg_date = context.get("avg_down_lot_date")
+        avg_price = context.get("avg_down_lot_price")
+        lines.append(
+            f"| {row.ticker} | {_format('num', context.get('entry_usd'))} | "
+            f"{context.get('first_entry') or '-'} | {_format('int', context.get('days_since_first_entry'))} | "
+            f"{_format('pct_signed', context.get('ret_usd_pct'))} | {_format('pct_signed', context.get('ret_clp_pct'))} | "
+            f"{avg_date or '-'} | {_format('num', avg_price)} |"
+        )
+    lines.append("")
+    lines.append("| Ticker | Fecha | Precio USD | Acciones | Valor CLP |")
+    lines.append("|---|---|---:|---:|---:|")
+    for row in rows:
+        for lot in _list(row.context.get("lots_detail")):
+            if not isinstance(lot, Mapping):
+                continue
+            lines.append(
+                f"| {row.ticker} | {lot.get('date')} | {_format('num', lot.get('price_usd'))} | "
+                f"{_format('qty', lot.get('shares'))} | {_format('clp', lot.get('value_clp'))} |"
+            )
+    lines.append("")
+    return lines
+
+
+def _ledger_section(report: StatsReport) -> list[str]:
+    """Registro persistente de stops y decisiones que ``stats`` lee y escribe."""
+    positions = [
+        item for item in _list(_mapping(report.compliance).get("positions")) if isinstance(item, Mapping)
+    ]
+    if not positions:
+        return []
+    lines = ["## Registro de stops y decisiones (ledger)", ""]
+    lines.append(
+        "| Ticker | Stop inicial | Stop vigente | TP | Formula TP | Tipo heredada | Fecha adopcion | "
+        "Decision | Stop transicion (prop./fijado) | Fecha transicion | Tramos ejecutados | Tipo stop P11 |"
+    )
+    lines.append("|---|---:|---:|---:|---|---|---|---|---:|---|---|---|")
+    for item in positions:
+        lines.append(
+            f"| {item.get('ticker')} | {_format('num', item.get('initial_stop'))} | "
+            f"{_format('num', item.get('current_stop'))} | {_format('num', item.get('take_profit'))} | "
+            f"{item.get('tp_formula') or '-'} | {item.get('inherited_type') or '-'} | "
+            f"{item.get('adoption_date') or '-'} | {item.get('decision') or '-'} | "
+            f"{_format('num', item.get('transition_stop'))} | {item.get('transition_date') or '-'} | "
+            f"{', '.join(str(t) for t in _list(item.get('reduction_tranches_done'))) or '-'} | "
+            f"{item.get('stop_kind') or 'alerta'} |"
+        )
+    lines.append("")
+    lines.append(
+        "P11: ``orden`` significa que el usuario confirmo una orden Stop real con el mercado cerrado; "
+        "``alerta`` significa precio de alerta y salida en la siguiente sesion. El archivo del ledger "
+        "es editable: ``stop_kind``, ``decision`` y ``reduction_tranches_done`` se conservan entre "
+        "corridas. El stop vigente solo sube; el de transicion de una heredada se fija una vez."
+    )
+    lines.append("")
+    return lines
+
+
+def _earnings_section(report: StatsReport) -> list[str]:
+    """Earnings, revisiones de analistas y datos de deterioro de tesis (V1)."""
+    if not report.rows:
+        return []
+    lines = ["## Earnings, analistas y deterioro de tesis (V1)", ""]
+    lines.append(
+        "| Ticker | Earnings | Tipo | Horario | Mov. implicito | Mov. medio historico | "
+        "EPS 60d antes | Revision EPS 60d | Alzas 60d | Bajas 60d | Cambio objetivo 60d |"
+    )
+    lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    any_earnings = False
+    fallback_30d = False
+    for row in report.rows:
+        fields = row.fields
+        context = row.context
+        has_earnings = context.get("earnings") not in (None, "", "sin dato")
+        if not has_earnings and not any(
+            fields.get(key) is not None
+            for key in (
+                "earnings_timing",
+                "eps_revision_60d_pct",
+                "analyst_up_60d",
+                "analyst_up_30d",
+                "target_change_60d_pct",
+            )
+        ):
+            continue
+        any_earnings = True
+        up = fields.get("analyst_up_60d")
+        down = fields.get("analyst_down_60d")
+        if up is None and down is None:
+            up = fields.get("analyst_up_30d")
+            down = fields.get("analyst_down_30d")
+            fallback_30d = fallback_30d or up is not None or down is not None
+        kind = "-" if not has_earnings else ("confirmada" if context.get("earnings_confirmed") else "estimada")
+        lines.append(
+            f"| {row.ticker} | {context.get('earnings') or '-'} | {kind} | "
+            f"{fields.get('earnings_timing') or '-'} | {_format('pct_signed', fields.get('earnings_implied_move_pct'))} | "
+            f"{_format('pct_signed', fields.get('earnings_avg_move_pct'))} | "
+            f"{_format('num', fields.get('eps_consensus_60d_ago'))} | "
+            f"{_format('pct_signed', fields.get('eps_revision_60d_pct'))} | "
+            f"{_format('int', up)} | {_format('int', down)} | "
+            f"{_format('pct_signed', fields.get('target_change_60d_pct'))} |"
+        )
+    if not any_earnings:
+        lines.append("| - | sin datos de earnings o revisiones | - | - | - | - | - | - | - | - | - |")
+    lines.append("")
+    if fallback_30d:
+        lines.append(
+            "- Alzas/bajas: yfinance publica ventanas de 7 y 30 dias; cuando no hay 60 dias se "
+            "muestra la de 30 dias y se declara aqui."
+        )
+        lines.append("")
+
+    lines.append(
+        "| Ticker | FCF ult. Q | FCF Q-1 | Deuda neta | Var. deuda neta | Margen oper. Y/Y (pb) | "
+        "Ingresos ult. Q | Ingresos Q-1 | Desacelera | Guia vs consenso | Ultimo reporte | Documento |"
+    )
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|")
+    any_v1 = False
+    for row in report.rows:
+        fields = row.fields
+        if not any(
+            fields.get(key) is not None
+            for key in (
+                "fcf_last_q",
+                "fcf_prior_q",
+                "net_debt",
+                "oper_margin_yoy_bps",
+                "revenue_last_q",
+                "revenue_prior_q",
+                "guidance_vs_consensus_pct",
+                "last_report_date",
+            )
+        ):
+            continue
+        any_v1 = True
+        url = fields.get("last_report_url")
+        document = f"[documento]({url})" if isinstance(url, str) and url else "-"
+        lines.append(
+            f"| {row.ticker} | {_format('money', fields.get('fcf_last_q'))} | "
+            f"{_format('money', fields.get('fcf_prior_q'))} | {_format('money', fields.get('net_debt'))} | "
+            f"{_format('money', fields.get('net_debt_change'))} | {_format('int', fields.get('oper_margin_yoy_bps'))} | "
+            f"{_format('money', fields.get('revenue_last_q'))} | {_format('money', fields.get('revenue_prior_q'))} | "
+            f"{fields.get('revenue_deceleration') or '-'} | {_format('pct_signed', fields.get('guidance_vs_consensus_pct'))} | "
+            f"{fields.get('last_report_date') or '-'} "
+            f"{('(' + str(fields.get('last_report_type')) + ')') if fields.get('last_report_type') else ''} | "
+            f"{document} |"
+        )
+    if not any_v1:
+        lines.append("| - | sin datos trimestrales | - | - | - | - | - | - | - | - | - | - |")
+    lines.append("")
+    lines.append(
+        "- Guia vs consenso y cambio del objetivo a 60 dias dependen de fuentes que Yahoo no "
+        "siempre publica: si faltan quedan en ``-``. El cambio del objetivo se reconstruye con "
+        "el historial diario de la cache cuando hay 60 dias de corridas."
+    )
+    lines.append("")
+    return lines
+
+
+def _feasibility_section(report: StatsReport) -> list[str]:
+    """Paso 0b: escenarios y calendario semanal de reduccion calculados por el motor."""
+    data = report.feasibility
+    if not data:
+        return []
+    lines = ["## Factibilidad y calendario de reduccion (Paso 0b)", ""]
+    lines.append(
+        f"Base P12 {_format('clp', data.get('base_p12_clp'))}; caja actual "
+        f"{_format('clp', data.get('cash_clp'))}; factor {data.get('factor_name') or '-'}; "
+        f"tema agregado {data.get('aggregate_theme') or '-'}."
+    )
+    lines.append("")
+    lines.append(
+        "| Escenario | Semanas | Factor % | Tope | Exceso | Tema % | Tope | Exceso | Caja % | "
+        "P7 min | Banda max | Caja ok | Sobre banda |"
+    )
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|")
+    limits = _mapping(data.get("limits"))
+    for item in _list(data.get("scenarios")):
+        if not isinstance(item, Mapping):
+            continue
+        lines.append(
+            f"| {item.get('name')} | {_format('int', item.get('weeks'))} | "
+            f"{_format('pct', item.get('factor_pct'))} | {_format('pct', limits.get('factor_pct'))} | "
+            f"{_format('pct', item.get('factor_excess_pct'))} | {_format('pct', item.get('theme_pct'))} | "
+            f"{_format('pct', limits.get('theme_pct'))} | {_format('pct', item.get('theme_excess_pct'))} | "
+            f"{_format('pct', item.get('cash_pct'))} | {_format('pct', item.get('cash_min_pct'))} | "
+            f"{_format('pct', item.get('cash_band_max_pct'))} | "
+            f"{'si' if item.get('cash_ok') else 'no'} | {'si' if item.get('cash_over_band') else 'no'} |"
+        )
+    lines.append("")
+    calendar = [item for item in _list(data.get("calendar")) if isinstance(item, Mapping)]
+    if calendar:
+        lines.append("| Semana | Fecha | Reducciones (ticker: acciones / CLP) | Factor % | Tema % | Caja % |")
+        lines.append("|---:|---|---|---:|---:|---:|")
+        for week in calendar:
+            reductions = _list(week.get("reductions"))
+            if reductions:
+                detail = "; ".join(
+                    f"{item.get('ticker')}: {_format('qty', item.get('shares'))} / "
+                    f"{_format('clp', item.get('value_clp'))}"
+                    for item in reductions
+                    if isinstance(item, Mapping)
+                )
+            else:
+                detail = (
+                    f"{week.get('ticker')}: {_format('qty', week.get('shares'))} / "
+                    f"{_format('clp', week.get('value_clp'))} ({week.get('reason')})"
+                )
+            lines.append(
+                f"| {_format('int', week.get('week'))} | {week.get('date')} | {detail} | "
+                f"{_format('pct', week.get('factor_pct'))} | {_format('pct', week.get('theme_pct'))} | "
+                f"{_format('pct', week.get('cash_pct'))} |"
+            )
+        lines.append("")
+    if data.get("note"):
+        lines.append(f"- {data.get('note')}")
+        lines.append("")
+    return lines
+
+
+def _data_status_section(report: StatsReport) -> list[str]:
+    """Estado de los datos: cierre, siguiente sesion, reintentos y huecos."""
+    data = report.data_status
+    if not data:
+        return []
+    lines = ["## Estado de los datos", ""]
+    lines.append(
+        f"- Cierre confirmado: **{'si' if data.get('close_confirmed') else 'no'}**; "
+        f"ultima sesion {data.get('last_session') or '-'}; siguiente sesion regular {data.get('next_session') or '-'}."
+    )
+    suspicious = _list(data.get("suspicious"))
+    lines.append(f"- Indicadores sospechosos: {', '.join(str(t) for t in suspicious) or 'ninguno'}.")
+    retried = _list(data.get("retried"))
+    if retried:
+        lines.append(f"- Reintentos automaticos: {', '.join(str(t) for t in retried)}.")
+    failures = _list(data.get("download_failures"))
+    if failures:
+        lines.append(
+            f"- Fallos de descarga tras reintento: {', '.join(str(t) for t in failures)}; "
+            "reintenta ``swing stats`` antes de decidir sobre ellos."
+        )
+    stale = _list(data.get("stale"))
+    if stale:
+        lines.append(f"- Series congeladas: {', '.join(str(t) for t in stale)}.")
+    incomplete = [item for item in _list(data.get("incomplete")) if isinstance(item, Mapping)]
+    if incomplete:
+        detail = "; ".join(
+            f"{item.get('ticker')}: {', '.join(str(m) for m in _list(item.get('missing')))}"
+            for item in incomplete
+        )
+        lines.append(f"- Datos incompletos: {detail}.")
+    lines.append("")
     return lines
 
 
@@ -1060,6 +1450,80 @@ def _closed_history_section(report: StatsReport) -> list[str]:
         f"{_format('pct_signed', open_losers.get('avg_return_pct'))} |"
     )
     lines.append("")
+    winners = [item for item in _list(data.get("top_winners")) if isinstance(item, Mapping)]
+    losers = [item for item in _list(data.get("top_losers")) if isinstance(item, Mapping)]
+    if winners or losers:
+        lines.append("| P/L realizado por ticker | CLP |")
+        lines.append("|---|---:|")
+        for item in winners:
+            lines.append(f"| {item.get('ticker')} (ganadora) | {_format('clp', item.get('realized_clp'))} |")
+        for item in losers:
+            lines.append(f"| {item.get('ticker')} (perdedora) | {_format('clp', item.get('realized_clp'))} |")
+        lines.append("")
+    lines.append(
+        "- Stops respetados vs ignorados y resultado de OVERRIDE requieren el registro de "
+        "decisiones historico; el ledger actual cubre las posiciones abiertas."
+    )
+    lines.append("")
+    return lines
+
+
+def _cash_section(report: StatsReport) -> list[str]:
+    """Aportes/retiros y caja real de XTB contra la caja calculada."""
+    panel = report.panel
+    if not panel or panel.get("contributions_clp") is None:
+        return []
+    lines = ["## Aportes y caja", ""]
+    lines.append("| metrica | valor |")
+    lines.append("|---|---:|")
+    lines.append(f"| aportes acumulados | {_format('clp', panel.get('contributions_clp'))} |")
+    lines.append(f"| retiros acumulados | {_format('clp', panel.get('withdrawals_clp'))} |")
+    lines.append(f"| aportes netos | {_format('clp', panel.get('net_contributions_clp'))} |")
+    lines.append(f"| caja XTB (real) | {_format('clp', panel.get('cash_broker_clp'))} |")
+    lines.append(f"| caja calculada | {_format('clp', panel.get('cash_calculated_clp'))} |")
+    difference = panel.get("cash_difference_clp")
+    if isinstance(difference, (int, float)):
+        lines.append(f"| diferencia | {_format('clp', difference)} |")
+    lines.append("")
+    flows = [item for item in _list(panel.get("recent_flows")) if isinstance(item, Mapping)]
+    if flows:
+        lines.append("| Fecha | Tipo | Monto CLP | Comentario |")
+        lines.append("|---|---|---:|---|")
+        for item in flows:
+            lines.append(
+                f"| {item.get('date')} | {item.get('kind')} | {_format('clp', item.get('amount_clp'))} | "
+                f"{str(item.get('comment') or '-')[:80]} |"
+            )
+        lines.append("")
+    return lines
+
+
+def _panel_json_section(report: StatsReport) -> list[str]:
+    """Bloque JSON final con los mismos datos del panel (contrato estable v10)."""
+    payload: dict[str, object] = {
+        "schema": STATS_SCHEMA,
+        "account": report.account,
+        "today": report.today.isoformat(),
+        "generated_at": report.generated_at.isoformat(),
+        "mode": report.mode,
+        "fx": report.fx,
+        "equity_clp": report.equity_clp,
+        "cash_clp": report.cash_clp,
+        "positions_value_clp": report.positions_value_clp,
+        "panel": dict(report.panel),
+        "compliance": dict(report.compliance),
+        "maps": dict(report.maps),
+        "feasibility": dict(report.feasibility),
+        "data_status": dict(report.data_status),
+        "closed_history": dict(report.closed_history),
+        "rows": [
+            {"ticker": row.ticker, "context": dict(row.context), "fields": dict(row.fields)}
+            for row in report.rows
+        ],
+    }
+    lines = ["## Datos del panel (JSON)", "", "```json"]
+    lines.append(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str))
+    lines.extend(["```", ""])
     return lines
 
 
@@ -1191,8 +1655,12 @@ def _market_section(report: StatsReport) -> list[str]:
 def _regime_block(regime: MarketRegime) -> list[str]:
     """Regimen del Paso 1 (v7): seis senales, sospechosos, amplitud y modo."""
     count = "-" if regime.count is None else str(regime.count)
+    bucket = regime.bucket or "-"
     lines = ["### Regimen (Paso 1)", ""]
-    lines.append(f"- Nivel **{regime.level}** ({count} senales de estres de 6).")
+    lines.append(
+        f"- Nivel **{regime.level}** (tramo **{bucket}**; {count} senales de estres de 6). "
+        "Tramos: 0-1 normal, 2-3 cautela, >=4 defensivo."
+    )
     if regime.mode:
         lines.append(f"- Modo de regimen: **{regime.mode}**.")
     if regime.signals:
@@ -1242,7 +1710,9 @@ def _commodities_section(report: StatsReport) -> list[str]:
     lines.append(
         "- El precio y la variacion a 1 mes/YTD salen de **Trading Economics** (`/commodities`); "
         "sus valores vienen de la tabla y no se recalculan. "
-        "El maximo/minimo de 52 semanas sale de las velas de Yahoo, la unica fuente con historial."
+        "El maximo/minimo de 52 semanas sale de las velas de Yahoo, la unica fuente con historial. "
+        "Precios contractuales de DRAM/NAND no tienen fuente integrada: si se necesitan, van por "
+        "busqueda web y se declaran como fuente externa."
     )
     lines.append("")
     return lines

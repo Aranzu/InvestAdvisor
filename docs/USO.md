@@ -20,10 +20,10 @@ Las tres funciones del producto:
 
 ```powershell
 # 1) Ficha de cada posicion (no decide nada):
-swing stats --contexto
+swing stats
 
 # 2) Que hacer con lo que ya tenes (usa stats; el motor fija el stop):
-swing review                          # informe v7 (con --web-search agrega la busqueda)
+swing review                          # informe v8 (con --web-search agrega la busqueda)
 swing review --formato detalle        # bloque por posicion
 
 # 3) Recomendador de acciones (tecnico + fundamentales + proyecciones):
@@ -39,7 +39,7 @@ swing screen --portfolio posiciones/CLP_...xlsx   # ademas no propone lo que ya 
 
 `stats` escribe `output/stats_<reporte>_<marca>.md` (o `--out`). Con `--json` agrega
 `stats_<reporte>_<marca>.json` con el mismo contenido en forma estructurada (contrato
-`schema: 9`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
+`schema: 10`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
 sello de la corrida (`AAAAMMDD-HHMMSS`), para que dos corridas del mismo día o de cuentas
 distintas no se pisen. `review` trabaja con el informe en memoria y no necesita el JSON.
 Cada corrida de `stats`, `review` o `screen` borra los informes anteriores de `output/`
@@ -62,33 +62,38 @@ publica; escribe `output/stats_<reporte>_<marca>.md` (o `--out`). Un `-` es "sin
 Además, cuando Yahoo publica **pre-market y after-market** aparece la sección
 **Horario extendido (Pre/Post Market)** con el precio (variación contra el cierre regular y
 hora ET) y el volumen de cada lado; sin dato la sección no se muestra.
-El informe abre con el **Panel de cumplimiento** (P1-P11): stop inicial anclado a la
-entrada, stop vigente, distancias, R, riesgo % del patrimonio, peso máximo al abrir y
-estado (`OK`, `SOBRE_PESO`, `SOBRE_RIESGO`, `STOP_TOCADO`, `HEREDADA_EN_PERDIDA`,
-`SIN_STOP`). Es la única fuente de verdad para stops y riesgo; el ledger
-(`state/ledger.json`) hace que el stop vigente solo suba entre corridas.
+El informe abre con el **Panel de cumplimiento** (P1-P13): stop inicial anclado a la
+entrada, stop vigente, distancias, R, riesgo % del patrimonio, **Peso pat** y **Peso
+max abrir** sobre el patrimonio (P12), entrada nueva en CLP/acciones, TP, tipo de
+heredada (0/A/B), stop viable P13 y estado (`OK`, `SOBRE_PESO`, `SOBRE_RIESGO`,
+`STOP_TOCADO`, `HEREDADA_TIPO_0/A/B`, `SIN_STOP`). Es la única fuente de verdad para
+stops y riesgo; el ledger (`state/ledger.json`) guarda stops, decisiones, stop de
+transición y tramos ejecutados, y hace que el stop vigente solo suba.
 
-Por defecto el informe **oculta el contexto informativo** (dividendos, desempeño,
-liquidez/propiedad, insiders, mercado y materias primas) y deja solo lo que decide
-(panel, decisión, niveles y puntaje); `--contexto` muestra la ficha completa. Con
-`--contexto` también aparecen el **régimen v7 de 6 señales** (VIX, SPY, 10Y, DXY, QQQ y
-VIX a 1 mes; los benchmarks sospechosos no cuentan; más USD/CLP y amplitud de la
-cartera), los factores y la diversificación (correlación media y beta vs SPY/QQQ).
-La IA de `review` recibe el contexto igual. Con `--offline` solo lee cache.
+Por defecto el informe **muestra** el contexto informativo (dividendos, desempeño,
+liquidez/propiedad, insiders y materias primas); `--sin-contexto` lo oculta. El
+mercado, los mapas, los lotes, el ledger, la factibilidad y el estado de datos se
+muestran siempre. El **régimen v8 de 6 señales** (VIX, SPY, 10Y, DXY, QQQ y VIX a 1
+mes; los benchmarks sospechosos no cuentan; más USD/CLP y amplitud de la cartera) y
+los mapas de factor/tema ya vienen en el informe. La IA de `review` recibe el contexto
+igual. Con `--offline` solo lee cache.
 
 ## Como leer el informe
 
-`review --formato informe` (por defecto) sigue el **`PROMPT PORTAFOLIO v7`**:
-0. cobertura y modo del stats, 1. veredicto (régimen/modo, riesgo abierto, factor IA y
-caja), 2. panel de cumplimiento P1-P11, 3. tabla de decisión con stop/TP/riesgo y
-disparador, 4. auditoría, 5. cobertura de datos, 6. alertas, 7. supuestos, 8. fuentes,
-9. registro de decisiones, 10. qué cambió, 11. desvíos OVERRIDE y 12. oportunidades
-(solo si la caja post-venta supera 20 %). La IA aporta una narrativa en una sola llamada
-(sin búsquedas nuevas) que llena el veredicto, la cobertura y los supuestos.
+`review --formato informe` (por defecto) sigue el **`PROMPT PORTAFOLIO v8`**:
+0. cobertura y modo del stats, 1. veredicto (régimen/modo, riesgo abierto, factor IA
+base P12 y caja resultante), **Paso 0b: factibilidad**, 2. **órdenes de la próxima
+sesión** (ticker, acciones, acción y stop), 3. panel de cumplimiento P1-P13 (base P12),
+4. tabla de decisión (SALIR, RECORTAR, luego MANTENER), 5. calendario de reducción,
+6. auditoría y **decisión de adopción de heredadas 0/A/B**, 7. cobertura de datos,
+8. alertas, 9. supuestos, 10. fuentes, 11. registro de decisiones, 12. qué cambió,
+13. desvíos OVERRIDE y 14. oportunidades (solo si la caja post-venta supera 20 %). La
+IA aporta una narrativa en una sola llamada (sin búsquedas nuevas) que llena el
+veredicto, la cobertura y los supuestos.
 
-La **auditoría de ventas** (sección 3) exige motivo admitido y hechos con fuente antes de
-vender; el **registro de decisiones** (sección 9) se guarda en `state/decisions.json` con una
-línea por activo para medir a 30/90 días; y **qué cambió** (sección 10) compara la corrida con
+La **auditoría de ventas** (sección 6) exige motivo admitido y hechos con fuente antes de
+vender; el **registro de decisiones** (sección 11) se guarda en `state/decisions.json` con una
+línea por activo para medir a 30/90 días; y **qué cambió** (sección 12) compara la corrida con
 la anterior (vigila que la Alerta 1 no baje sin motivo).
 
 `review --formato detalle` repite la lectura de siempre:
@@ -98,6 +103,7 @@ la anterior (vigila que la Alerta 1 no baje sin motivo).
 - **Tesis (IA):** el veredicto; `TESIS DEBILITADA` = vigilar y `TESIS ROTA` = revisar
   salida (con evidencia fechada entra al motor como `THESIS_EXIT`).
 - **Contexto macro:** Fed/tasas, dólar, elecciones, geopolítica, petróleo, con fuentes.
+- **Órdenes de la próxima sesión:** la cantidad de acciones y el stop que el usuario ejecuta.
 
 En cualquier formato, el **stop/TP siempre salen del motor** (niveles auditables); la IA
 nunca los fija.

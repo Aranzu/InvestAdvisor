@@ -257,28 +257,30 @@ def test_informe_de_review_tiene_las_secciones_v6() -> None:
     informe = render_review_report(report)
     for seccion in (
         "## 1. Veredicto",
-        "## 2. Panel de cumplimiento",
-        "## 3. Tabla de decision",
-        "## 4. Auditoria de ventas",
-        "## 5. Cobertura",
-        "## 6. Alertas (informativas)",
-        "## 7. Supuestos y vacios",
-        "## 8. Fuentes clave",
-        "## 9. Registro de decisiones",
-        "## 10. Que cambio",
-        "## 11. Desvios del periodo",
+        "## 2. Ordenes de la proxima sesion",
+        "## 3. Panel de cumplimiento (P1-P13, base P12)",
+        "## 4. Tabla de decision (SALIR, RECORTAR, luego MANTENER)",
+        "## 5. Calendario de reduccion",
+        "## 6. Auditoria de ventas",
+        "## 7. Cobertura",
+        "## 8. Alertas (informativas)",
+        "## 9. Supuestos y vacios",
+        "## 10. Fuentes clave",
+        "## 11. Registro de decisiones",
+        "## 12. Que cambio",
+        "## 13. Desvios del periodo",
     ):
         assert seccion in informe
     assert "| AAA |" in informe
     assert "caja 10.0 %" in informe
     assert "mineria 30.0 %" in informe
-    assert "Peso sobre el capital invertido" in informe
+    assert "Peso sobre el patrimonio (P12" in informe
     assert "perdida mensual no evaluable" in informe
     assert "Sin fuentes citadas" in informe
     assert "No es asesoria financiera personalizada" in informe
 
 
-def test_el_informe_v7_renderiza_el_panel_p1_p11() -> None:
+def test_el_informe_v8_renderiza_el_panel_p1_p13() -> None:
     row = PositionStats(
         ticker="AAA",
         context={"theme": "semis", "value_clp": 300_000.0, "price_usd": 110.0, "weight_invested_pct": 30.0},
@@ -325,7 +327,7 @@ def test_el_informe_v7_renderiza_el_panel_p1_p11() -> None:
     )
     report = build_review_report(_plan(mantener), stats, axes_by_ticker={})
     informe = render_review_report(report)
-    assert "## 2. Panel de cumplimiento" in informe
+    assert "## 3. Panel de cumplimiento (P1-P13, base P12)" in informe
     assert "Riesgo abierto total | 8.90 % | <= 10.00 % | OK" in informe
     assert "Factor ia_ampliada | 57.00 % | <= 40.00 % | EXCEDE" in informe
     assert "Modo vigente | cautela" in informe
@@ -377,8 +379,8 @@ def test_tabla_de_acciones_con_peso_post_y_volumen() -> None:
         state_after=_trade("BBB"),
     )
     rows = (
-        PositionStats(ticker="AAA", context={"theme": "semis", "value_clp": 300_000.0}, fields={}),
-        PositionStats(ticker="BBB", context={"theme": "semis", "value_clp": 300_000.0}, fields={}),
+        PositionStats(ticker="AAA", context={"theme": "semis", "value_clp": 300_000.0, "weight_pct": 30.0}, fields={}),
+        PositionStats(ticker="BBB", context={"theme": "semis", "value_clp": 300_000.0, "weight_pct": 30.0}, fields={}),
     )
     report = build_review_report(
         _plan(vender, mantener),
@@ -390,15 +392,15 @@ def test_tabla_de_acciones_con_peso_post_y_volumen() -> None:
     )
     tabla = render_action_table(report)
     # Cabecera exacta de la tabla de acciones.
-    assert "| Activo | Retorno | Peso (actual -> post) | Accion | Puntaje | Conf. | Fundamento |" in tabla
-    # El volumen de venta lo fija el motor (5 de 10 acciones).
-    assert "Vender 50% (5 acc.)" in tabla
+    assert "| Activo | Retorno USD (CLP) | Peso P12 actual -> post | Accion | Puntaje | Conf. | Fundamento |" in tabla
+    # El volumen de venta lo fija el motor (5 de 10 acciones); una venta parcial
+    # es un recorte en la jerga v8.
+    assert "RECORTAR 50% (5 acc.)" in tabla
     # Eje sin datos: n.p. no puntua, pero el total suma los demas.
     assert "+2 / +1 / +1 / n.p. -> +4" in tabla
-    # Peso renormalizado sobre el invertido: AAA vende la mitad (50.0 -> 33.3) y BBB
-    # mantiene (50.0 -> 66.7): la venta de uno sube el peso del otro.
-    assert "50.0 -> 33.3" in tabla
-    assert "50.0 -> 66.7" in tabla
+    # Peso sobre P12: AAA vende la mitad (30.0 -> 15.0) y BBB mantiene 30.0.
+    assert "30.0 -> 15.0" in tabla
+    assert "30.0 -> 30.0" in tabla
     # La tabla de acciones no trae tickets.
     assert "Ticket" not in tabla
 
@@ -486,12 +488,12 @@ def test_informe_v6_agrega_tp_sl_auditoria_registro_y_cambios() -> None:
         position_max_pct=12.0,
     )
     informe = render_review_report(report)
-    # Secciones v7: panel, tabla de decision, auditoria y registro.
-    assert "## 2. Panel de cumplimiento" in informe
-    assert "## 3. Tabla de decision" in informe
-    assert "## 4. Auditoria de ventas" in informe
-    assert "## 9. Registro de decisiones" in informe
-    assert "## 10. Que cambio" in informe
+    # Secciones v8: panel, tabla de decision, auditoria y registro.
+    assert "## 3. Panel de cumplimiento (P1-P13, base P12)" in informe
+    assert "## 4. Tabla de decision (SALIR, RECORTAR, luego MANTENER)" in informe
+    assert "## 6. Auditoria de ventas" in informe
+    assert "## 11. Registro de decisiones" in informe
+    assert "## 12. Que cambio" in informe
     assert "Stop vigente" in informe
     assert "TP" in informe
     assert "Riesgo %" in informe
@@ -516,9 +518,9 @@ def test_sin_politica_el_informe_conserva_las_secciones_deterministas() -> None:
     report = build_review_report(_plan(mantener), _stats(), axes_by_ticker={})
     informe = render_review_report(report)
     assert "## 1. Veredicto" in informe
-    assert "## 2. Panel de cumplimiento" in informe
-    assert "## 10. Que cambio" in informe
-    assert "## 12. Oportunidades" not in informe
+    assert "## 3. Panel de cumplimiento (P1-P13, base P12)" in informe
+    assert "## 12. Que cambio" in informe
+    assert "## 14. Oportunidades" not in informe
     assert "PROMPT PORTAFOLIO" not in informe
     assert report.records == ()
 
@@ -549,6 +551,6 @@ def test_seccion_oportunidades_solo_si_la_caja_post_venta_supera_20() -> None:
     )
     informe = render_review_report(report)
     # Caja 10 % + la mitad de 300.000 CLP sobre 1.000.000 = 25 % post-venta.
-    assert "## 12. Oportunidades" in informe
+    assert "## 14. Oportunidades" in informe
     assert "caja post-venta quedaria en 25.0 %" in informe
 

@@ -48,7 +48,9 @@ def test_stats_offline_escribe_el_informe(tmp_path: Path) -> None:
     assert "## Cobertura de datos" in text
     assert "## Limites de esta evaluacion" in text
     assert "TEST" in text
-    assert "NVDA" not in text  # la fabrica default del export solo trae TEST
+    # La fabrica default del export solo trae TEST. NVDA puede aparecer en la
+    # lista informativa de tickers del factor, pero no como fila de posicion.
+    assert "| NVDA |" not in text
     assert not out.with_suffix(".json").exists()  # el JSON es opt-in
 
 
@@ -111,7 +113,7 @@ def test_force_utf8_stdout_tolera_stream_sin_reconfigure(monkeypatch: pytest.Mon
     _force_utf8_stdout()  # no debe levantar
 
 
-def test_stats_contexto_oculto_por_defecto_y_visible_con_flag(tmp_path: Path) -> None:
+def test_stats_contexto_visible_por_defecto_y_oculto_con_flag(tmp_path: Path) -> None:
     report = build_positions_workbook(tmp_path / "posiciones.xlsx")
     base = [
         "stats",
@@ -123,10 +125,14 @@ def test_stats_contexto_oculto_por_defecto_y_visible_con_flag(tmp_path: Path) ->
         "--cache-dir",
         str(tmp_path / "cache"),
     ]
-    curado = RUNNER.invoke(app, [*base, "--out", str(tmp_path / "curado.md")])
-    assert curado.exit_code == 0, curado.output
-    assert "Contexto oculto" in (tmp_path / "curado.md").read_text(encoding="utf-8")
-
-    completo = RUNNER.invoke(app, [*base, "--contexto", "--out", str(tmp_path / "completo.md")])
+    completo = RUNNER.invoke(app, [*base, "--out", str(tmp_path / "completo.md")])
     assert completo.exit_code == 0, completo.output
-    assert "Contexto oculto" not in (tmp_path / "completo.md").read_text(encoding="utf-8")
+    assert "Contexto informativo adicional" not in (tmp_path / "completo.md").read_text(encoding="utf-8")
+    # El mercado se muestra siempre, aunque se pida el informe curado.
+    assert "## Contexto de mercado" in (tmp_path / "completo.md").read_text(encoding="utf-8")
+
+    curado = RUNNER.invoke(app, [*base, "--sin-contexto", "--out", str(tmp_path / "curado.md")])
+    assert curado.exit_code == 0, curado.output
+    curado_text = (tmp_path / "curado.md").read_text(encoding="utf-8")
+    assert "Contexto informativo adicional" in curado_text
+    assert "## Contexto de mercado" in curado_text

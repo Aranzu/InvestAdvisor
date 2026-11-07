@@ -282,7 +282,7 @@ def test_materias_primas_en_el_informe_y_en_el_json() -> None:
     assert "## Materias primas" in text
     assert "| Oro | Trading Economics (USD/t.oz) | 2,400.00 | +3.50 % | +12.00 % | 2,500.00 | 2,000.00 |" in text
     assert "| Cobre | Trading Economics (CNY/T) | 115,400.00 | -16.77 % | - | - | - |" in text
-    # El prompt v7 manda ignorar el driver: la seccion ya no se renderiza.
+    # El prompt v8 manda ignorar el driver: la seccion ya no se renderiza.
     assert "## Driver de materia prima" not in text
     assert StatsReport.from_dict(json.loads(json.dumps(report.to_dict()))).commodities == commodities
 
@@ -359,6 +359,9 @@ def test_render_panel_de_cumplimiento_y_resumen() -> None:
                     "r_multiple": 0.8,
                     "risk_pct": 1.2,
                     "max_weight_open_pct": 9.4,
+                    "new_entry_pct": 6.0,
+                    "new_entry_clp": 500_000.0,
+                    "new_entry_shares": 5.0,
                     "take_profit": 130.0,
                     "status": "OK",
                 }
@@ -366,11 +369,11 @@ def test_render_panel_de_cumplimiento_y_resumen() -> None:
         },
     )
     text = render_stats(report)
-    assert "## Panel de cumplimiento" in text
-    assert "| AAA | 100.00 % | 4.00 % | 90.00 | 92.00 |" in text
-    assert "| 0.80 | 1.20 % | 9.40 % | 130.00 | OK |" in text
+    assert "## Panel de cumplimiento (base P12 = equity XTB)" in text
+    assert "| AAA | - | 100.00 % | 4.00 % | 90.00 | 92.00 |" in text
+    assert "| 0.80 | 1.20 % | 6.00 % | 500,000 CLP | 5.0000 | 130.00 | - | no | OK |" in text
     assert "- Riesgo abierto total: 1.20 % (P5 10.00 %)." in text
-    assert "- Factor ia_ampliada: 44.00 % (tope 40.00 %)." in text
+    assert "- Factor ia_ampliada: 44.00 % (tope 40.00 %, base P12)." in text
     assert "- Modo vigente: **cautela**" in text
     assert "- Infracciones: 1." in text
     assert "- Amplitud de la cartera: 40.00 % bajo su SMA200." in text
@@ -380,7 +383,7 @@ def test_render_panel_de_cumplimiento_y_resumen() -> None:
     assert "- Curva ajustada por aportes (valor cuota base 100): maximo 110.00" in text
 
 
-def test_render_panel_marca_la_heredada_en_perdida() -> None:
+def test_render_panel_marca_la_heredada_tipo_a() -> None:
     row = PositionStats(ticker="MU", context={"price_usd": 80.0, "entry_usd": 100.0}, fields={})
     report = replace(
         _report((row,)),
@@ -395,20 +398,111 @@ def test_render_panel_marca_la_heredada_en_perdida() -> None:
                     "current_stop": 82.0,
                     "stop_dist_price_pct": -2.5,
                     "stop_dist_entry_pct": 18.0,
-                    "status": "HEREDADA_EN_PERDIDA",
+                    "inherited_type": "A",
+                    "status": "HEREDADA_TIPO_A",
                 }
             ],
         },
     )
     text = render_stats(report)
-    assert "HEREDADA_EN_PERDIDA" in text
-    assert "| MU | - | - | 82.00 | 82.00 | -2.50 % | +18.00 % |" in text
+    assert "HEREDADA_TIPO_A" in text
+    assert "| MU | - | - | - | 82.00 | 82.00 | -2.50 % | +18.00 % |" in text
 
 
 def test_render_cantidad_con_decimales() -> None:
     row = PositionStats(ticker="MELI", context={"volume": 2.0771}, fields={})
     text = render_stats(_report((row,)))
     assert "2.0771" in text
+
+
+def test_render_muestra_el_mercado_sin_contexto() -> None:
+    row = PositionStats(ticker="AAA", context={}, fields={})
+    market = (MarketInstrument(symbol="^VIX", label="VIX (volatilidad)", price=18.5, chg_1m_pct=10.0),)
+    text = render_stats(replace(_report((row,)), market=market))
+    assert "## Contexto de mercado" in text
+
+
+def test_render_v8_mapas_ledger_lotes_factibilidad_y_json() -> None:
+    row = PositionStats(
+        ticker="AAA",
+        context={
+            "price_usd": 100.0,
+            "entry_usd": 90.0,
+            "value_clp": 300_000.0,
+            "weight_pct": 30.0,
+            "first_entry": "2026-01-02",
+            "days_since_first_entry": 30,
+            "lots_detail": [{"date": "2026-01-02", "price_usd": 90.0, "shares": 3.0, "value_clp": 300_000.0}],
+        },
+        fields={"break_even": 90.0, "trailing_stop": 95.0},
+    )
+    report = replace(
+        _report((row,)),
+        maps={
+            "factor_name": "ia_ampliada",
+            "factor_pct": 30.0,
+            "factor_max_pct": 40.0,
+            "factor_tickers": ["AAA"],
+            "rows": [{"ticker": "AAA", "factor_ia": "si", "theme": "semis", "weight_pct": 30.0}],
+            "aggregate_theme": {"name": "semiconductores y equipos", "pct": 30.0, "max_pct": 25.0, "members": ["AAA"]},
+        },
+        feasibility={
+            "scenarios": [
+                {"name": "todo", "weeks": 2, "factor_pct": 35.0, "theme_pct": 20.0, "cash_pct": 12.0},
+            ],
+            "limits": {"factor_pct": 40.0, "theme_pct": 25.0},
+            "calendar": [
+                {"week": 1, "date": "2026-11-14", "reductions": [{"ticker": "AAA", "shares": 1.0, "value_clp": 10_000.0}], "factor_pct": 35.0, "theme_pct": 20.0, "cash_pct": 12.0}
+            ],
+        },
+        data_status={
+            "close_confirmed": True,
+            "last_session": "2026-11-06",
+            "next_session": "2026-11-09",
+            "incomplete": [{"ticker": "AAA", "missing": ["PEG"]}],
+        },
+        compliance={
+            "summary": {
+                "equity_curve": {
+                    "max_unit_value": 110.0,
+                    "current_unit_value": 100.0,
+                    "drawdown_pct": -9.0,
+                    "days_since_peak": 3,
+                    "max_equity_clp": 1_200_000.0,
+                    "max_equity_date": "2026-10-01",
+                    "current_equity_clp": 1_000_000.0,
+                    "max_equity_adjusted_clp": 1_100_000.0,
+                }
+            },
+            "positions": [
+                {
+                    "ticker": "AAA",
+                    "current_stop": 95.0,
+                    "break_even": 90.0,
+                    "trailing_stop": 95.0,
+                    "inherited_type": "B",
+                    "stop_viable": True,
+                    "status": "HEREDADA_TIPO_B",
+                }
+            ],
+        },
+        panel={"contributions_clp": 1_000_000.0, "withdrawals_clp": 0.0, "net_contributions_clp": 1_000_000.0, "cash_broker_clp": 50_000.0, "cash_calculated_clp": 50_000.0, "cash_difference_clp": 0.0, "recent_flows": []},
+    )
+    text = render_stats(report)
+    for heading in (
+        "## Mapas de factor y tema (base P12)",
+        "## Registro de stops y decisiones (ledger)",
+        "## Earnings, analistas y deterioro de tesis (V1)",
+        "## Factibilidad y calendario de reduccion (Paso 0b)",
+        "## Estado de los datos",
+        "## Datos del panel (JSON)",
+        "### Stops dinamicos",
+        "## Aportes y caja",
+    ):
+        assert heading in text
+    assert "Patrimonio maximo: 1,200,000 CLP el 2026-10-01" in text
+    assert '"schema": 10' in text
+    assert "Datos incompletos: AAA: PEG." in text
 
 
 def test_render_contexto_de_mercado() -> None:
@@ -435,6 +529,7 @@ def test_render_regimen_de_mercado_del_paso_1() -> None:
     regime = MarketRegime(
         level="medio",
         count=2,
+        bucket="2-3",
         signals=("VIX", "SPY<SMA200"),
         near_threshold=("10Y>SMA200+10% (+9.81 vs 10)",),
         suspicious=("Semis (SOXX)",),
@@ -455,7 +550,7 @@ def test_render_regimen_de_mercado_del_paso_1() -> None:
     )
     text = render_stats(report, show_context=True)
     assert "### Regimen (Paso 1)" in text
-    assert "- Nivel **medio** (2 senales de estres de 6)." in text
+    assert "- Nivel **medio** (tramo **2-3**; 2 senales de estres de 6)." in text
     assert "Senales cumplidas: VIX, SPY<SMA200." in text
     assert "A menos de 1 pp del umbral" in text
     assert "Benchmarks con dato sospechoso (no cuentan): Semis (SOXX)." in text
@@ -497,7 +592,7 @@ def test_render_oculta_el_contexto_por_defecto() -> None:
     curado = render_stats(_report((row,)))
     assert "## Dividendos" not in curado
     assert "## Desempeno" not in curado
-    assert "Contexto oculto" in curado
+    assert "Contexto informativo adicional" in curado
     # El dato sigue existiendo; solo se oculta en el render curado.
     assert "3.00 %" not in curado
     completo = render_stats(_report((row,)), show_context=True)

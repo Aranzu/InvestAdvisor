@@ -14,11 +14,14 @@ from swing.core.compliance import (
     STATUS_STOPPED,
     LedgerEntry,
     breadth_pct,
+    inherited_type,
     initial_stop,
     mode_from_drawdown,
+    new_entry_size,
     plan_position,
     summarize,
     take_profit,
+    transition_stop,
 )
 from swing.core.models import ComplianceConfig, FactorsConfig, FactorSpec
 
@@ -43,7 +46,7 @@ def _cfg() -> ComplianceConfig:
         stop_min_pct=8.0,
         stop_max_pct=18.0,
         inherited_stop_max_distance_pct=15.0,
-        transition_stop_max_pct=10.0,
+        transition_stop_max_pct=15.0,
         breakeven_r=1.5,
         enhancer_r=3.0,
         trailing_sessions=20,
@@ -68,6 +71,7 @@ def _plan(**overrides: object):
         "value_clp": 1_000_000.0,
         "patrimonio_clp": 10_000_000.0,
         "weight_invested_pct": 10.0,
+        "weight_equity_pct": 10.0,
         "high_20": 115.0,
         "previous": None,
         "stop_xtb": None,
@@ -133,7 +137,7 @@ def test_take_profit_topa_en_30_y_solo_sube() -> None:
 
 def test_estado_sobrepeso_y_sobreriesgo() -> None:
     previous = LedgerEntry("AMD", 100.0, TODAY, 92.0, 92.0)
-    assert _plan(weight_invested_pct=13.0, previous=previous).status == STATUS_OVERWEIGHT
+    assert _plan(weight_invested_pct=13.0, weight_equity_pct=13.0, previous=previous).status == STATUS_OVERWEIGHT
     over = _plan(
         price=100.0,
         entry=100.0,
@@ -149,7 +153,9 @@ def test_estado_sobrepeso_y_sobreriesgo() -> None:
 
 
 def test_ok_cuando_cumple_peso_y_riesgo() -> None:
-    row = _plan(price=100.0, entry=100.0, atr=2.0, weight_invested_pct=5.0)
+    # Posicion ya adoptada (con ledger): no vuelve a clasificarse como heredada.
+    previous = LedgerEntry("AMD", 100.0, TODAY, 92.0, 92.0)
+    row = _plan(price=100.0, entry=100.0, atr=2.0, weight_invested_pct=5.0, weight_equity_pct=5.0, previous=previous)
     assert row.status == STATUS_OK
 
 
@@ -178,6 +184,44 @@ def test_resumen_calcula_factor_tema_y_modo() -> None:
     assert summary.biggest_theme == "semiconductors"
     assert summary.mode == "cautela"
     assert summary.infractions >= 1
+
+
+def test_p13_stop_de_transicion_viable_y_tope_15() -> None:
+    cfg = _cfg()
+    stop, viable = transition_stop(100.0, 4.0, cfg)
+    # max(1,5 x 4, 8) = 8 %: stop 92 y viable.
+    assert stop == pytest.approx(92.0)
+    assert viable is True
+    # 1,5 x ATR = 18 % > 15 %: no viable y el stop se informa topado.
+    stop, viable = transition_stop(100.0, 12.0, cfg)
+    assert stop == pytest.approx(85.0)
+    assert viable is False
+
+
+def test_clasificacion_heredadas_0_a_b() -> None:
+    cfg = _cfg()
+    # Precio sobre el P8 y stop a menos de 15 %: tipo 0.
+    assert inherited_type(price=100.0, initial=92.0, cfg=cfg) == "0"
+    # Precio bajo su P8: tipo A.
+    assert inherited_type(price=90.0, initial=92.0, cfg=cfg) == "A"
+    # Precio sobre el P8 pero el stop queda a mas de 15 %: tipo B.
+    assert inherited_type(price=120.0, initial=92.0, cfg=cfg) == "B"
+
+
+def test_tamano_de_entrada_nueva_min_p1_p2_y_acciones() -> None:
+    cfg = _cfg()
+    clp, shares, pct = new_entry_size(
+        price=100.0,
+        stop=92.0,
+        atr_pct=4.0,
+        equity_clp=10_000_000.0,
+        fx=1000.0,
+        cfg=cfg,
+    )
+    # P1 0,75 % / 8 % de distancia = 9,375 %, topado por P2 8 %.
+    assert pct == pytest.approx(8.0)
+    assert clp == pytest.approx(800_000.0)
+    assert shares == pytest.approx(8.0)
 
 
 def test_modo_por_caida() -> None:

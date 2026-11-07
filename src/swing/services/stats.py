@@ -50,6 +50,7 @@ from swing.core.compliance import (
     summarize,
 )
 from swing.core.equity_curve import EquityCurve, build_curve
+from swing.core.feasibility import build_feasibility
 from swing.core.fundamentals import Fundamentals
 from swing.core.indicators import atr, heikin_ashi_state, rsi, sma, smoothed_heikin_ashi
 from swing.core.market import PriceSeries
@@ -124,12 +125,19 @@ def collect_stats(
     quality_gaps: list[str] = []
     repaired_gaps: list[str] = []
     technical_gaps: list[str] = []
+    retried: list[str] = []
     price_series: dict[str, PriceSeries] = {}
     commodity_rows = _commodities(bars, te.get(today=market.today) if te is not None else {}, market.today, window_days)
-    spy_series = _series(bars, "SPY", market.today, window_days)[0]
+    spy_series, spy_gap = _series(bars, "SPY", market.today, window_days)
+    if spy_gap == "unavailable":
+        retried.append("SPY")
+        spy_series, spy_gap = _series(bars, "SPY", market.today, window_days)
     rs_lookback = strategy.gates.rs_lookback_days
     for view in positions:
         series, gap = _series(bars, view.ticker, market.today, window_days)
+        if gap == "unavailable":
+            retried.append(view.ticker)
+            series, gap = _series(bars, view.ticker, market.today, window_days)
         if series is not None and not series.is_empty:
             price_series[view.ticker] = series
         if gap == "incoherent":
@@ -149,13 +157,14 @@ def collect_stats(
         rows.append(
             PositionStats(
                 ticker=view.ticker,
-                context=_context(view, fields=merged, lots=model.lots),
+                context=_context(view, fields=merged, lots=model.lots, today=market.today),
                 fields=merged,
                 insider_trades=_insider_trades(finviz, view.ticker, market.today),
             )
         )
 
     enriched, invested_clp = _enrich_panel(rows, equity_clp=analysis.equity_clp, cash_clp=analysis.cash_clp, strategy=strategy)
+    theme_map = {**themes, **(factors.themes if factors is not None else {})}
     market_rows = _market_context(bars, market.today, window_days)
     market_regime = _market_regime(market_rows, strategy)
     if market_regime is not None:
@@ -168,8 +177,9 @@ def collect_stats(
         analysis=analysis,
         invested_clp=invested_clp,
         strategy=strategy,
+        theme_map=theme_map,
     )
-    theme_map = {**themes, **(factors.themes if factors is not None else {})}
+    panel.update(_cash_history(model, analysis))
     compliance_rows, new_ledger = _compliance_rows(
         enriched,
         model=model,
@@ -177,6 +187,8 @@ def collect_stats(
         compliance=compliance,
         ledger=ledger or {},
         today=market.today,
+        equity_clp=analysis.equity_clp,
+        fx=analysis.fx,
     )
     if ledger_path is not None:
         save_ledger(ledger_path, new_ledger.values())
@@ -189,6 +201,7 @@ def collect_stats(
         themes=theme_map,
         regime_mode=market_regime.mode if market_regime is not None else "",
         drawdown_pct=curve.drawdown_pct if curve is not None else None,
+        equity_clp=analysis.equity_clp,
     )
     qqq_series = _series(bars, "QQQ", market.today, window_days)[0]
     correlation, beta_spy, beta_qqq = _risk_metrics(
@@ -209,6 +222,27 @@ def collect_stats(
         suspicious_benchmarks=", ".join(market_regime.suspicious) if market_regime is not None else "",
     )
     closed = _closed_history(analysis, SessionCalendar.us())
+    generated_at = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+    map_rows = _maps(enriched, factors=factors, themes=theme_map, equity_clp=analysis.equity_clp)
+    feasibility = build_feasibility(
+        compliance_rows,
+        summary,
+        cfg=compliance,
+        factor_cfg=factors,
+        themes=theme_map,
+        equity_clp=analysis.equity_clp,
+        cash_clp=analysis.cash_clp,
+        fx=analysis.fx,
+        today=market.today,
+    )
+    data_status = _data_status(
+        today=market.today,
+        generated_at=generated_at,
+        rows=enriched,
+        market_regime=market_regime,
+        technical_gaps=technical_gaps,
+        retried=retried,
+    )
 
     report = StatsReport(
         account=analysis.account,
@@ -256,8 +290,11 @@ def collect_stats(
             else None
         ),
         compliance=_compliance_to_dict(compliance_rows, summary, curve, today=market.today, compliance=compliance),
+        maps=map_rows,
+        feasibility=feasibility,
+        data_status=data_status,
         closed_history=closed,
-        generated_at=dt.datetime.now(dt.UTC).replace(tzinfo=None),
+        generated_at=generated_at,
     )
     report = _enrich_extended_hours(report, bars)
     return report
@@ -291,13 +328,16 @@ def _context(
     *,
     fields: Mapping[str, object] | None = None,
     lots: Sequence[OpenLot] = (),
+    today: dt.date | None = None,
 ) -> dict[str, object]:
     present, _ = coverage(fields or {})
     total = len(all_field_keys())
-    own = [lot for lot in lots if lot.ticker == view.ticker]
-    last = max(own, key=lambda lot: lot.open_date, default=None)
+    own = sorted((lot for lot in lots if lot.ticker == view.ticker), key=lambda lot: lot.open_date)
+    last = own[-1] if own else None
+    first = own[0] if own else None
     average = view.open_price_usd
     last_vs_entry = _ret_pct(last.open_price_usd, average) if last is not None else None
+    avg_down = _averaged_down(own, average)
     return {
         "name": view.name,
         "theme": view.theme,
@@ -316,17 +356,53 @@ def _context(
         "earnings_confirmed": bool(getattr(view, "earnings_confirmed", False)),
         "earnings_sessions": view.earnings_sessions if view.earnings_known else None,
         "entry_usd": view.open_price_usd,
+        "first_entry": first.open_date.isoformat() if first is not None else None,
+        "days_since_first_entry": (
+            (today - first.open_date).days if first is not None and today is not None else None
+        ),
         "ret_clp_pct": _ret_pct(view.value_clp, view.cost_clp),
         "ret_usd_pct": _ret_pct(view.price_usd, view.open_price_usd),
         "coverage_pct": (present / total * 100.0) if total > 0 else None,
         "lots": float(len(own)) if own else None,
+        "lots_detail": [
+            {
+                "date": lot.open_date.isoformat(),
+                "price_usd": lot.open_price_usd,
+                "shares": lot.volume,
+                "value_clp": lot.value_clp,
+            }
+            for lot in own
+        ],
         "last_lot_date": last.open_date.isoformat() if last is not None else None,
         "last_lot_price": last.open_price_usd if last is not None else None,
         "last_lot_vs_entry_pct": last_vs_entry,
-        "averaged_down": ("si" if last.open_price_usd < average else "no") if last is not None else None,
+        "averaged_down": "si" if avg_down is not None else ("no" if last is not None else None),
+        "avg_down_lot_date": avg_down.open_date.isoformat() if avg_down is not None else None,
+        "avg_down_lot_price": avg_down.open_price_usd if avg_down is not None else None,
+        "avg_down_lot_shares": avg_down.volume if avg_down is not None else None,
         "stop_xtb": _ticker_stop(own),
         "tp_xtb": _ticker_tp(own),
     }
+
+
+def _averaged_down(lots: Sequence[OpenLot], average: float | None) -> OpenLot | None:
+    """Ultimo lote comprado por debajo del promedio que habia antes de el (regla 8)."""
+    running: float | None = None
+    shares = 0.0
+    culprit: OpenLot | None = None
+    for lot in lots:
+        if running is not None and lot.open_price_usd < running:
+            culprit = lot
+        if lot.volume > 0.0:
+            shares += lot.volume
+            running = (
+                lot.open_price_usd
+                if running is None
+                else (running * (shares - lot.volume) + lot.open_price_usd * lot.volume) / shares
+            )
+    if average is not None and culprit is None and lots and lots[-1].open_price_usd < average:
+        return lots[-1]
+    return culprit
 
 
 def _ticker_stop(lots: Sequence[OpenLot]) -> float | None:
@@ -419,10 +495,13 @@ def _compliance_rows(
     compliance: ComplianceConfig,
     ledger: Mapping[str, LedgerEntry],
     today: dt.date,
+    equity_clp: float | None = None,
+    fx: float | None = None,
 ) -> tuple[list[ComplianceRow], dict[str, LedgerEntry]]:
     """Calcula el panel de cumplimiento y el ledger actualizado (stops que no bajan)."""
     today = today if today is not None else dt.date.today()
     patrimonio = _as_number(panel.get("patrimonio_clp"))
+    equity = equity_clp if equity_clp is not None and equity_clp > 0.0 else _as_number(panel.get("equity_clp"))
     lots_by: dict[str, list[OpenLot]] = {}
     for lot in model.lots:
         lots_by.setdefault(lot.ticker, []).append(lot)
@@ -439,6 +518,7 @@ def _compliance_rows(
         price = _as_number(context.get("price_usd"))
         atr = _as_number(fields.get("atr"))
         atr_pct = _as_number(fields.get("atr_pct"))
+        weight_equity = _as_number(context.get("weight_equity_pct"))
         plan = plan_position(
             ticker=ticker,
             entry=entry,
@@ -448,6 +528,7 @@ def _compliance_rows(
             value_clp=_as_number(context.get("value_clp")),
             patrimonio_clp=patrimonio,
             weight_invested_pct=_as_number(context.get("weight_invested_pct")),
+            weight_equity_pct=weight_equity,
             high_20=_as_number(fields.get("high_20")),
             previous=previous,
             stop_xtb=_ticker_stop(own),
@@ -455,11 +536,30 @@ def _compliance_rows(
             target_price=_as_number(fields.get("target_price")),
             analyst_count=_as_number(fields.get("analyst_count")),
             earnings_sessions=_as_number(context.get("earnings_sessions")),
+            equity_clp=equity,
+            fx=fx,
+            stop_kind="alerta",
             cfg=compliance,
         )
+        decision_date = plan.decision_date
+        adoption_date = plan.adoption_date
+        if plan.decision in {"Si", "No"}:
+            if decision_date is None:
+                decision_date = today
+            if plan.decision == "Si" and adoption_date is None:
+                adoption_date = today
+        if (decision_date, adoption_date) != (plan.decision_date, plan.adoption_date):
+            plan = replace(plan, decision_date=decision_date, adoption_date=adoption_date)
         out.append(plan)
         if plan.initial_stop is not None and plan.current_stop is not None and entry is not None:
             first_entry = previous.first_entry if previous is not None else _first_entry(own, today)
+            # El stop de transicion se fija una sola vez, y solo cuando la heredada
+            # se adopta (decision Si). Antes es una propuesta que se recalcula.
+            adopted = plan.decision == "Si" and plan.transition_stop is not None
+            transition_stop = plan.transition_stop if adopted else None
+            transition_date = plan.transition_date if adopted else None
+            if transition_stop is not None and transition_date is None:
+                transition_date = today
             entries[ticker] = LedgerEntry(
                 ticker=ticker,
                 entry_usd=entry,
@@ -467,8 +567,15 @@ def _compliance_rows(
                 initial_stop=plan.initial_stop,
                 current_stop=plan.current_stop,
                 take_profit=plan.take_profit,
-                transition_stop=previous.transition_stop if previous is not None else None,
-                inherited=plan.inherited,
+                tp_formula=plan.tp_formula,
+                transition_stop=transition_stop,
+                transition_date=transition_date,
+                inherited_type=plan.inherited_type,
+                adoption_date=adoption_date,
+                decision=plan.decision,
+                decision_date=decision_date,
+                reduction_tranches_done=plan.reduction_tranches_done,
+                stop_kind=plan.stop_kind,
             )
     return out, entries
 
@@ -624,8 +731,39 @@ def _closed_history(analysis: Analysis, calendar: SessionCalendar) -> dict[str, 
         "avg_hold_sessions": closed.avg_hold_sessions,
         "realized_clp": closed.total_clp,
         "excluded_promo": closed.excluded_promo,
+        "top_winners": [{"ticker": ticker, "realized_clp": value} for ticker, value in closed.top_winners],
+        "top_losers": [{"ticker": ticker, "realized_clp": value} for ticker, value in closed.top_losers],
         "open_winners": bucket(open_winners),
         "open_losers": bucket(open_losers),
+    }
+
+
+def _cash_history(model: PositionReport, analysis: Analysis) -> dict[str, object]:
+    """Aportes/retiros y caja real (XTB) contra la caja calculada por el motor."""
+    deposits = sum(op.amount_clp for op in model.cash if op.kind in {"Deposit", "Deposito"})
+    withdrawals = -sum(
+        op.amount_clp for op in model.cash if op.kind in {"Withdrawal", "Retiro"} and op.amount_clp < 0.0
+    )
+    external = [
+        op for op in model.cash if op.kind in {"Deposit", "Deposito", "Withdrawal", "Retiro"}
+    ]
+    recent = [
+        {
+            "date": op.when.date().isoformat(),
+            "kind": op.kind,
+            "amount_clp": op.amount_clp,
+            "comment": op.comment,
+        }
+        for op in sorted(external, key=lambda op: op.when)[-8:]
+    ]
+    return {
+        "cash_broker_clp": model.cash_balance_clp,
+        "cash_calculated_clp": analysis.cash_clp,
+        "cash_difference_clp": model.cash_balance_clp - analysis.cash_clp,
+        "contributions_clp": deposits,
+        "withdrawals_clp": withdrawals,
+        "net_contributions_clp": deposits - withdrawals,
+        "recent_flows": recent,
     }
 
 
@@ -648,9 +786,12 @@ def _compliance_to_dict(
             "cash_pct": summary.cash_pct,
             "min_cash_pct": summary.min_cash_pct,
             "cash_band_max_pct": summary.cash_band_max_pct,
+            "equity_clp": summary.equity_clp,
+            "invested_clp": summary.invested_clp,
             "factor_pcts": dict(summary.factor_pcts),
             "factor_max_pct": dict(summary.factor_max_pct),
             "theme_pcts": dict(summary.theme_pcts),
+            "aggregate_theme_pcts": dict(summary.aggregate_theme_pcts),
             "max_theme_pct": summary.max_theme_pct,
             "biggest_theme": summary.biggest_theme,
             "biggest_theme_pct": summary.biggest_theme_pct,
@@ -667,6 +808,13 @@ def _compliance_to_dict(
             "drawdown_mode": summary.drawdown_mode,
             "regime_mode": summary.regime_mode,
             "suspicious_benchmarks": summary.suspicious_benchmarks,
+            "inherited_counts": dict(summary.inherited_counts),
+            "decision_pending": list(summary.decision_pending),
+            "overweight": list(summary.overweight),
+            "overrisk": list(summary.overrisk),
+            "max_weight_hold_pct": summary.max_weight_hold_pct,
+            "max_weight_trim_pct": summary.max_weight_trim_pct,
+            "max_risk_position_pct": summary.max_risk_position_pct,
             "sessions_to_purchases": sessions_purchase,
             "sessions_to_liquidation": sessions_liquidate,
             "purchases_until": compliance.purchases_until.isoformat(),
@@ -680,6 +828,10 @@ def _compliance_to_dict(
                 "days_since_peak": curve.days_since_peak,
                 "mode": curve.mode,
                 "points": curve.points,
+                "max_equity_clp": curve.max_equity_clp,
+                "max_equity_date": curve.max_equity_date.isoformat() if curve.max_equity_date else None,
+                "current_equity_clp": curve.current_equity_clp,
+                "max_equity_adjusted_clp": curve.max_equity_adjusted_clp,
             },
         },
         "positions": [
@@ -690,10 +842,12 @@ def _compliance_to_dict(
                 "atr_pct": row.atr_pct,
                 "value_clp": row.value_clp,
                 "weight_invested_pct": row.weight_invested_pct,
+                "weight_equity_pct": row.weight_equity_pct,
                 "initial_stop": row.initial_stop,
                 "current_stop": row.current_stop,
                 "previous_stop": row.previous_stop,
                 "transition_stop": row.transition_stop,
+                "transition_date": row.transition_date.isoformat() if row.transition_date else None,
                 "take_profit": row.take_profit,
                 "tp_formula": row.tp_formula,
                 "stop_dist_price_pct": row.stop_dist_price_pct,
@@ -703,6 +857,18 @@ def _compliance_to_dict(
                 "max_weight_open_pct": row.max_weight_open_pct,
                 "status": row.status,
                 "inherited": row.inherited,
+                "inherited_type": row.inherited_type,
+                "stop_viable": row.stop_viable,
+                "adoption_date": row.adoption_date.isoformat() if row.adoption_date else None,
+                "decision": row.decision,
+                "decision_date": row.decision_date.isoformat() if row.decision_date else None,
+                "reduction_tranches_done": list(row.reduction_tranches_done),
+                "stop_kind": row.stop_kind,
+                "new_entry_clp": row.new_entry_clp,
+                "new_entry_shares": row.new_entry_shares,
+                "new_entry_pct": row.new_entry_pct,
+                "break_even": row.break_even,
+                "trailing_stop": row.trailing_stop,
                 "stop_xtb": row.stop_xtb,
                 "tp_xtb": row.tp_xtb,
                 "stop_xtb_differs": row.stop_xtb_differs,
@@ -739,8 +905,9 @@ def _enrich_panel(
     for row in rows:
         context = dict(row.context)
         value = _as_number(context.get("value_clp"))
-        if "weight_pct" not in context and value is not None and equity_clp > 0.0:
+        if value is not None and equity_clp > 0.0:
             context["weight_pct"] = value / equity_clp * 100.0
+            context["weight_equity_pct"] = context["weight_pct"]
         if value is not None and invested > 0.0:
             context["weight_invested_pct"] = value / invested * 100.0
         entry = _as_number(context.get("entry_usd"))
@@ -767,41 +934,56 @@ def _portfolio_panel(
     analysis: Analysis,
     invested_clp: float,
     strategy: StrategyConfig,
+    theme_map: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Resumen deterministico de la cartera: patrimonio, caja y pesos por tema.
 
     El patrimonio incluye la caja y las posiciones valuadas, de modo que los pesos
-    suman 100 % sobre el capital realmente expuesto.
+    suman 100 % sobre el capital realmente expuesto. ``theme_map`` (``factors.yaml``)
+    manda sobre el tema del export: es el archivo editable que pide el prompt v8.
     """
     equity_clp = analysis.equity_clp
     cash_clp = analysis.cash_clp
     patrimonio = cash_clp + invested_clp
+    base = equity_clp if equity_clp > 0.0 else patrimonio
+    overrides = theme_map or {}
     themes: dict[str, float] = {}
+    aggregate: dict[str, float] = {}
     for row in rows:
-        theme = str(row.context.get("theme") or "sin_tema")
+        theme = overrides.get(row.ticker) or str(row.context.get("theme") or "sin_tema")
         value = _as_number(row.context.get("value_clp")) or 0.0
-        if invested_clp > 0.0:
-            themes[theme] = themes.get(theme, 0.0) + value / invested_clp * 100.0
+        if base > 0.0:
+            pct = value / base * 100.0
+            themes[theme] = themes.get(theme, 0.0) + pct
+            if theme.strip().lower() in {"semiconductors", "semiconductors_ai", "technology", "semis"}:
+                aggregate["semiconductores y equipos"] = aggregate.get("semiconductores y equipos", 0.0) + pct
     cluster_cfg = strategy.risk.clusters
     clusters: dict[str, object] = {}
     if cluster_cfg is not None:
-        clusters["semis"] = _cluster_panel(cluster_cfg.semis, rows, invested_clp)
-        clusters["ia_ampliada"] = _cluster_panel(cluster_cfg.ia_ampliada, rows, invested_clp)
+        clusters["semis"] = _cluster_panel(cluster_cfg.semis, rows, base, overrides)
+        clusters["ia_ampliada"] = _cluster_panel(cluster_cfg.ia_ampliada, rows, base, overrides)
     return {
         "equity_clp": equity_clp,
         "patrimonio_clp": patrimonio,
+        "weight_base": "equity XTB (P12)",
         "cash_clp": cash_clp,
-        "cash_pct": (cash_clp / patrimonio * 100.0) if patrimonio > 0.0 else None,
+        "cash_pct": (cash_clp / base * 100.0) if base > 0.0 else None,
         "invested_clp": invested_clp,
-        "invested_pct": (invested_clp / patrimonio * 100.0) if patrimonio > 0.0 else None,
+        "invested_pct": (invested_clp / base * 100.0) if base > 0.0 else None,
         "themes": themes,
+        "aggregate_theme_pcts": aggregate,
         "max_theme_pct": strategy.risk.max_theme_pct,
         "clusters": clusters,
     }
 
 
-def _cluster_panel(cluster: Cluster, rows: Sequence[PositionStats], invested_clp: float) -> dict[str, object]:
-    """Peso del cluster sobre el invertido: por ticker y por tema, sin repetir fila.
+def _cluster_panel(
+    cluster: Cluster,
+    rows: Sequence[PositionStats],
+    invested_clp: float,
+    theme_map: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Peso del cluster sobre la base P12: por ticker y por tema, sin repetir fila.
 
     Los ``tickers`` son la lista curada (incluye a SNDK, que el antiguo filtro por
     nombre de tema ``semicon*`` dejaba afuera); los ``themes`` son la red de arrastre.
@@ -813,14 +995,145 @@ def _cluster_panel(cluster: Cluster, rows: Sequence[PositionStats], invested_clp
         total = 0.0
         tickers = set(cluster.tickers)
         themes = set(cluster.themes)
+        overrides = theme_map or {}
         for row in rows:
-            theme = str(row.context.get("theme") or "")
+            theme = overrides.get(row.ticker) or str(row.context.get("theme") or "")
             if row.ticker not in tickers and theme not in themes:
                 continue
             members.append(row.ticker)
             total += _as_number(row.context.get("value_clp")) or 0.0
         pct = total / invested_clp * 100.0
     return {"pct": pct, "max_pct": cluster.max_pct, "members": members}
+
+
+def _maps(
+    rows: Sequence[PositionStats],
+    *,
+    factors: FactorsConfig | None,
+    themes: Mapping[str, str],
+    equity_clp: float,
+) -> dict[str, object]:
+    """Mapas editables de factor y tema, con el agregado de semiconductores.
+
+    El usuario pidio no tener que reconstruir el factor leyendo el panel: el
+    informe publica la lista completa de tickers y, por cada posicion, si entra
+    al factor IA y con que tema. El tope se calcula sobre el patrimonio (P12).
+    """
+    factor_name = ""
+    factor_tickers: tuple[str, ...] = ()
+    factor_theme_names: tuple[str, ...] = ()
+    if factors is not None and factors.factors:
+        factor_name = next(iter(factors.factors))
+        spec = factors.factors[factor_name]
+        factor_tickers = spec.tickers
+        factor_theme_names = spec.themes
+
+    base = equity_clp if equity_clp > 0.0 else sum(_as_number(row.context.get("value_clp")) or 0.0 for row in rows)
+    table: list[dict[str, object]] = []
+    factor_total = 0.0
+    aggregate_total = 0.0
+    aggregate_members: list[str] = []
+    theme_pcts: dict[str, float] = {}
+    for row in rows:
+        theme = themes.get(row.ticker) or str(row.context.get("theme") or "sin_tema")
+        in_factor = bool(factor_name) and (row.ticker in factor_tickers or theme in factor_theme_names)
+        value = _as_number(row.context.get("value_clp")) or 0.0
+        pct = value / base * 100.0 if base > 0.0 else None
+        if in_factor:
+            factor_total += value
+        if theme.strip().lower() in {"semiconductors", "semiconductors_ai", "technology", "semis"}:
+            aggregate_total += value
+            aggregate_members.append(row.ticker)
+        if pct is not None:
+            theme_pcts[theme] = theme_pcts.get(theme, 0.0) + pct
+        table.append(
+            {
+                "ticker": row.ticker,
+                "factor_ia": "si" if in_factor else "no",
+                "theme": theme,
+                "weight_pct": pct,
+            }
+        )
+    factor_pct = factor_total / base * 100.0 if base > 0.0 else None
+    aggregate_pct = aggregate_total / base * 100.0 if base > 0.0 else None
+    max_factor = (
+        min(factors.max_factor_pct, factors.factors[factor_name].max_pct)
+        if factors is not None and factor_name
+        else None
+    )
+    max_theme = (
+        min(factors.max_theme_pct, factors.max_theme_pct) if factors is not None else None
+    )
+    return {
+        "base": "equity XTB (P12)",
+        "factor_name": factor_name,
+        "factor_tickers": list(factor_tickers),
+        "factor_theme_names": list(factor_theme_names),
+        "factor_pct": factor_pct,
+        "factor_max_pct": max_factor,
+        "rows": table,
+        "theme_pcts": theme_pcts,
+        "aggregate_theme": {
+            "name": "semiconductores y equipos",
+            "pct": aggregate_pct,
+            "max_pct": max_theme,
+            "members": sorted(aggregate_members),
+            "themes": ["semiconductors", "semiconductors_ai", "Technology"],
+        },
+    }
+
+
+def _data_status(
+    *,
+    today: dt.date,
+    generated_at: dt.datetime,
+    rows: Sequence[PositionStats],
+    market_regime: MarketRegime | None,
+    technical_gaps: Sequence[str],
+    retried: Sequence[str],
+) -> dict[str, object]:
+    """Estado de los datos: cierre confirmado, siguiente sesion y huecos declarados.
+
+    ``incomplete`` no es un fallo del ticker: es una lista concreta de lo que la
+    fuente no trajo (por ejemplo SPCX sin SMA200 o GROY sin PEG), para que el
+    analisis sepa que no puede puntuar ese bloque.
+    """
+    calendar = SessionCalendar.us()
+    incomplete = []
+    for row in rows:
+        missing: list[str] = []
+        if row.fields.get("sma200") is None:
+            missing.append("SMA200")
+        if row.fields.get("peg") is None:
+            missing.append("PEG")
+        if row.fields.get("atr") is None:
+            missing.append("ATR")
+        if missing:
+            incomplete.append({"ticker": row.ticker, "missing": missing})
+    stale = sorted(row.ticker for row in rows if row.fields.get("flat_tail_sessions") is not None)
+    return {
+        "close_confirmed": _close_confirmed(generated_at),
+        "close_label": "si" if _close_confirmed(generated_at) else "no",
+        "next_session": calendar.next_session(today).isoformat(),
+        "last_session": calendar.last_session_on_or_before(today).isoformat(),
+        "retried": sorted(set(retried)),
+        "download_failures": sorted(set(technical_gaps)),
+        "stale": stale,
+        "suspicious": list(market_regime.suspicious) if market_regime is not None else [],
+        "incomplete": incomplete,
+    }
+
+
+def _close_confirmed(generated_at: dt.datetime) -> bool:
+    """``True`` si la corrida es de un dia habil despues del cierre regular (16:00 ET)."""
+    instant = generated_at if generated_at.tzinfo is not None else generated_at.replace(tzinfo=dt.UTC)
+    try:
+        from zoneinfo import ZoneInfo
+
+        local = instant.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        local = instant.astimezone(dt.UTC)
+    return local.weekday() < 5 and local.hour >= 16
 
 
 def _commodities(
@@ -933,8 +1246,37 @@ def _yahoo_fields(f: Fundamentals) -> dict[str, object]:
             "analyst_count": f.analyst_count,
             "eps_growth_estimate": _pct(f.eps_growth_estimate),
             "revenue_growth_estimate": _pct(f.revenue_growth_estimate),
+            "fcf_last_q": f.fcf_last_q,
+            "fcf_prior_q": f.fcf_prior_q,
+            "net_debt": f.net_debt,
+            "net_debt_change": f.net_debt_change,
+            "oper_margin_yoy_bps": f.oper_margin_yoy_bps,
+            "revenue_last_q": f.revenue_last_q,
+            "revenue_prior_q": f.revenue_prior_q,
+            "revenue_deceleration": _deceleration(f.revenue_growth_last_q, f.revenue_growth_prior_q),
+            "guidance_vs_consensus_pct": _pct(f.guidance_vs_consensus),
+            "eps_consensus_60d_ago": f.eps_consensus_60d_ago,
+            "eps_revision_60d_pct": _pct(f.eps_revision_60d),
+            "analyst_up_60d": f.analyst_up_60d,
+            "analyst_down_60d": f.analyst_down_60d,
+            "analyst_up_30d": f.analyst_up_30d,
+            "analyst_down_30d": f.analyst_down_30d,
+            "target_change_60d_pct": _pct(f.target_change_60d),
+            "earnings_timing": f.earnings_timing,
+            "earnings_implied_move_pct": _pct(f.earnings_implied_move),
+            "earnings_avg_move_pct": _pct(f.earnings_avg_move),
+            "last_report_date": f.last_report_date.isoformat() if f.last_report_date else None,
+            "last_report_type": f.last_report_type,
+            "last_report_url": f.last_report_url,
         }
     )
+
+
+def _deceleration(last: float | None, prior: float | None) -> str | None:
+    """``si`` si el crecimiento Y/Y del ultimo trimestre es menor que el del anterior."""
+    if last is None or prior is None:
+        return None
+    return "si" if last < prior else "no"
 
 
 def _flat_tail_sessions(series: PriceSeries) -> int:

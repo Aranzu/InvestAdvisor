@@ -1,4 +1,4 @@
-"""Curva de patrimonio ajustada por aportes (P9 del prompt v7).
+"""Curva de patrimonio ajustada por aportes (P9 del prompt v8).
 
 Modulo **puro**: recibe las operaciones de caja, los lotes abiertos y cerrados y
 las series de precios ya resueltas. Reconstruye el valor de la cuenta dia a dia y
@@ -36,6 +36,10 @@ class EquityCurve:
     days_since_peak: int
     mode: str
     points: int
+    max_equity_clp: float = 0.0
+    max_equity_date: dt.date | None = None
+    current_equity_clp: float = 0.0
+    max_equity_adjusted_clp: float = 0.0
     missing_tickers: tuple[str, ...] = ()
 
 
@@ -71,6 +75,9 @@ def build_curve(
     )
     peak = 100.0
     peak_date = start
+    max_equity = 0.0
+    max_equity_date = start
+    current_value = 0.0
     unit_value = 100.0
     previous_value: float | None = None
     cash = 0.0
@@ -98,15 +105,25 @@ def build_curve(
                 unit_value *= 1.0 + daily_return
         if value > 0.0:
             points += 1
+            current_value = value
+            if value > max_equity:
+                max_equity = value
+                max_equity_date = day
             if unit_value > peak:
                 peak = unit_value
                 peak_date = day
         previous_value = value
         day += dt.timedelta(days=1)
 
+    # Sin precio para una posicion abierta hoy la curva no es una caida: es una
+    # serie incompleta. Devolver None evita publicar un -100 % que no ocurrio.
+    for ticker, spans in holdings.items():
+        if _active_volume(spans, today) > 0.0 and _last_price(price_series.get(ticker), today) is None:
+            return None
     if points < 2 or peak <= 0.0:
         return None
     drawdown = (unit_value / peak - 1.0) * 100.0
+    adjusted = current_value * peak / unit_value if unit_value > 0.0 else current_value
     return EquityCurve(
         max_unit_value=peak,
         current_unit_value=unit_value,
@@ -114,6 +131,10 @@ def build_curve(
         days_since_peak=(today - peak_date).days,
         mode=mode_from_drawdown(drawdown, cfg),
         points=points,
+        max_equity_clp=max_equity,
+        max_equity_date=max_equity_date,
+        current_equity_clp=current_value,
+        max_equity_adjusted_clp=adjusted,
         missing_tickers=tuple(sorted(missing)),
     )
 

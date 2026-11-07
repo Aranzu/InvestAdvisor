@@ -121,7 +121,10 @@ SCREEN_PROMPT = (
 SEARCH_SUFFIX = (
     " Tienes la herramienta web_search: usala cuando lo consideres necesario para "
     "fundamentar el veredicto (noticias, resultados, eventos o cualquier hecho que los "
-    "facts no cubran); no hace falta para cada ticker. Antes de opinar verifica los "
+    "facts no cubran); no hace falta para cada ticker. Prioriza el presupuesto P14: Nivel A "
+    "(profundo) para ventas discrecionales, heredadas tipo A y earnings en <= 5 sesiones; "
+    "Nivel B (medio) para heredadas tipo B y earnings en 6-10 sesiones; Nivel C (vistazo) "
+    "para el resto. Antes de opinar verifica los "
     "hechos RECIENTES (ultimos 14 dias) que puedan cambiar la tesis. Solo marcas BROKEN "
     "con >= 2 hechos fechados y con source_url, o con 1 hecho concreto y verificable con "
     "source_url. Si no encuentras evidencia, deja thesis_status=UNKNOWN y "
@@ -133,12 +136,14 @@ SEARCH_SUFFIX = (
 
 #: Instruccion para la narrativa de cartera del informe de ``review``.
 PORTFOLIO_PROMPT = (
-    "Eres el analista y guardian de reglas del PROMPT PORTAFOLIO v7: inversionista chileno de "
+    "Eres el analista y guardian de reglas del PROMPT PORTAFOLIO v8: inversionista chileno de "
     "perfil arriesgado, acciones reales en XTB, aportes mensuales y liquidacion entre el 15-ene-2027 "
     "y el 1-mar-2027. Te dan la cartera ya evaluada por el motor (posiciones, pesos, retornos, "
-    "puntajes, decision del motor, tesis y hechos con fuente) y el 'panel_cumplimiento' P1-P11 "
-    "(riesgo abierto, caja, factor IA, temas, stops y modo). No recalculas niveles, stops, TP ni "
-    "riesgo: el motor ya los fijo. Respondes SOLO con un objeto JSON que cumple este esquema: "
+    "puntajes, decision del motor, tesis y hechos con fuente), el 'panel_cumplimiento' P1-P13, la "
+    "factibilidad del Paso 0b, los mapas de factor/tema y el estado de los datos. La base de TODOS "
+    "los pesos y topes es el patrimonio P12 (equity XTB, incluye caja); no uses 'Peso inv' para "
+    "topes. No recalculas niveles, stops, TP, riesgo, factibilidad ni calendario: el motor ya los "
+    "fijo. Respondes SOLO con un objeto JSON que cumple este esquema: "
     '{"ticker":"CARTERA","context":"PORTFOLIO_REVIEW","thesis_status":"UNKNOWN",'
     '"veto":false,"veto_reason":null,"verdict":"","accion":"","fundamento":"","catalizador":"",'
     '"confidence":"LOW|MEDIUM|HIGH","veredicto":string,"cobertura":string,"supuestos":string,'
@@ -156,14 +161,20 @@ PORTFOLIO_PROMPT = (
     "uses. V7 y V8 se proponen con su calendario; no se ejecutan sin confirmacion. Antes de una "
     "venta manual audita: cifras clave del ultimo reporte, al menos 3 hechos fechados a favor y "
     "3 en contra, senales de deterioro o 'ninguna', y si comprarias hoy solo con fundamentales. "
-    "Si falta esa cobertura, MANTENER con vigilancia y dilo. En 'veredicto' un parrafo breve "
-    "(3-4 frases) con el regimen y modo, el riesgo abierto, el factor IA, la caja resultante y "
-    "los cambios prioritarios; debajo, una linea con lo que VENDER (con %) y otra con lo que "
-    "MANTENER. En 'cobertura' un parrafo observando que activos tienen fundamentales "
-    "y analistas y cuales no, segun la cobertura que se te da; no inventes datos. En 'supuestos' "
-    "un parrafo con los supuestos y vacios de la corrida (datos faltantes, stops sin poner, "
-    "concentracion, V6 pendiente). Para 'key_facts' reutiliza SOLO los hechos con fuente que se "
-    "te dan; no inventes otros. Cierra recordando que no es asesoria financiera personalizada."
+    "Si falta esa cobertura, MANTENER con vigilancia y dilo. "
+    "Heredadas: el panel trae tipo 0 (sana), A (bajo su stop) y B (stop lejano). Para A/B sin "
+    "decision, responde la pregunta 'abriria hoy esta posicion con tamano y stop de entrada "
+    "nueva?': Si mantiene y recorta al tamano de entrada nueva con el stop de transicion P13; "
+    "No sale en tramos de 25 % por semana. Si el stop no es viable (P13), la respuesta es salir. "
+    "La perdida ya incurrida no justifica mantener. En 'veredicto' un parrafo breve "
+    "(3-4 frases) con el regimen y modo, el riesgo abierto, el factor IA base P12, la caja "
+    "resultante y los cambios prioritarios; debajo, una linea con lo que VENDER (con %) y otra "
+    "con lo que MANTENER, y otra con las heredadas que requieren decision. En 'cobertura' un "
+    "parrafo observando que activos tienen fundamentales y analistas y cuales no, segun la "
+    "cobertura que se te da; no inventes datos. En 'supuestos' un parrafo con los supuestos y "
+    "vacios de la corrida (datos faltantes, stops sin poner, concentracion, V6 pendiente). Para "
+    "'key_facts' reutiliza SOLO los hechos con fuente que se te dan; no inventes otros. Cierra "
+    "recordando que no es asesoria financiera personalizada."
 )
 
 #: Instruccion para el resumen macro (una sola consulta por corrida).

@@ -1,4 +1,4 @@
-# Definicion unica de factores y tema por ticker (PROMPT PORTAFOLIO v7, regla 5).
+# Definicion unica de factores y tema por ticker (PROMPT PORTAFOLIO v8, regla 5).
 # "IA ampliada" incluye semiconductores y los proveedores de capex de IA: una sola
 # definicion, no dos clusters que se pisan.
 max_factor_pct: 40

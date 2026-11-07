@@ -63,6 +63,43 @@ class Fundamentals:
     eps_growth_estimate: float | None = None
     revenue_growth_estimate: float | None = None
 
+    # V1: deterioro de tesis con los ultimos dos trimestres reportados.
+    fcf_last_q: float | None = None
+    fcf_prior_q: float | None = None
+    net_debt: float | None = None
+    net_debt_change: float | None = None
+    oper_margin_yoy_bps: float | None = None
+    revenue_last_q: float | None = None
+    revenue_prior_q: float | None = None
+    revenue_growth_last_q: float | None = None
+    """Crecimiento de ingresos Y/Y del ultimo trimestre (fraccion)."""
+    revenue_growth_prior_q: float | None = None
+    """Crecimiento de ingresos Y/Y del trimestre anterior (fraccion)."""
+    guidance_vs_consensus: float | None = None
+    """Guia de la empresa contra consenso (fraccion). ``None`` si la fuente no la publica."""
+
+    # Revisiones de analistas.
+    eps_consensus_60d_ago: float | None = None
+    eps_revision_60d: float | None = None
+    """Revision del consenso de EPS en 60 dias (fraccion)."""
+    analyst_up_60d: int | None = None
+    analyst_down_60d: int | None = None
+    analyst_up_30d: int | None = None
+    analyst_down_30d: int | None = None
+    target_change_60d: float | None = None
+    """Cambio del objetivo medio de analistas en 60 dias (fraccion)."""
+
+    # Earnings.
+    earnings_timing: str | None = None
+    """``antes del cierre`` / ``despues del cierre`` / ``sin confirmar``."""
+    earnings_implied_move: float | None = None
+    """Movimiento implicito del straddle ATM (fraccion), si hay opciones."""
+    earnings_avg_move: float | None = None
+    """Movimiento medio absoluto tras los ultimos reportes (fraccion)."""
+    last_report_date: dt.date | None = None
+    last_report_type: str | None = None
+    last_report_url: str | None = None
+
     @classmethod
     def missing(cls, ticker: str, source: str, on: dt.date) -> Fundamentals:
         """Placeholder declarado: la fuente no respondio o no habia dato."""

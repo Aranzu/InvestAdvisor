@@ -474,7 +474,7 @@ class ReviewConfig(StrictModel):
 
 
 class ComplianceConfig(StrictModel):
-    """Parametros P1-P11 del ``PROMPT PORTAFOLIO`` v7.
+    """Parametros P1-P13 del ``PROMPT PORTAFOLIO`` v8.
 
     Viven en ``config/config.yaml`` (no en el codigo) porque son la politica del
     usuario: el motor solo los aplica. El ``stats`` los usa para calcular el panel

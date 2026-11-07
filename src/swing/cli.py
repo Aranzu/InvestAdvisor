@@ -264,9 +264,9 @@ def stats(
         bool,
         typer.Option(
             "--contexto/--sin-contexto",
-            help="Incluye el contexto informativo (dividendos, desempeno, liquidez, insiders, mercado, materias primas). Por defecto se oculta.",
+            help="Incluye el contexto informativo (dividendos, desempeno, liquidez, insiders, materias primas). Por defecto si; --sin-contexto lo oculta. Mercado, mapas, ledger, factibilidad y estado de datos se muestran siempre.",
         ),
-    ] = False,
+    ] = True,
     write_json: Annotated[
         bool,
         typer.Option("--json", help="Escribe tambien el JSON estructurado. Por defecto solo el Markdown."),
@@ -276,10 +276,11 @@ def stats(
 
     No decide nada: reune valuacion, rentabilidad, salud financiera, crecimiento,
     tecnico, liquidez y analistas de cada posicion abierta para un analisis posterior.
-    Por defecto oculta el contexto informativo (dividendos, desempeno, propiedad,
-    insiders, mercado y materias primas); ``--contexto`` muestra la ficha
-    completa. Yahoo es la base, Finviz aporta lo que Yahoo no publica y los tecnicos
-    se calculan localmente desde las velas. Escribe el informe en Markdown
+    Por defecto muestra el contexto informativo (dividendos, desempeno, propiedad,
+    insiders y materias primas); ``--sin-contexto`` lo oculta. El mercado, los mapas,
+    el ledger, la factibilidad y el estado de datos se muestran siempre. Yahoo es la
+    base, Finviz aporta lo que Yahoo no publica y los tecnicos se calculan localmente
+    desde las velas. Escribe el informe en Markdown
     (``output/stats_<reporte>_<marca>.md`` salvo ``--out``); el JSON queda detras de
     ``--json``.
     """
@@ -482,7 +483,7 @@ def review(
         str,
         typer.Option(
             "--formato",
-            help="Formato del informe: informe (prompt v7), detalle, tabla o acciones (tabla unica).",
+            help="Formato del informe: informe (prompt v8), detalle, tabla o acciones (tabla unica).",
         ),
     ] = "informe",
     refresh_contexto: Annotated[
@@ -493,18 +494,20 @@ def review(
         bool,
         typer.Option(
             "--contexto/--sin-contexto",
-            help="Escribe el informe de stats con el contexto informativo completo (dividendos, desempeno, liquidez, insiders, mercado). Por defecto se oculta.",
+            help="Escribe el informe de stats con el contexto informativo completo (dividendos, desempeno, liquidez, insiders, materias primas). Por defecto si; --sin-contexto lo oculta. Mercado, mapas, ledger y factibilidad se muestran siempre.",
         ),
-    ] = False,
+    ] = True,
 ) -> None:
     """Funcion 1: genera ``stats`` y luego recomienda sobre tus posiciones.
 
-    Primero escribe el informe de stats (``output/stats_<reporte>_<marca>.md`` y ``.json``) y
+    Primero escribe el informe de stats (``output/stats_<reporte>_<marca>.md``) y
     reutiliza sus fundamentales, para no volver a pedir todo a Yahoo. Despues lee el
     reporte, adopta las posiciones (stop inicial derivado de
     ``legacy.max_loss_from_cost_pct`` si el broker no trae Sell Stop), corre las diez
     reglas de salida de la seccion 5.7 --las mismas del motor de decisiones--
-    y dictamina por posicion: la regla de mayor precedencia o MANTENER. La IA pondera
+    y dictamina por posicion: la regla de mayor precedencia o MANTENER. El informe v8
+    agrega ordenes de la proxima sesion, factibilidad del Paso 0b, calendario de
+    reduccion y decisiones de adopcion de heredadas 0/A/B. La IA pondera
     la ficha completa de stats (todos los campos de la posicion), fundamentales,
     proyecciones de analistas, noticias y contexto macro, y busca en la web cuando lo
     considera necesario (por defecto; ``--no-web-search`` la apaga y ``--offline`` no

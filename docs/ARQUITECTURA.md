@@ -37,7 +37,7 @@ informe) para que `cli.py` quede con los comandos y los argumentos; un test fija
 ### 3.1 `stats` — ficha por posición
 
 Lee el export de XTB, valúa la cartera y escribe `output/stats_<reporte>_<marca>.md` y
-`.json`: panel de cumplimiento P1-P11, campos de mercado/fundamentales, lotes, historial
+`.json`: panel de cumplimiento P1-P13, campos de mercado/fundamentales, lotes, historial
 cerrado, curva de patrimonio y, con `--contexto`, régimen, factores y materias primas.
 Al terminar, `stats`, `review` y `screen` podan los informes viejos de `output/` y dejan
 solo el vigente (más el último `contexto_*`).
@@ -60,8 +60,9 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
 6. **Narrativa de cartera** (una sola llamada `PORTFOLIO_REVIEW`, sin búsquedas nuevas) que
    llena el veredicto, la cobertura y los supuestos del informe.
 6. Informe con `--formato`:
-   - `informe` (por defecto): formato del **`PROMPT PORTAFOLIO v7`** — cobertura,
-     veredicto (régimen/modo, riesgo, factor IA y caja), **panel de cumplimiento P1-P11**,
+   - `informe` (por defecto): formato del **`PROMPT PORTAFOLIO v8`** - cobertura,
+     veredicto (régimen/modo, riesgo, factor IA y caja), **factibilidad Paso 0b**,
+     **órdenes de la próxima sesión**, **panel de cumplimiento P1-P13 (base P12)**,
      tabla de decisión con stop/TP/riesgo, auditoría, cobertura de datos, alertas, supuestos,
      fuentes, registro, qué cambió, desvíos OVERRIDE y oportunidades. Puntaje por ejes
      V/C/G/P (`-8..+8`). Guarda el registro en `state/`.
@@ -169,7 +170,7 @@ El CLI expone **solo tres comandos**: `stats`, `review` y `screen`.
 
 | Comando | Qué hace |
 |---|---|
-| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), **panel de cumplimiento P1-P11** (stop inicial anclado a la entrada, stop vigente, R, riesgo, peso máximo y estado), lotes, curva de patrimonio ajustada por aportes, historial cerrado, insiders resumidos (3 recientes), **horario extendido** y materias primas; con `--contexto` agrega **régimen v7 de 6 señales** (VIX/SPY/10Y/DXY/QQQ/VIX 1M, benchmarks sospechosos, amplitud y USD/CLP), factores y diversificación. Emite `stats_<reporte>_<marca>.md` y, con `--json`, el `.json` (`schema: 9`) |
+| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), **panel de cumplimiento P1-P13 (base P12)** (stop inicial anclado a la entrada, stop vigente, R, riesgo, peso pat/max abrir, heredadas 0/A/B, stop viable P13 y estado), lotes completos, promedio a la baja, ledger, curva de patrimonio ajustada con máximo explícito, historial cerrado y aportes/caja, insiders resumidos, **horario extendido**, materias primas, **mapas de factor/tema**, **V1/earnings**, **factibilidad con calendario** y **estado de datos**; el **régimen v8 de 6 señales** (VIX/SPY/10Y/DXY/QQQ/VIX 1M, benchmarks sospechosos, amplitud y USD/CLP) se muestra siempre. Emite `stats_<reporte>_<marca>.md` y, con `--json`, el `.json` (`schema: 10`) |
 | `review` | **función 1**: usa `stats`; el motor decide niveles + la IA el veredicto. `--formato informe` (11 secciones, por defecto), `detalle`, `tabla` o `acciones` |
 | `screen` | **función 2**: recomendador de acciones (técnico + fundamentales + proyecciones) |
 

@@ -52,39 +52,57 @@ Market)** con el precio de pre/after market (variación y hora ET) y su volumen.
 
 Además, **todo lo que se puede derivar se calcula en código** (no lo inventa la IA):
 
-- **Panel de cumplimiento (P1-P11)**: la sección de arriba del informe, única fuente de
-  verdad para stops y riesgo. Una fila por posición con peso invertido, ATR %, **stop
-  inicial** (P8: entrada − clamp(2,5×ATR, 8 %, 18 %)), **stop vigente**, distancias al
-  stop (% del precio y de la entrada), R, riesgo % del patrimonio, peso máximo permitido
-  al abrir (P1 ÷ distancia, tope P2; 3 % si ATR % > 7 %) y estado
-  `OK | SOBRE_PESO | SOBRE_RIESGO | STOP_TOCADO | HEREDADA_EN_PERDIDA | SIN_STOP`.
-  Resume riesgo abierto total vs P5, caja vs P7, factor IA ampliada y mayor tema vs P6,
-  infracciones, amplitud de la cartera y **modo vigente** (normal/cautela/defensivo).
+- **Panel de cumplimiento (P1-P13)**: la sección de arriba del informe, única fuente de
+  verdad para stops y riesgo. La base de **todos** los pesos y topes es el patrimonio
+  (P12: equity XTB, incluye caja): publica **Peso pat** y **Peso max abrir**, y deja
+  **Peso inv** solo como dato informativo. Una fila por posición con ATR %, **stop
+  inicial** (P8), **stop vigente**, distancias al stop, R, riesgo % del patrimonio,
+  entrada nueva en CLP/acciones (min(P1 ÷ distancia, P2)), TP, tipo de heredada,
+  **stop viable (P13)** y estado
+  `OK | SOBRE_PESO | SOBRE_RIESGO | STOP_TOCADO | HEREDADA_TIPO_0/A/B | SIN_STOP`.
+  Resume riesgo abierto total vs P5, caja vs P7, factor IA ampliada y tema agregado vs
+  P6, excesos P3/P4, infracciones, amplitud y **modo vigente**.
 - **Stops anclados a la entrada y ledger**: `state/ledger.json` guarda entrada media,
-  fecha de primera entrada, stop inicial, stop vigente y TP. El vigente solo sube
-  (break-even a +1,5R, entrada +1R a +3R y trailing de máx. 20 sesiones − 3×ATR); una
-  posición sin stop registrado se calcula con P8 y, si el precio ya está bajo ese stop o
-  el stop queda a más de 15 % del precio, se marca **heredada en pérdida**. Si el export
-  trae `Stop Loss`/`Take Profit` en `Open Positions`, se leen como `stop_xtb`/`tp_xtb` y
-  se reporta la diferencia contra el ledger.
+  fecha de primera entrada, stop inicial, stop vigente, TP y su fórmula, tipo de
+  heredada (0/A/B), fecha de adopción, decisión (Sí/No), stop de transición P13 y su
+  fecha, tramos de reducción ejecutados y tipo de stop P11 (orden real o alerta). El
+  vigente solo sube; una heredada adoptada re-ancla su stop en el de transición
+  (`precio − máx(1,5×ATR, 8 %)`, techo 15 %) y desde ahí tampoco baja. Si el export trae
+  `Stop Loss`/`Take Profit`, se reporta la diferencia contra el ledger.
+- **Stops dinámicos**: break-even a +1,5R y trailing de mínimo de 20 sesiones − 3×ATR,
+  calculados por el motor para cada posición.
 - **Curva de patrimonio ajustada por aportes**: valor cuota diario (base 100)
   reconstruido con `Cash Operations`, `Closed Positions`, `Open Positions` y precios
-  históricos. Publica máximo, caída actual, días desde el máximo y el modo P9
-  (cautela ≥ 8 %, defensivo ≥ 15 %).
-- **Régimen v7 de seis señales**: VIX > 20, SPY bajo su SMA200, 10Y > 10 % sobre su
+  históricos. Publica máximo, caída actual, días desde el máximo, **patrimonio máximo
+  con fecha y ajustado por aportes en CLP** y el modo P9 (cautela ≥ 8 %, defensivo ≥ 15 %).
+- **Contexto de mercado siempre visible**: VIX y su variación a 1 mes, SPY vs SMA200,
+  10Y vs SMA200, DXY vs SMA200, QQQ a 1 mes y USD/CLP. No requiere `--contexto`.
+- **Régimen v8 de seis señales**: VIX > 20, SPY bajo su SMA200, 10Y > 10 % sobre su
   SMA200, DXY > 5 % sobre su SMA200, QQQ ≤ −8 % en un mes y VIX ≥ +40 % en un mes.
-  0-1 = bajo, 2-3 = medio (cautela), ≥4 = alto (defensivo). Un benchmark con variación
-  a un mes absurda o nivel fuera de [0,5×, 2×] su SMA200 se marca **sospechoso** y no
-  cuenta. Añade USD/CLP y la amplitud de la cartera (% de posiciones bajo su SMA200).
-- **Factores y diversificación**: `config/factors.yaml` define una sola vez el factor
-  **IA ampliada** (semiconductores + proveedores de capex), los temas por ticker y el
-  tope P6. El resumen agrega correlación media por pares (60 sesiones) y beta de la
-  cartera contra SPY y QQQ.
-- **Lotes e historial cerrado**: por ticker, número de lotes, fecha/precio del último
-  lote, comparación contra la entrada media y bandera **promedio a la baja**. El
-  historial cerrado excluye las acciones de promoción (~0,01), resume operaciones,
-  win rate, ganancia/pérdida medias, tenencia media y P/L realizado, y lo compara con
-  las ganadoras/perdedoras abiertas.
+  0-1 = bajo, 2-3 = medio (cautela), ≥4 = alto (defensivo). Publica las señales
+  cumplidas, las que están a menos de 1 pp del umbral y los benchmarks **sospechosos**
+  (no cuentan). Añade USD/CLP y la amplitud de la cartera.
+- **Mapas editables**: `config/factors.yaml` define el factor **IA ampliada**, el tema
+  por ticker y los topes P6. El informe publica una tabla ticker → factor IA (sí/no) →
+  tema, la lista de tickers del factor y el tema agregado **semiconductores y equipos**
+  con su % del patrimonio.
+- **Lotes e historial cerrado**: por ticker, precio medio de entrada, fecha de primera
+  entrada y días, retorno USD y CLP, **detalle completo de lotes** (fecha, precio,
+  acciones) y detección de promedio a la baja con el lote responsable. El historial
+  cerrado excluye promociones y resume P/L realizado, ganadoras/perdedoras, **P/L por
+  ticker**, aportes/retiros y caja real vs calculada.
+- **Deterioro de tesis (V1)**: FCF de los últimos dos trimestres, deuda neta y su
+  variación, margen operativo Y/Y en pb, ingresos y desaceleración, guía vs consenso,
+  revisión del consenso de EPS a 60 días, altas/bajas de analistas, cambio del objetivo
+  a 60 días, fecha del último reporte y enlace al documento primario.
+- **Earnings**: confirmada/estimada, horario (antes/después del cierre), movimiento
+  implícito de opciones y movimiento medio histórico posterior al reporte.
+- **Factibilidad (Paso 0b)**: escenarios de caja/factor/tema tras cumplir todas las
+  reglas y **calendario semanal de reducción** con cantidades por ticker y el estado al
+  cierre de cada semana. La caja puede superar la banda mientras una regla obligue a
+  reducir (R3.7) y el conflicto se declara.
+- **Estado de los datos**: cierre confirmado sí/no, siguiente sesión regular, reintento
+  automático de descargas fallidas, indicadores sospechosos y tickers incompletos.
 - **Calendario**: sesiones restantes hasta las compras nuevas y hasta la liquidación
   (`config/config.yaml`), y earnings **confirmados o estimados**.
 - **Materias primas**: oro, plata y cobre desde **Trading Economics**
@@ -100,13 +118,14 @@ objetivo mín/máx, SHA, volatilidad realizada y peso eq de XTB).
 Las cantidades usan 4 decimales (acciones fraccionarias). Escribe `output/stats_<reporte>_<marca>.md`
 (o `--out`) y, solo con `--json`, un `.json` estructurado; el Markdown trae una tabla por sección y una sección final de **cobertura** que declara qué
 quedó sin dato (`-` nunca es un cero). Cada corrida borra los `stats_*`, `review_*` y
-`contexto_*` anteriores: en `output/` queda solo lo vigente. Por defecto el informe
-**oculta el contexto informativo**
-(dividendos, desempeño, liquidez/propiedad, insiders, mercado y materias primas) y deja
-solo lo que decide (panel, decisión, niveles y puntaje); con `--contexto` sale la ficha
-completa. La IA de `review` recibe igual el contexto (solo se oculta en el informe, a la
-IA se le sigue enviando, con cada dato una sola vez). Los **niveles del panel** son de
+`contexto_*` anteriores: en `output/` queda solo lo vigente. El mercado, los mapas, los
+lotes, el ledger, la factibilidad y el estado de datos se muestran **siempre**; por
+defecto también sale el contexto informativo (dividendos, desempeño,
+liquidez/propiedad, insiders y materias primas), y `--sin-contexto` lo oculta. La IA de
+`review` recibe igual el contexto. Los **niveles del panel** son de
 **vigilancia, no órdenes**: lo único accionable es el stop y la meta que fija el motor.
+El informe termina con un bloque JSON estable (esquema `stats` v10) con los mismos datos
+del panel.
 
 `review` es la **función 1**: primero escribe el informe de `stats` (y reutiliza sus
 fundamentales) y después recomienda sobre tus posiciones. Adopta lo abierto y corre las
@@ -115,27 +134,28 @@ entradas. La IA (siempre encendida cuando hay clave; sin clave el informe sale i
 un aviso) entrega su veredicto (`BUY/HOLD/SELL/WATCH`) y **decide** mantener o vender;
 el motor sigue fijando stop, meta y tamaño. Hay cuatro formatos con `--formato`:
 
-- `informe` (por defecto): sigue el **formato del `PROMPT PORTAFOLIO v7`**:
-  0. cobertura y modo del stats, 1. veredicto (régimen/modo, riesgo abierto, factor IA y
-  caja), 2. panel de cumplimiento P1-P11, 3. tabla de decisión (acción con % y n.º de
-  acciones, stop vigente, TP, riesgo, convicción y disparador), 4. auditoría de ventas,
-  5. cobertura de datos, 6. alertas, 7. supuestos y vacíos, 8. fuentes clave,
-  9. registro de decisiones, 10. qué cambió, 11. desvíos OVERRIDE y 12. oportunidades
-  (solo si la caja post-venta supera 20 %). El motor resuelve decisiones, niveles, TP y
-  riesgo; la IA aporta una narrativa en **una sola llamada** (`PORTFOLIO_REVIEW`, sin
-  búsquedas nuevas) que llena el veredicto, la cobertura y los supuestos.
+- `informe` (por defecto): sigue el **formato del `PROMPT PORTAFOLIO v8`**:
+  0. cobertura y modo del stats, 1. veredicto (régimen/modo, riesgo abierto, factor IA
+  base P12, caja resultante), **Paso 0b: factibilidad**, 2. **órdenes de la próxima
+  sesión** (ticker, acciones, acción y stop), 3. panel de cumplimiento P1-P13 (base P12),
+  4. tabla de decisión (SALIR, RECORTAR, luego MANTENER), 5. calendario de reducción,
+  6. auditoría de ventas y **decisión de adopción de heredadas 0/A/B**, 7. cobertura de
+  datos, 8. alertas, 9. supuestos y vacíos, 10. fuentes clave, 11. registro de decisiones,
+  12. qué cambió, 13. desvíos OVERRIDE y 14. oportunidades (solo si la caja post-venta
+  supera 20 %). El motor resuelve decisiones, niveles, TP, riesgo y factibilidad; la IA
+  aporta una narrativa en **una sola llamada** (`PORTFOLIO_REVIEW`, sin búsquedas nuevas)
+  que llena el veredicto, la cobertura y los supuestos.
 - `detalle`: bloque por posición con **qué hacer** y **qué más aplica** (las reglas que la
   precedencia tapa) y la tesis de la IA; cierra con un glosario.
 - `tabla`: `Activo · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Próximo
   catalizador`. La **acción, el fundamento y el catalizador** los aporta la IA; el
   **stop y el TP siempre salen del motor**.
 - `acciones`: **una sola tabla** —
-  `Activo · Retorno · Peso (actual → post) · Acción · Puntaje · Conf. · Fundamento`—
-  sin las secciones del informe. No llama al LLM para la narrativa de cartera (ahorra
-  una consulta). El **peso** es sobre el capital invertido (suma 100 %) y la columna `post`
-  aplica las ventas de la tabla y renormaliza, así que vender una posición sube el peso del
-  resto. El **porcentaje y el volumen** de venta los fija el motor (la IA solo propone cuando
-  la posición queda fuera de él); la IA aporta el fundamento.
+  `Activo · Retorno USD (CLP) · Peso P12 (actual → post) · Acción · Puntaje · Conf. ·
+  Fundamento`— sin las secciones del informe. No llama al LLM para la narrativa de
+  cartera (ahorra una consulta). El **peso** es sobre el patrimonio (P12, incluye caja) y
+  la columna `post` aplica las ventas sin renormalizar. El **porcentaje y el volumen** de
+  venta los fija el motor; la IA aporta el fundamento.
 
 El puntaje por activo es la suma de cuatro ejes (valor, calidad, crecimiento,
 proyecciones), rango `-8..+8`; los umbrales viven en `fundamentals.axes` de
@@ -262,9 +282,9 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `core/sizing.py` | 5.5, 5.6 | Riesgo → notional, topes, tramos, `SINGLE` |
 | `core/exits.py` | 5.7, 4.3, 4.6 | Precedencia de las diez reglas y transiciones de §5.6 |
 | `core/portfolio.py` | 5.5, 5.8 | Heat, pérdida mensual, topes por ticker y tema, `CAP_TRIM` |
-| `core/compliance.py` | — | Panel P1-P11: stop inicial/vigente anclado a la entrada, TP, estados y resumen |
+| `core/compliance.py` | - | Panel P1-P13: stop anclado a la entrada, P13, heredadas 0/A/B, TP, estados y resumen |
 | `core/equity_curve.py` | — | Curva de patrimonio ajustada por aportes (valor cuota base 100) y modo P9 |
-| `core/verdict.py` | — | `PROMPT PORTAFOLIO` v6/v7 como código puro: niveles, disparadores y ejes |
+| `core/verdict.py` | - | `PROMPT PORTAFOLIO` v8 como código puro: niveles, disparadores y ejes |
 | `core/engine.py` | 5, 11.3 | `decide()`: la única función que decide (entradas y salidas) |
 | `core/report.py` | — | Modelo del export de XTB y agregación filas → posiciones |
 | `core/analysis.py` | 5.7, 5.8 | Valua la cartera y genera hallazgos, acciones y veredicto por posición |
@@ -275,7 +295,9 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `core/discovery.py` | 5.2 | Prefiltro técnico + puertas/score fundamentales y ranking del recomendador |
 | `core/commodities.py` | 5.2 | Specs de oro/plata/cobre (Trading Economics, respaldo Yahoo) |
 | `core/market_context.py` | — | Contexto de mercado determinista (VIX, SPY, QQQ, SOXX, Chile, 10Y, DXY) |
-| `core/stats.py` | — | Ficha por posición: specs de campos, derivados y render Markdown |
+| `core/market_context.py` | - | Contexto de mercado y régimen de seis señales (base determinista) |
+| `core/feasibility.py` | - | Paso 0b: escenarios y calendario semanal de reducción |
+| `core/stats.py` | - | Ficha por posición: specs de campos, derivados, panel, mapas y render Markdown |
 | `core/briefing.py` | — | Bloque determinista de la revisión: banderas, stop técnico, take profit y alertas |
 | `adapters/config_loader.py` | 7 | YAML → modelos, con errores que dicen qué falta |
 | `adapters/cache.py` | 6 | Una vela diaria por símbolo en CSV, escritura atómica, rango faltante |
@@ -321,8 +343,9 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
   Chandelier sube el stop si queda sobre el costo y bajo el precio (D35); nunca aprieta una
   posición que no gana ni fija un stop por encima del mercado.
 - **Todo stop nace de la entrada (P8).** El stop inicial se ancla a la entrada media y el
-  ledger lo conserva entre corridas; el vigente solo sube. Re-ejecutar sin cambios de
-  precio no mueve ningún stop, y una heredada en pérdida no se re-ancla al precio actual.
+  ledger lo conserva entre corridas; el vigente solo sube. La única excepción es el stop
+  de transición P13 de una heredada adoptada, que se fija una vez desde el precio y
+  tampoco baja. Re-ejecutar sin cambios de precio no mueve ningún stop.
 - **Una sola acción por posición y corrida** (D14): las reglas que también se cumplen
   quedan en el informe con el motivo que las tapó.
 
@@ -333,9 +356,7 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 - `docs/USO.md` — guía operativa: flujo semanal, formatos, códigos de salida y claves.
 - `docs/DECISIONES.md` — D1 a D37. Cada ambigüedad del spec que se resolvió y por qué.
   Es lo que hay que leer antes de cuestionar un parámetro.
-- `docs/Prompt_portafolio_v7.md` — reglas y parámetros P1-P11 del prompt vigente.
-- `docs/Spec_stats_v7.md` — cambios del `stats` para que el motor entregue el panel y
-  los niveles ya calculados.
+- `docs/PROMPT PORTAFOLIO v8.md` - reglas y parámetros P1-P13 del prompt vigente.
 - `docs/ESTRATEGIA.md` — linaje de cada componente, evidencia, y sobre todo **lo que no
   es fuente de ventaja** (la salida escalonada sube el win rate por construcción).
 - `docs/VERIFICACION_BROKER.md` — checklist pendiente contra la cuenta demo.

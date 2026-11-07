@@ -1,4 +1,4 @@
-# Parametros P1-P11 del PROMPT PORTAFOLIO v7 (seccion 2) y calendario del horizonte.
+# Parametros P1-P13 del PROMPT PORTAFOLIO v8 (seccion 2) y calendario del horizonte.
 # Son politica del usuario: el motor solo los aplica. Cambiarlos aca, no en el codigo.
 
 # P1: riesgo al abrir o anadir, % del patrimonio.
@@ -23,10 +23,10 @@ cash_band_max_pct: 20
 stop_atr_mult: 2.5
 stop_min_pct: 8
 stop_max_pct: 18
-# Una posicion sin stop inicial a mas de esta distancia bajo el precio es heredada en perdida.
+# Una posicion sin stop inicial a mas de esta distancia bajo el precio es heredada tipo B.
 inherited_stop_max_distance_pct: 15
-# Stop de transicion de una heredada que se mantiene recortada (<= 10 % bajo el precio).
-transition_stop_max_pct: 10
+# P13: stop de transicion de una heredada que se mantiene recortada (tope 15 % bajo el precio).
+transition_stop_max_pct: 15
 # Stop vigente: break-even a +1,5R, entrada +1R a +3R, luego max 20 sesiones - 3 ATR.
 breakeven_r: 1.5
 enhancer_r: 3

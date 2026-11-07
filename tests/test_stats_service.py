@@ -269,13 +269,13 @@ def test_portfolio_panel_patrimonio_caja_y_temas() -> None:
     assert panel["invested_pct"] == pytest.approx(500_000.0 / 600_000.0 * 100.0)
     themes = panel["themes"]
     assert isinstance(themes, dict)
-    assert themes["semiconductors"] == pytest.approx(60.0)
+    assert themes["semiconductors"] == pytest.approx(50.0)
     assert panel["max_theme_pct"] == STRATEGY.risk.max_theme_pct
     clusters = panel["clusters"]
     assert isinstance(clusters, dict)
-    assert clusters["semis"]["pct"] == pytest.approx(60.0)
+    assert clusters["semis"]["pct"] == pytest.approx(50.0)
     assert clusters["semis"]["max_pct"] == 35.0
-    assert clusters["ia_ampliada"]["pct"] == pytest.approx(60.0)
+    assert clusters["ia_ampliada"]["pct"] == pytest.approx(50.0)
 
 
 def test_portfolio_panel_cluster_ticker_sin_tema_incluye_sndk() -> None:
