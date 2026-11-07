@@ -90,7 +90,7 @@ def warn_jumps(series: dict[str, PriceSeries]) -> None:
 def live_fx(provider: YahooDataProvider, today: dt.date) -> float | None:
     try:
         return provider.fx_usdclp(today)
-    except (CacheError, DataUnavailable):
+    except (CacheError, DataUnavailable, ValueError):
         return None
 
 
@@ -142,7 +142,7 @@ def relative_strength(
     for ticker in dict.fromkeys((*universe, *held)):
         try:
             series = provider.daily_bars(ticker, start=start, end=today)
-        except (CacheError, DataUnavailable):
+        except (CacheError, DataUnavailable, ValueError):
             continue
         frame = IndicatorFrame.build(series, strategy)
         if frame is not None:

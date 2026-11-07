@@ -6,6 +6,7 @@ import datetime as dt
 from pathlib import Path
 
 from swing.adapters.config_loader import load_strategy
+from swing.core.briefing import Briefing, brief_positions
 from swing.core.engine import ExitEvaluation, NightPlan, TradeExitJudgment
 from swing.core.exits import ExitSignal
 from swing.core.fundamentals import AxisRatings
@@ -236,7 +237,7 @@ def test_tabla_sin_ia_usa_la_regla_del_motor() -> None:
     assert "Vender 100%" in informe
 
 
-def test_informe_de_review_tiene_las_siete_secciones() -> None:
+def test_informe_de_review_tiene_las_secciones_v6() -> None:
     mantener = TradeExitJudgment(
         trade=_trade("AAA"),
         evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
@@ -255,20 +256,24 @@ def test_informe_de_review_tiene_las_siete_secciones() -> None:
     informe = render_review_report(report)
     for seccion in (
         "## 1. Veredicto",
-        "## 2. Cobertura",
-        "## 3. Decisiones",
-        "## 4. Niveles",
-        "## 5. Alertas",
-        "## 6. Supuestos y vacios",
-        "## 7. Fuentes clave",
+        "## 2. Tabla de decision",
+        "## 3. Auditoria de ventas",
+        "## 4. Tabla de TP y SL",
+        "## 5. Cobertura",
+        "## 6. Alertas (informativas)",
+        "## 7. Supuestos y vacios",
+        "## 8. Fuentes clave",
+        "## 9. Registro de decisiones",
+        "## 10. Que cambio",
     ):
         assert seccion in informe
     assert "| AAA |" in informe
     assert "caja 10.0 %" in informe
     assert "mineria 30.0 %" in informe
-    assert "+2/-1/+1/0" in informe  # ejes V/C/G/P con signo
+    assert "Peso sobre el capital invertido" in informe
     assert "perdida mensual no evaluable" in informe
     assert "Sin fuentes citadas" in informe
+    assert "No es asesoria financiera personalizada" in informe
 
 
 def test_informe_de_review_usa_la_narrativa_de_la_ia() -> None:
@@ -371,10 +376,11 @@ def test_incluye_el_contexto_macro() -> None:
 
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
-_REVIEW_POLICY = load_strategy(CONFIG_DIR / "strategy.yaml").review
+_STRATEGY = load_strategy(CONFIG_DIR / "strategy.yaml")
+_REVIEW_POLICY = _STRATEGY.review
 
 
-def test_informe_v4_agrega_ejes_niveles_auditoria_registro_y_cambios() -> None:
+def test_informe_v6_agrega_tp_sl_auditoria_registro_y_cambios() -> None:
     assert _REVIEW_POLICY is not None
     mantener = TradeExitJudgment(
         trade=_trade("AAA", close=110.0),
@@ -407,34 +413,44 @@ def test_informe_v4_agrega_ejes_niveles_auditoria_registro_y_cambios() -> None:
             "earnings_growth": -2.0,
         },
     )
+    briefs = brief_positions(
+        [row],
+        patrimonio_clp=1_000_000.0,
+        policy=_STRATEGY.briefing,  # type: ignore[arg-type]
+        review=_REVIEW_POLICY,
+    )
     report = build_review_report(
         _plan(mantener),
         _stats(row),
         axes_by_ticker={"AAA": AxisRatings(value=2, quality=-1, growth=1, projections=0)},
         review=_REVIEW_POLICY,
+        briefing=Briefing(positions=briefs),
         previous={"AAA": DecisionRecord(date="2026-10-01", ticker="AAA", action="Mantener", alarm_level=90.0)},
         position_max_pct=12.0,
     )
     informe = render_review_report(report)
-    # Secciones nuevas de v4.
-    assert "## 8. Auditoria de ventas" in informe
+    # Secciones v6: TP como orden, SL como alerta, auditoria y registro.
+    assert "## 3. Auditoria de ventas" in informe
+    assert "## 4. Tabla de TP y SL" in informe
     assert "## 9. Registro de decisiones" in informe
     assert "## 10. Que cambio" in informe
-    # Ejes E1-E4 y los niveles de vigilancia (no son ordenes).
-    assert "### Ejes E1-E4 y accion de PROMPT PORTAFOLIO" in informe
-    assert "### Niveles de vigilancia (no son ordenes)" in informe
-    assert "Nivel alarma" in informe
-    # El registro guarda la linea del activo.
+    assert "140.00 (+27.3 % vs actual)" in informe
+    assert "objetivo medio" in informe
+    assert "Alerta 1: 99.00" in informe
+    assert "Riesgo teorico" in informe
+    # El registro guarda la linea del activo, con TP y alerta SL.
     assert [record.ticker for record in report.records] == ["AAA"]
     assert report.records[0].alarm_level is not None
-    # El nivel de alarma subio de 90.0 a 108.5 (114 - 3x... ) -> se reporta el cambio.
-    assert "el nivel de alarma subio" in informe
-    # Disparador T6 por balance debil, y motivo M5 por margen de semis.
+    assert report.records[0].take_profit == 140.0
+    assert report.records[0].alarm_1 == 99.0
+    # La Alerta 1 subio de 90.0 a 99.0 -> se reporta el cambio.
+    assert "la Alerta 1 subio (90.00 -> 99.00)" in informe
+    # Disparador T6 por balance debil y motivo V5 por margen de semis.
     assert "T6" in informe
-    assert "M5" in informe
+    assert "V5" in informe
 
 
-def test_sin_politica_el_informe_conserva_el_formato_minimo() -> None:
+def test_sin_politica_el_informe_conserva_las_secciones_deterministas() -> None:
     mantener = TradeExitJudgment(
         trade=_trade("AAA"),
         evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
@@ -442,7 +458,40 @@ def test_sin_politica_el_informe_conserva_el_formato_minimo() -> None:
     )
     report = build_review_report(_plan(mantener), _stats(), axes_by_ticker={})
     informe = render_review_report(report)
-    assert "## 8." not in informe
+    assert "## 1. Veredicto" in informe
+    assert "## 4. Tabla de TP y SL" in informe
+    assert "## 10. Que cambio" in informe
+    assert "## 11. Oportunidades" not in informe
     assert "PROMPT PORTAFOLIO" not in informe
     assert report.records == ()
+
+
+def test_seccion_oportunidades_solo_si_la_caja_post_venta_supera_20() -> None:
+    vender = TradeExitJudgment(
+        trade=_trade("AAA", close=120.0),
+        evaluation=ExitEvaluation(
+            signals=(
+                ExitSignal(
+                    cause=Reason.TP_HIT, action=Action.SELL, execute=True, volume=5.0, tranche="A", detail="+1R"
+                ),
+            ),
+            primary_cause=Reason.TP_HIT,
+            should_exit=True,
+        ),
+        state_after=_trade("AAA"),
+    )
+    row = PositionStats(
+        ticker="AAA",
+        context={"theme": "semis", "value_clp": 300_000.0, "price_usd": 120.0},
+        fields={},
+    )
+    report = build_review_report(
+        _plan(vender),
+        _stats(row),
+        axes_by_ticker={"AAA": AxisRatings(value=2, quality=1, growth=1, projections=0)},
+    )
+    informe = render_review_report(report)
+    # Caja 10 % + la mitad de 300.000 CLP sobre 1.000.000 = 25 % post-venta.
+    assert "## 11. Oportunidades" in informe
+    assert "caja post-venta quedaria en 25.0 %" in informe
 

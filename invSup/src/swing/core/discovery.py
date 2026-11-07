@@ -175,6 +175,38 @@ def technical_survivors(frames: Mapping[str, IndicatorFrame], strategy: Strategy
     return tuple(ticker for ticker, *_ in _prefilter(frames, strategy, rs_by_ticker))
 
 
+def earnings_gate_rejection(
+    sessions: int | None,
+    *,
+    blackout: int,
+    source_available: bool,
+    fail_closed: bool,
+) -> Rejected | None:
+    """Puerta G6 para una entrada del screener: el mismo juicio que el motor.
+
+    Tres casos, en el orden del motor (``core.screening``):
+
+    - Fecha conocida dentro del blackout -> ``EARNINGS_NEAR``.
+    - Sin fecha, con la fuente consultada y ``fail_closed`` -> ``INDICATOR_NOT_READY``:
+      el motor rechaza la entrada antes que asumir una fecha que no tiene.
+    - Fuente no disponible (p. ej. ``--offline``) -> no se puede saber: se deja pasar
+      y el informe declara el hueco (``-`` en ``earn (ses)``).
+
+    Sin ``fail_closed`` una fecha ausente con la fuente viva tampoco filtra: el
+    screener recomienda y el motor vuelve a mirar G6 al armar la entrada.
+    """
+    if sessions is not None:
+        if sessions <= blackout:
+            return Rejected(
+                reason=Reason.EARNINGS_NEAR,
+                detail=f"earnings en {sessions} sesiones, horizonte {blackout}",
+            )
+        return None
+    if source_available and fail_closed:
+        return Rejected(reason=Reason.INDICATOR_NOT_READY, detail="calendario de earnings no disponible")
+    return None
+
+
 def _prefilter(
     frames: Mapping[str, IndicatorFrame],
     strategy: StrategyConfig,

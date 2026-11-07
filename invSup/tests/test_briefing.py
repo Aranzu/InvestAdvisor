@@ -32,7 +32,7 @@ def _row(
 
 
 def _one(row: PositionStats, *, patrimonio: float = 1_000_000.0):
-    briefs = brief_positions([row], patrimonio_clp=patrimonio, policy=POLICY)
+    briefs = brief_positions([row], patrimonio_clp=patrimonio, policy=POLICY, review=STRATEGY.review)
     return briefs[0]
 
 
@@ -160,8 +160,10 @@ def test_take_profit_sin_nivel_suficiente_es_sin_techo() -> None:
 
 def test_take_profit_prioriza_el_objetivo_y_luego_sin_techo() -> None:
     con_objetivo = _one(_row(context={"price_usd": 100.0}, fields={"target_price": 140.0}))
-    assert con_objetivo.take_profit == pytest.approx(140.0)
+    # v6: el objetivo se acota al tope de recorrido del Tipo A (+30 %).
+    assert con_objetivo.take_profit == pytest.approx(130.0)
     assert con_objetivo.tp_label == "objetivo medio"
+    assert "acotado" in con_objetivo.tp_note
 
     sin_niveles = _one(_row(context={"price_usd": 100.0}, fields={}))
     assert sin_niveles.take_profit is None
@@ -212,3 +214,188 @@ def test_riesgo_patrimonial_es_none_sin_patrimonio() -> None:
     row = _row(context={"price_usd": 100.0, "value_clp": 1_000_000.0}, fields={"atr": 2.0, "low_20": 97.0})
     brief = _one(row, patrimonio=0.0)
     assert brief.risk_pct is None
+
+
+def test_banderas_de_trampas_de_datos_y_percentiles() -> None:
+    row = _row(
+        context={"price_usd": 100.0, "sessions_open": 5.0, "coverage_pct": 40.0},
+        fields={
+            "profit_margin": 70.0,
+            "oper_margin": 65.0,
+            "revenue_growth": 350.0,
+            "rsi_percentile": 85.0,
+            "atr_pct_percentile": 85.0,
+            "rs_1m_pct": 10.0,
+            "rs_3m_pct": 5.0,
+            "rs_pct": 1.0,
+        },
+    )
+    brief = _one(row)
+    assert "margen neto>operativo" in brief.flags
+    assert "margen oper.>60%" in brief.flags
+    assert "crecimiento>300%" in brief.flags
+    assert "RSI pct>80" in brief.flags
+    assert "ATR% pct>80" in brief.flags
+    assert "RS acelera" in brief.flags
+    assert "sesiones<10" in brief.flags
+    assert "cobertura<60%" in brief.flags
+    # La clasificacion del prompt v6 separa tecnicas, fundamentales y contexto.
+    assert "RS acelera" in brief.flags_technical
+    assert "margen neto>operativo" in brief.flags_fundamental
+    assert "sesiones<10" in brief.flags_context
+
+
+def test_tipo_sl_por_atr_y_por_cluster_de_semis() -> None:
+    atr_alto = _one(_row(context={"price_usd": 100.0}, fields={"atr_pct": 5.0}))
+    assert atr_alto.sl_type == "B"
+    semis = brief_positions(
+        [_row(ticker="NVDA", context={"price_usd": 100.0}, fields={"atr_pct": 2.0})],
+        patrimonio_clp=1_000_000.0,
+        policy=POLICY,
+        semis_tickers=("NVDA", "MU"),
+    )[0]
+    assert semis.sl_type == "B"
+    normal = _one(_row(context={"price_usd": 100.0}, fields={"atr_pct": 2.0}))
+    assert normal.sl_type == "A"
+
+
+def test_alerta_2_solo_en_tipo_b_y_riesgo_teorico() -> None:
+    row = _row(
+        context={"price_usd": 100.0, "value_clp": 500_000.0, "entry_usd": 95.0},
+        fields={"atr": 5.0, "atr_pct": 5.0, "high_20": 105.0},
+    )
+    brief = _one(row)
+    assert brief.sl_type == "B"
+    # El Chandelier (105 - 2*5 = 95) cae bajo el piso de 2.5xATR (100 - 12.5 = 87.5).
+    assert brief.alarm_1 == pytest.approx(87.5)
+    assert brief.alarm_2 == pytest.approx(82.0)
+    assert brief.alarm_2_dist_pct == pytest.approx(18.0)
+    assert brief.risk_theoretical_pct == pytest.approx(500_000.0 * 0.18 / 1_000_000.0 * 100.0)
+
+
+def test_tp_distancia_y_rr_contra_la_alerta_1() -> None:
+    row = _row(
+        context={"price_usd": 100.0},
+        fields={"atr": 5.0, "high_20": 104.0, "high_52w": 110.0},
+    )
+    brief = _one(row)
+    assert brief.take_profit == pytest.approx(110.0)
+    assert brief.tp_distance_pct == pytest.approx(10.0)
+    # Alarma en el piso de 2.5xATR: 100 - 12.5 = 87.5. (110 - 100) / (100 - 87.5).
+    assert brief.tp_rr == pytest.approx(10.0 / 12.5)
+    assert "R:R TP<1.5" in brief.flags
+
+
+def test_tp_tipo_b_admite_mas_recorrido_que_el_tipo_a() -> None:
+    # ATR % >= 4 -> Tipo B: el tope sube de +30 % a +40 %.
+    row = _row(
+        context={"price_usd": 100.0},
+        fields={"atr_pct": 5.0, "target_price": 150.0},
+    )
+    brief = _one(row)
+    assert brief.sl_type == "B"
+    assert brief.take_profit == pytest.approx(140.0)
+    assert brief.tp_label == "objetivo medio"
+    assert "acotado" in brief.tp_note
+
+
+def test_tp_sube_al_siguiente_techo_tecnico_para_cumplir_el_rr() -> None:
+    # Alarma en el piso 2,5xATR = 87,5. El primer techo (110) da R:R 0,8; el
+    # siguiente (130) cumple el minimo de 1,5 y es el que se usa.
+    row = _row(
+        context={"price_usd": 100.0},
+        fields={"atr": 5.0, "high_20": 110.0, "high_52w": 130.0},
+    )
+    brief = _one(row)
+    assert brief.take_profit == pytest.approx(130.0)
+    assert brief.tp_label == "max 52S"
+    assert "siguiente techo tecnico" in brief.tp_note
+    assert brief.tp_rr is not None and brief.tp_rr >= POLICY.take_profit_min_rr
+
+
+def test_tp_declara_la_excepcion_si_no_hay_techo_para_el_rr() -> None:
+    # Sin un techo mas arriba que el primero, se conserva el TP realista y se
+    # declara la excepcion con el R:R resultante.
+    row = _row(
+        context={"price_usd": 100.0},
+        fields={"atr": 5.0, "high_20": 110.0},
+    )
+    brief = _one(row)
+    assert brief.take_profit == pytest.approx(110.0)
+    assert "excepcion declarada" in brief.tp_note
+
+
+def test_ajuste_bajo_soporte_y_pisos_de_ganancia() -> None:
+    soporte = _one(
+        _row(
+            context={"price_usd": 100.0},
+            fields={"atr": 0.4, "high_20": 100.4, "low_50": 99.0},
+        )
+    )
+    # El piso de 2.5xATR deja la alarma en 99, a 0 % del soporte 99: baja a 99 * 0.99.
+    assert soporte.alarm_1 == pytest.approx(98.01)
+    assert "1% bajo soporte" in soporte.alarm_1_rule
+
+    breakeven = _one(
+        _row(
+            context={"price_usd": 100.0, "entry_usd": 100.0, "ret_usd_pct": 20.0},
+            fields={"atr": 2.0, "high_20": 104.0},
+        )
+    )
+    assert breakeven.alarm_1 == pytest.approx(100.0)
+    assert "piso entrada" in breakeven.alarm_1_rule
+
+    # Con +30 % la Alerta 1 sube a entrada +10 %. Se prueba el ajuste directo porque
+    # el tope de alarma del 15 % ya deja la alerta por encima de ese piso.
+    from swing.core.briefing import _alarm_1
+    from swing.core.verdict import Levels
+
+    alarm, rule = _alarm_1(
+        Levels(alarm=100.0),
+        {},
+        price=140.0,
+        entry=100.0,
+        ret=35.0,
+        policy=POLICY,
+        review=STRATEGY.review,
+    )
+    assert alarm == pytest.approx(110.0)
+    assert "piso entrada+10%" in rule
+
+
+def test_mapa_de_liquidez_y_ventanas_de_earnings() -> None:
+    rows = [
+        _row(
+            ticker="AAA",
+            context={"price_usd": 100.0, "value_clp": 100_000.0, "earnings_sessions": 4.0},
+            fields={"target_price": 110.0},
+        ),
+        _row(
+            ticker="BBB",
+            context={"price_usd": 100.0, "value_clp": 100_000.0, "earnings_sessions": 12.0},
+            fields={"target_price": 140.0},
+        ),
+    ]
+    panel = {"cash_pct": 18.0, "themes": {}, "clusters": {}}
+    briefing = build(rows, panel=panel, patrimonio_clp=1_000_000.0, policy=POLICY)
+    assert briefing.liquidity_tp_pct == pytest.approx(50.0)
+    # AAA conserva su objetivo de 110; el de BBB (140) se acota al tope del Tipo A (130).
+    assert briefing.liquidity_cash_clp == pytest.approx(240_000.0)
+    assert briefing.liquidity_near_tp_pct == 15.0
+    joined = " | ".join(briefing.alerts)
+    assert "earnings <=5 ses: AAA" in joined
+    assert "earnings <=10 ses: AAA" in joined
+    assert "earnings <=15 ses: AAA, BBB" in joined
+
+
+def test_alerta_de_riesgo_teorico_sobre_2_por_ciento() -> None:
+    row = _row(
+        ticker="AAA",
+        context={"price_usd": 100.0, "value_clp": 500_000.0},
+        fields={"atr": 5.0, "high_20": 105.0},
+    )
+    panel = {"cash_pct": 18.0, "themes": {}, "clusters": {}}
+    briefing = build([row], panel=panel, patrimonio_clp=1_000_000.0, policy=POLICY, review=STRATEGY.review)
+    joined = " | ".join(briefing.alerts)
+    # Alarma en 87.5 (piso 2.5xATR): 500.000 * 12.5 % / 1.000.000 = 6.25 %.
+    assert "AAA: riesgo teorico 6.25 % sobre 2 % del patrimonio" in joined

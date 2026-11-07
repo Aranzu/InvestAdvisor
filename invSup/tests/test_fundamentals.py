@@ -162,6 +162,31 @@ def test_consenso_de_analistas_entra_en_proyecciones() -> None:
     assert compra.projections > venta.projections
 
 
+def test_pb_no_filtra_por_defecto() -> None:
+    # Caso real (AAPL/ANET): P/B altisimo, P/E razonable y ROE alto. El P/B apagado no
+    # rechaza; antes el tope absoluto los dejaba fuera.
+    result = check_fundamentals(_f(price_to_book=46.5), 100.0, FUND)
+    assert not any("price_to_book" in r.detail for r in result.rejections)
+
+
+def test_pb_filtra_si_se_enciende() -> None:
+    config = FUND.model_copy(update={"use_price_to_book": True})
+    result = check_fundamentals(_f(price_to_book=46.5), 100.0, config)
+    assert any("price_to_book" in r.detail for r in result.rejections)
+
+
+def test_valor_ignora_pb_por_defecto() -> None:
+    barata_en_libros = score_fundamentals(_f(price_to_book=1.0), 100.0, FUND)
+    caro_en_libros = score_fundamentals(_f(price_to_book=30.0), 100.0, FUND)
+    assert barata_en_libros.value == caro_en_libros.value
+
+
+def test_pb_fuera_de_cobertura_por_defecto() -> None:
+    score = score_fundamentals(_f(price_to_book=None), 100.0, FUND)
+    assert "price_to_book" not in score.missing
+    assert score.coverage == 1.0
+
+
 def test_rate_axes_suma_los_cuatro_ejes() -> None:
     ratings = rate_axes(score_fundamentals(_f(), 100.0, FUND), FUND.axes)
     assert ratings.as_tuple() == (2, 2, 2, 2)

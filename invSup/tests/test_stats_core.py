@@ -14,7 +14,7 @@ from dataclasses import replace
 import pytest
 
 from swing.core.commodities import Commodity
-from swing.core.market_context import MarketInstrument
+from swing.core.market_context import MarketInstrument, MarketRegime
 from swing.core.stats import (
     PANEL_FIELDS,
     POSITION_FIELDS,
@@ -85,7 +85,10 @@ def test_all_field_keys_no_repite() -> None:
     assert "insider_own" in keys
 
 
-def _report(rows: tuple[PositionStats, ...]) -> StatsReport:
+def _report(
+    rows: tuple[PositionStats, ...],
+    quotes: dict[str, dict[str, object]] | None = None,
+) -> StatsReport:
     return StatsReport(
         account="123456",
         today=TODAY,
@@ -96,6 +99,7 @@ def _report(rows: tuple[PositionStats, ...]) -> StatsReport:
         cash_clp=100_000.0,
         positions_value_clp=900_000.0,
         rows=rows,
+        quotes=quotes or {},
     )
 
 
@@ -115,6 +119,8 @@ def test_render_incluye_secciones_formato_y_cobertura() -> None:
     assert "25.00 %" in text
     assert "8.00 %" in text
     assert "AAA" in text
+    assert "| cobertura |" in text
+    assert f"| AAA | 3/{len(all_field_keys())} |" in text
 
 
 def test_render_sin_posiciones() -> None:
@@ -328,9 +334,26 @@ def test_render_panel_derivado_y_resumen_de_cartera() -> None:
     # El tema sobre el tope se marca; el cluster se suma aparte.
     assert "| IA | 60.00 % **+** | 30.00 % |" in text
     assert "| semiconductores | 25.00 % | 30.00 % |" in text
-    assert "| semis | 25.00 % | 35.00 % |" in text
+    assert "| semis | 25.00 % | 35.00 % | - |" in text
     # Los campos derivados de la fila salen en la tabla del panel.
     assert "+12.50 %" in text
+
+
+def test_render_panel_marca_el_stop_perforado() -> None:
+    row = PositionStats(
+        ticker="MU",
+        context={
+            "entry_usd": 100.0,
+            "stop_rule": 82.0,
+            "stop_dist_pct": -2.5,
+            "risk_patrimonio_pct": -0.5,
+            "stop_perforated": True,
+        },
+        fields={},
+    )
+    text = render_stats(_report((row,)))
+    # El nivel se marca y las dos columnas que saldrian negativas quedan sin dato.
+    assert "| MU | - | - | - | 100.00 | 82.00 (perforado) | - | - |" in text
 
 
 def test_render_resumen_determinista() -> None:
@@ -368,7 +391,8 @@ def test_render_resumen_determinista() -> None:
     assert "semis 30.00 % (tope 35.00 %)" in text
     assert "caja 14.00 % bajo el piso 15 %" in text
     assert (
-        "| AAA | ganancia>25%, bajo SMA200 | 85.00 | 4.00 % | Min 20 ses - 0.5xATR | 1.20 % | 120.00 (max 52S) |"
+        "| AAA | A | ganancia>25%, bajo SMA200 | 85.00 | 4.00 % | Min 20 ses - 0.5xATR | "
+        "1.20 % | 120.00 (max 52S) | - | - |"
     ) in text
 
 
@@ -397,12 +421,66 @@ def test_render_contexto_de_mercado() -> None:
     assert "| S&P 500 (SPY) | 500.00 | - | - | - |" in text
 
 
+def test_render_regimen_de_mercado_del_paso_1() -> None:
+    row = PositionStats(ticker="AAA", context={}, fields={})
+    regime = MarketRegime(
+        level="medio",
+        count=2,
+        signals=("VIX", "SPY<SMA200"),
+        near_threshold=("10Y>SMA200+10% (+9.81 vs 10)",),
+        usdclp=950.25,
+        vix=22.0,
+        spy_vs_sma200_pct=-1.5,
+        tnx_vs_sma200_pct=9.81,
+        dxy_vs_sma200_pct=1.0,
+    )
+    report = replace(
+        _report((row,)),
+        market=(MarketInstrument(symbol="^VIX", label="VIX (volatilidad)", price=22.0),),
+        regime=regime,
+    )
+    text = render_stats(report, show_context=True)
+    assert "### Regimen (Paso 1)" in text
+    assert "- Nivel **medio** (2 senales de estres de 4)." in text
+    assert "Senales cumplidas: VIX, SPY<SMA200." in text
+    assert "A menos de 1 pp del umbral" in text
+    assert "USD/CLP: 950.25" in text
+
+
+def test_render_alertas_sl_tipo_b() -> None:
+    from swing.core.briefing import Briefing, PositionBrief
+
+    brief = PositionBrief(
+        ticker="MU",
+        flags=("ATR%>4",),
+        sl_type="B",
+        alarm_1=92.5,
+        alarm_1_dist_pct=7.5,
+        alarm_1_entry_dist_pct=2.5,
+        alarm_1_rule="piso 2.5xATR",
+        alarm_2=82.0,
+        alarm_2_dist_pct=18.0,
+        alarm_2_entry_dist_pct=13.0,
+        risk_theoretical_pct=1.8,
+    )
+    text = render_stats(replace(_report((PositionStats(ticker="MU", context={}, fields={}),)), briefing=Briefing(positions=(brief,))))
+    assert "### Alertas SL (solo alertas, no ordenes)" in text
+    assert "| MU | B | 92.50 | 7.50 % | 2.50 % | piso 2.5xATR | 82.00 | 18.00 % | 13.00 % | 1.80 % |" in text
+
+
 def test_stats_report_json_round_trip_mercado_y_panel() -> None:
     market = (MarketInstrument(symbol="^VIX", label="VIX (volatilidad)", price=18.5, chg_1m_pct=10.0, sma200=16.0),)
+    regime = MarketRegime(level="bajo", count=0, signals=(), near_threshold=(), usdclp=950.0, vix=18.5)
     panel = {"patrimonio_clp": 1.0, "themes": {"IA": 100.0}, "max_theme_pct": 30.0}
-    report = replace(_report((PositionStats(ticker="AAA", context={}, fields={}),)), market=market, panel=panel)
+    report = replace(
+        _report((PositionStats(ticker="AAA", context={}, fields={}),)),
+        market=market,
+        regime=regime,
+        panel=panel,
+    )
     restored = StatsReport.from_dict(json.loads(json.dumps(report.to_dict())))
     assert restored.market == market
+    assert restored.regime == regime
     assert restored.panel == panel
     assert restored == report
 
@@ -444,3 +522,76 @@ def test_todos_los_campos_tienen_un_rol_valido() -> None:
     specs = [*POSITION_FIELDS, *PANEL_FIELDS, *(spec for _, group in SECTIONS for spec in group)]
     assert specs
     assert {spec.role for spec in specs} <= ROLES
+
+
+def _row(ticker: str = "AAA") -> PositionStats:
+    return PositionStats(ticker=ticker, context={"name": ticker, "price_usd": 10.0}, fields={"pe": 12.5})
+
+
+def test_render_muestra_el_horario_extendido_con_datos() -> None:
+    report = _report(
+        (_row(),),
+        quotes={
+            "AAA": {
+                "price_usd": 10.0,
+                "price_source": "p",
+                "earnings_date": None,
+                "earnings_known": False,
+                "pre_market": {
+                    "price": 100.0,
+                    "change": 1.0,
+                    "change_pct": 0.95,
+                    "volume": 1000,
+                    "time_iso": "2026-10-10T13:12:00Z",
+                    "source": "yahoo",
+                },
+                "after_market": {
+                    "price": 101.0,
+                    "change": -0.5,
+                    "change_pct": -0.25,
+                    "volume": 500,
+                    "time_iso": "2026-10-10T20:00:00Z",
+                    "source": "yahoo",
+                },
+            }
+        },
+    )
+    text = render_stats(report)
+    assert "## Horario extendido (Pre/Post Market)" in text
+    assert "100.00 (+0.95 %)" in text
+    assert "101.00 (-0.25 %)" in text
+    assert "1,000" in text
+    assert "500" in text
+    assert "09:12 ET" in text  # 13:12Z en horario de verano de NY (EDT)
+
+
+def test_render_sin_horario_extendido_no_muestra_la_seccion() -> None:
+    report = _report((_row(),), quotes={"AAA": {"price_usd": 10.0}})
+    assert "Horario extendido" not in render_stats(report)
+
+
+def test_render_horario_extendido_un_solo_lado() -> None:
+    report = _report(
+        (_row(),),
+        quotes={"AAA": {"pre_market": {"price": 9.5, "change_pct": -5.0, "volume": None}}},
+    )
+    text = render_stats(report)
+    assert "## Horario extendido (Pre/Post Market)" in text
+    assert "| AAA | 9.50 (-5.00 %) | - | - | - |" in text
+
+
+def test_stats_report_json_round_trip_con_horario_extendido() -> None:
+    report = _report(
+        (_row(),),
+        quotes={
+            "AAA": {
+                "price_usd": 10.0,
+                "price_source": "p",
+                "earnings_date": None,
+                "earnings_known": False,
+                "pre_market": {"price": 100.0, "change_pct": 1.0, "volume": 5, "time_iso": "2026-10-10T13:00:00Z", "source": "yahoo"},
+            }
+        },
+    )
+    restored = StatsReport.from_dict(json.loads(json.dumps(report.to_dict())))
+    assert restored == report

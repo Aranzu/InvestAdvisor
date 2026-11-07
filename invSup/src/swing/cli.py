@@ -17,6 +17,7 @@ import datetime as dt
 import json
 import shutil
 import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated
@@ -32,6 +33,7 @@ from swing.adapters.data_yahoo import (
     YahooDataProvider,
     provider_from_project,
     sectors_from,
+    to_yahoo_symbol,
 )
 from swing.adapters.finviz import provider_from_project as finviz_provider_from_project
 from swing.adapters.fundamentals import provider_from_project as fundamentals_provider_from_project
@@ -48,7 +50,12 @@ from swing.core.dataquality import (
     check_series,
     sessions_to_earnings,
 )
-from swing.core.discovery import DiscoveredCandidate, rank_candidates, technical_survivors
+from swing.core.discovery import (
+    DiscoveredCandidate,
+    earnings_gate_rejection,
+    rank_candidates,
+    technical_survivors,
+)
 from swing.core.engine import (
     IndicatorFrame,
     MarketSnapshot,
@@ -71,10 +78,13 @@ from swing.core.planner import (
     review_narrative_facts,
 )
 from swing.core.portfolio import PortfolioState
+from swing.core.reasons import Reason
 from swing.core.reconcile import reconcile_positions
 from swing.core.report import PositionReport
+from swing.core.report import group_open as _group_open
 from swing.core.stats import StatsReport
 from swing.core.stats import render_stats as _render_stats
+from swing.core.track import HORIZONS, PickRecord, evaluate, summarize
 from swing.core.verdict import DecisionRecord
 from swing.services.market_data import MARKET_CLOSE_NY
 from swing.services.market_data import broker_lots as _broker_lots
@@ -89,10 +99,13 @@ from swing.services.paths import candidate_path as _candidate_path
 from swing.services.paths import newest_report as _newest_report
 from swing.services.paths import newest_report_or_none as _newest_report_or_none
 from swing.services.paths import output_dir as _output_dir
+from swing.services.paths import picks_dir as _picks_dir
 from swing.services.paths import registry_path as _registry_path
 from swing.services.paths import report_dir as _report_dir
 from swing.services.paths import review_path as _review_path
 from swing.services.paths import stats_paths as _stats_paths
+from swing.services.picks_log import load_picks as _load_picks
+from swing.services.picks_log import save_picks as _save_picks
 from swing.services.registry import append_records as _append_records
 from swing.services.registry import latest_by_ticker as _latest_by_ticker
 from swing.services.registry import load_history as _load_history
@@ -366,7 +379,7 @@ def data_health(
         freshness = check_freshness(now_ny, last_close_ny, strategy.data.min_minutes_after_close)
         try:
             serie = provider.daily_bars(symbol, start=start, end=end)
-        except (CacheError, DataUnavailable) as exc:
+        except (CacheError, DataUnavailable, ValueError) as exc:
             incompletos += 1
             rows.append((symbol, "DATA_GAP", str(exc)))
             continue
@@ -1115,6 +1128,10 @@ def screen(
         Path | None,
         typer.Option("--out", help="Archivo de candidatos. Por defecto state/candidates.json."),
     ] = None,
+    portfolio: Annotated[
+        Path | None,
+        typer.Option("--portfolio", help="Export de XTB para no proponer lo que ya tenes. Por defecto el mas nuevo de posiciones/."),
+    ] = None,
     min_score: Annotated[
         float | None,
         typer.Option("--min-score", help="Score compuesto minimo (0-100). Por defecto strategy.screener."),
@@ -1132,10 +1149,14 @@ def screen(
     `cache/fundamentals/` con TTL) y ordena por **score compuesto** (configurable en
     `fundamentals:` y `screener:` de `strategy.yaml`); deja los mejores en
     `state/candidates.json`. Siempre agrega la tesis de compra de la IA (`BUY/WATCH`)
-    por candidato. Los candidatos quedan en `state/candidates.json`.
+    por candidato. El ranking se escribe antes de la IA y la tesis se anexa despues; la
+    fase de tesis esta acotada por `llm.screen_budget_s` (los que falten quedan sin
+    veredicto en vez de alargar la corrida). Con el export de XTB (``--portfolio`` o el
+    mas nuevo de ``posiciones/``) no propone lo que ya tenes y avisa si un candidato cae
+    en un tema ya sobre ``risk.max_theme_pct``.
     """
     # La tesis de compra de la IA es obligatoria en este comando (ya no hay --llm).
-    _run_screener(config_dir, cache_dir, offline, top, breadth, out, min_score, True, web_search)
+    _run_screener(config_dir, cache_dir, offline, top, breadth, out, min_score, True, web_search, portfolio)
 
 
 @app.command("discover", hidden=True)
@@ -1169,6 +1190,39 @@ def discover(
     _run_screener(config_dir, cache_dir, offline, top, breadth, out, None, False, False)
 
 
+def _held_and_theme_pct(
+    portfolio: Path | None,
+    universe_themes: Mapping[str, str],
+    file_themes: Mapping[str, str],
+) -> tuple[set[str], dict[str, float]]:
+    """Tickers abiertos y peso por tema, desde el export de XTB (best effort).
+
+    Devuelve ``(set(), {})`` si no hay export, no se puede leer o el broker no reporta
+    equity: el screener es util sin cartera y no debe fallar por esto. El tema usa el
+    vocabulario del propio screener (sector GICS del universo) para que candidato y
+    cartera se midan igual; un ticker fuera del universo cae a ``themes.yaml`` y luego a
+    ``sin_tema``. El peso es costo/equity, igual que ``core.portfolio.theme_weights``.
+    """
+    path = portfolio if portfolio is not None else _newest_report_or_none(_report_dir())
+    if path is None or not path.is_file():
+        return set(), {}
+    try:
+        model = load_positions_report(path)
+    except (ReportFormatError, OSError) as exc:
+        typer.secho(f"  aviso: no se pudo leer {path}: {exc}; sin cruce con la cartera", fg=typer.colors.YELLOW)
+        return set(), {}
+    held = {to_yahoo_symbol(lot.ticker) for lot in model.lots}
+    equity = model.cash_balance_clp + model.open_value_clp
+    totals: dict[str, float] = {}
+    for position in _group_open(model.lots):
+        key = to_yahoo_symbol(position.ticker)
+        theme = universe_themes.get(key) or file_themes.get(key) or "sin_tema"
+        totals[theme] = totals.get(theme, 0.0) + position.cost_clp
+    if equity <= 0.0:
+        return held, {}
+    return held, {theme: value / equity * 100.0 for theme, value in totals.items()}
+
+
 def _run_screener(
     config_dir: Path,
     cache_dir: Path | None,
@@ -1179,6 +1233,7 @@ def _run_screener(
     min_score: float | None,
     llm: bool,
     web_search: bool,
+    portfolio: Path | None = None,
 ) -> None:
     """Implementacion compartida del screener por ``screen`` y ``discover``."""
     try:
@@ -1214,18 +1269,42 @@ def _run_screener(
     blackout = strategy.gates.earnings_entry_blackout_sessions
     candidates: list[DiscoveredCandidate] = []
     in_blackout: list[str] = []
+    no_date: list[str] = []
+    held_out: list[str] = []
     earnings: dict[str, dt.date] = {}
     to_earnings: dict[str, int | None] = {}
+    # Cruce con la cartera (best effort): los tickers abiertos no se proponen de nuevo y
+    # los temas ya sobre el tope se avisan. Sin export no hay cruce y el screener sigue.
+    held, theme_pct = _held_and_theme_pct(portfolio, themes.themes, themes_file.themes)
+    if held and strategy.screener.exclude_held:
+        typer.secho(f"cartera: {len(held)} posicion(es) abierta(s); no se proponen de nuevo", fg=typer.colors.BLUE)
+    # La fuente de earnings existe si se consulto al proveedor (no ``--offline``). Con
+    # la fuente viva, una fecha ausente es un hueco y la puerta G6 rechaza como el
+    # motor; sin red no se puede saber y el informe declara ``-``.
+    source_available = not offline
     for candidate in result.candidates:
         if len(candidates) >= limit:
             break
+        if strategy.screener.exclude_held and to_yahoo_symbol(candidate.ticker) in held:
+            held_out.append(candidate.ticker)
+            continue
         earnings.update(_candidate_earnings(provider, [candidate.ticker], offline))
         day = earnings.get(candidate.ticker)
         sessions = sessions_to_earnings(calendar, today, day) if day is not None else None
         to_earnings[candidate.ticker] = sessions
-        if strategy.screener.exclude_earnings_blackout and sessions is not None and sessions <= blackout:
-            in_blackout.append(candidate.ticker)
-            continue
+        if strategy.screener.exclude_earnings_blackout:
+            rejection = earnings_gate_rejection(
+                sessions,
+                blackout=blackout,
+                source_available=source_available,
+                fail_closed=strategy.screener.fail_closed_earnings,
+            )
+            if rejection is not None:
+                if rejection.reason is Reason.EARNINGS_NEAR:
+                    in_blackout.append(candidate.ticker)
+                else:
+                    no_date.append(candidate.ticker)
+                continue
         candidates.append(candidate)
 
     typer.echo("")
@@ -1253,6 +1332,22 @@ def _run_screener(
             f"  fuera por earnings dentro del blackout ({blackout} sesiones): {', '.join(in_blackout)}",
             fg=typer.colors.YELLOW,
         )
+    if no_date:
+        typer.secho(
+            f"  fuera por earnings sin fecha (fuente consultada, fail-closed): {', '.join(no_date)}",
+            fg=typer.colors.YELLOW,
+        )
+    if held_out:
+        typer.secho(f"  fuera por ya estar en cartera: {', '.join(held_out)}", fg=typer.colors.YELLOW)
+    over_cap = {theme: pct for theme, pct in theme_pct.items() if pct > strategy.risk.max_theme_pct}
+    if over_cap and candidates:
+        temas = ", ".join(f"{theme} {pct:.1f} %" for theme, pct in sorted(over_cap.items(), key=lambda kv: -kv[1]))
+        flagged = [c.ticker for c in candidates if c.theme in over_cap]
+        typer.secho(
+            f"  aviso: tema(s) sobre el tope {strategy.risk.max_theme_pct:.0f} %: {temas}"
+            + (f"; candidatos en esos temas: {', '.join(flagged)}" if flagged else ""),
+            fg=typer.colors.YELLOW,
+        )
     near = sorted(c.ticker for c in candidates if (n := to_earnings.get(c.ticker)) is not None and n <= blackout)
     if near:
         typer.secho(
@@ -1264,6 +1359,25 @@ def _run_screener(
         typer.secho(f"  rechazados por fundamentales: {muestra}", fg=typer.colors.YELLOW)
     if missing:
         typer.secho(f"  aviso: {len(missing)} ticker(s) sin velas", fg=typer.colors.YELLOW)
+
+    path = out if out is not None else _candidate_path()
+    # El ranking determinista se escribe ANTES de la IA. La tesis puede tardar o
+    # fallar, y no debe llevarse por delante el trabajo ya hecho: una corrida real
+    # de 10 minutos se perdio porque el archivo se escribia al final del bloque de IA.
+    _write_candidates(path, _candidate_payload(candidates, earnings, to_earnings, {}))
+    typer.echo(f"Candidatos escritos en {path}")
+    if out is None:
+        # Journal forward: se registra lo propuesto con su precio de la sesion para
+        # medirlo despues contra el S&P. Una corrida con --out es exploratoria y no
+        # ensucia el journal.
+        _save_picks(
+            _picks_dir(),
+            today,
+            [
+                PickRecord(date=today, ticker=c.ticker, close=c.close, composite=c.composite, theme=c.theme)
+                for c in candidates
+            ],
+        )
 
     reviews: dict[str, LLMReview] = {}
     if llm and candidates:
@@ -1281,13 +1395,14 @@ def _run_screener(
                 }
                 for c in candidates
             }
-            reviews = _review_candidates(
+            reviews, skipped = _review_candidates(
                 client,
                 candidates,
                 fundamentals,
                 today,
                 technical=technical,
                 macro_context=macro.fundamento if macro is not None else "",
+                budget_s=strategy.llm.screen_budget_s,
             )
             typer.echo("")
             for candidate in candidates:
@@ -1296,10 +1411,31 @@ def _run_screener(
                     typer.echo(
                         f"**{candidate.ticker}** -> {review.verdict.value} ({review.confidence.value}): {review.fundamento}"
                     )
+            if skipped:
+                typer.secho(
+                    f"  aviso: presupuesto de tesis agotado ({strategy.llm.screen_budget_s:.0f}s); "
+                    f"{len(skipped)} candidato(s) sin tesis: {', '.join(skipped)}",
+                    fg=typer.colors.YELLOW,
+                )
             _echo_llm_usage(client)
+            if reviews:
+                # La tesis se anexa sobre el archivo ya escrito, sin volver a calcular el ranking.
+                _write_candidates(path, _candidate_payload(candidates, earnings, to_earnings, reviews))
+                typer.echo(f"Tesis de la IA anexada en {path}")
 
-    path = out if out is not None else _candidate_path()
-    payload = [
+
+def _candidate_payload(
+    candidates: Sequence[DiscoveredCandidate],
+    earnings: Mapping[str, dt.date],
+    to_earnings: Mapping[str, int | None],
+    reviews: Mapping[str, LLMReview],
+) -> list[dict[str, object]]:
+    """Filas de ``candidates.json``. Con ``reviews`` vacio el veredicto queda en ``None``.
+
+    Separar el ranking (determinista) de la tesis (IA) permite escribir el primero en
+    cuanto esta listo y anexar la segunda cuando llega.
+    """
+    return [
         {
             "ticker": c.ticker,
             "theme": c.theme,
@@ -1321,9 +1457,83 @@ def _run_screener(
         }
         for c in candidates
     ]
+
+
+def _write_candidates(path: Path, payload: Sequence[Mapping[str, object]]) -> None:
+    """Escribe ``candidates.json`` en un solo ``write_text`` (el archivo es chico)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    typer.echo(f"Candidatos escritos en {path}")
+
+
+@app.command("track", hidden=True)
+def track(
+    config_dir: Annotated[
+        Path,
+        typer.Option("--config-dir", help="Directorio con strategy, broker, watchlist y themes."),
+    ] = DEFAULT_CONFIG_DIR,
+    cache_dir: Annotated[
+        Path | None,
+        typer.Option("--cache-dir", help="Donde viven las velas cacheadas. Por defecto cache/bars."),
+    ] = None,
+    offline: Annotated[
+        bool,
+        typer.Option("--offline", help="Solo lee cache; no toca la red."),
+    ] = False,
+) -> None:
+    """Mide los candidatos ya propuestos contra el S&P (journal forward).
+
+    Lee `state/picks/` (una foto por corrida de `screen`) y, para los que ya tienen
+    horizonte maduro (21 y 63 sesiones), calcula el retorno y su exceso contra
+    `strategy.regime.index`. **Sin lookahead**: la entrada es la sesion en que se
+    propuso. Sin picks o sin madurar lo dice y no estima nada.
+    """
+    try:
+        strategy, _, _, _ = _load_config(config_dir)
+    except ConfigError as exc:
+        typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    picks = _load_picks(_picks_dir())
+    if not picks:
+        typer.secho("sin picks en state/picks/; corre 'swing screen' primero", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=0)
+
+    provider = provider_from_project(cache_dir, offline=offline)
+    calendar = SessionCalendar.us()
+    today = _last_closed_session(calendar, strategy.data.min_minutes_after_close)
+    benchmark_symbol = strategy.regime.index
+    tickers = sorted({pick.ticker for pick in picks})
+    start = min(pick.date for pick in picks) - dt.timedelta(days=10)
+    series, missing = _collect_series(provider, [*tickers, benchmark_symbol], start, today)
+    benchmark = series.get(benchmark_symbol)
+    stats = summarize(evaluate(picks, series, benchmark, HORIZONS), HORIZONS)
+
+    def signed(value: float | None) -> str:
+        return "-" if value is None else f"{value:+.1f}"
+
+    typer.echo(f"journal: {len(picks)} picks ({picks[0].date} .. {picks[-1].date})")
+    typer.echo("")
+    typer.echo("| horizonte (ses) | maduros | ret medio % | ret mediana % | exceso medio % | bate al S&P % |")
+    typer.echo("|---|---|---|---|---|---|")
+    for horizon in HORIZONS:
+        row = stats[horizon]
+        hit = "-" if row.hit_rate_pct is None else f"{row.hit_rate_pct:.0f}"
+        typer.echo(
+            f"| {row.horizon} | {row.matured} | {signed(row.mean_ret_pct)} | {signed(row.median_ret_pct)} | "
+            f"{signed(row.mean_excess_pct)} | {hit} |"
+        )
+    if benchmark is None:
+        typer.secho(
+            f"  aviso: sin {benchmark_symbol} en cache; el exceso y 'bate al S&P' no se calculan",
+            fg=typer.colors.YELLOW,
+        )
+    if sum(row.matured for row in stats.values()) == 0:
+        typer.secho(
+            "  sin horizontes maduros todavia: hacen falta al menos 21 sesiones desde el primer pick",
+            fg=typer.colors.YELLOW,
+        )
+    if missing:
+        typer.secho(f"  aviso: {len(missing)} ticker(s) sin velas", fg=typer.colors.YELLOW)
 
 
 @app.command("nightly", hidden=True)
@@ -1387,8 +1597,9 @@ def nightly(
     codes: list[int] = []
     lines: list[str] = []
 
+    report_path = portfolio if portfolio is not None else _newest_report_or_none(_report_dir())
     try:
-        _run_screener(config_dir, cache_dir, offline, top, "sp500", None, None, True, web_search)
+        _run_screener(config_dir, cache_dir, offline, top, "sp500", None, None, True, web_search, report_path)
         screen_code = 0
     except typer.Exit as exc:
         screen_code = int(exc.exit_code or 0)
@@ -1396,7 +1607,6 @@ def nightly(
     codes.append(screen_code)
     lines.append(f"- screen: codigo {screen_code} ({len(candidates)} candidatos en {_candidate_path()})")
 
-    report_path = portfolio if portfolio is not None else _newest_report_or_none(_report_dir())
     review_path: Path | None = None
     if report_path is None:
         lines.append("- review: omitido (no hay export de XTB en posiciones/)")

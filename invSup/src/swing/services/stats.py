@@ -28,6 +28,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import fields as dataclass_fields
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
@@ -36,13 +37,13 @@ from swing.adapters.data_yahoo import DataUnavailable, YahooDataProvider
 from swing.adapters.finviz import FinvizProvider, FinvizSnapshot
 from swing.adapters.fundamentals import YahooFundamentalsProvider
 from swing.adapters.tradingeconomics import TeCommodity, TradingEconomicsProvider
-from swing.core.analysis import Analysis, Market, PositionView, Quote, analyze
+from swing.core.analysis import Analysis, ExtMarket, Market, PositionView, Quote, analyze
 from swing.core.briefing import build as build_briefing
 from swing.core.commodities import COMMODITIES, Commodity, CommoditySpec, commodity_driver
 from swing.core.fundamentals import Fundamentals
 from swing.core.indicators import atr, heikin_ashi_state, rsi, sma, smoothed_heikin_ashi
 from swing.core.market import PriceSeries
-from swing.core.market_context import MARKET, MarketInstrument, instrument
+from swing.core.market_context import MARKET, MarketInstrument, MarketRegime, instrument, regime
 from swing.core.models import Cluster, StrategyConfig
 from swing.core.report import PositionReport
 from swing.core.stats import (
@@ -50,6 +51,8 @@ from swing.core.stats import (
     InsiderTrade,
     PositionStats,
     StatsReport,
+    all_field_keys,
+    coverage,
     derive_fields,
     merge_fields,
 )
@@ -130,7 +133,7 @@ def collect_stats(
         rows.append(
             PositionStats(
                 ticker=view.ticker,
-                context=_context(view),
+                context=_context(view, fields=merged),
                 fields=merged,
                 insider_trades=_insider_trades(finviz, view.ticker, market.today),
             )
@@ -138,6 +141,7 @@ def collect_stats(
 
     enriched, invested_clp = _enrich_panel(rows, equity_clp=analysis.equity_clp, cash_clp=analysis.cash_clp, strategy=strategy)
     market_rows = _market_context(bars, market.today, window_days)
+    market_regime = _market_regime(market_rows, strategy)
     panel = _portfolio_panel(
         enriched,
         analysis=analysis,
@@ -145,7 +149,7 @@ def collect_stats(
         strategy=strategy,
     )
 
-    return StatsReport(
+    report = StatsReport(
         account=analysis.account,
         today=analysis.today,
         mode=analysis.mode,
@@ -172,6 +176,7 @@ def collect_stats(
         fundamentals=fundamentals_used,
         commodities=commodity_rows,
         market=market_rows,
+        regime=market_regime,
         panel=panel,
         notes=(
             "RS vs SPY = retorno relativo contra SPY (1M = 21 sesiones, 3M = 63 sesiones, "
@@ -184,11 +189,15 @@ def collect_stats(
                 patrimonio_clp=_as_number(panel.get("patrimonio_clp")),
                 policy=strategy.briefing,
                 review=strategy.review,
+                semis_tickers=_semis_tickers(strategy),
             )
             if strategy.briefing is not None
             else None
         ),
+        generated_at=dt.datetime.utcnow(),
     )
+    report = _enrich_extended_hours(report, bars)
+    return report
 
 
 def _series(
@@ -214,7 +223,9 @@ def _series(
     return series, "repaired" if repaired else ""
 
 
-def _context(view: PositionView) -> dict[str, object]:
+def _context(view: PositionView, *, fields: Mapping[str, object] | None = None) -> dict[str, object]:
+    present, _ = coverage(fields or {})
+    total = len(all_field_keys())
     return {
         "name": view.name,
         "theme": view.theme,
@@ -234,6 +245,7 @@ def _context(view: PositionView) -> dict[str, object]:
         "entry_usd": view.open_price_usd,
         "ret_clp_pct": _ret_pct(view.value_clp, view.cost_clp),
         "ret_usd_pct": _ret_pct(view.price_usd, view.open_price_usd),
+        "coverage_pct": (present / total * 100.0) if total > 0 else None,
     }
 
 
@@ -279,8 +291,35 @@ def _insider_trades(finviz: FinvizProvider, ticker: str, today: dt.date) -> tupl
 
 
 def _market_context(bars: YahooDataProvider, today: dt.date, window_days: int) -> tuple[MarketInstrument, ...]:
-    """Benchmarks del contexto, best effort (un simbolo sin dato sale con ``None``)."""
-    return tuple(instrument(spec, _series(bars, spec.symbol, today, window_days)[0]) for spec in MARKET)
+    """Benchmarks del contexto, best effort (un simbolo sin dato sale con ``None``).
+
+    Cada benchmark puede pedir su propia ventana: ``USDCLP=X`` necesita una corta
+    porque Yahoo publica velas incoherentes en ventanas largas.
+    """
+    return tuple(
+        instrument(spec, _series(bars, spec.symbol, today, spec.window_days or window_days)[0]) for spec in MARKET
+    )
+
+
+def _market_regime(instruments: Sequence[MarketInstrument], strategy: StrategyConfig) -> MarketRegime | None:
+    """Regimen del Paso 1 con los umbrales de ``briefing.regime``; ``None`` sin politica."""
+    policy = strategy.briefing
+    if policy is None:
+        return None
+    cfg = policy.regime
+    return regime(
+        tuple(instruments),
+        vix_max=cfg.vix_max,
+        tnx_above_sma200_pct=cfg.tnx_above_sma200_pct,
+        dxy_above_sma200_pct=cfg.dxy_above_sma200_pct,
+        near_threshold_pp=cfg.near_threshold_pp,
+    )
+
+
+def _semis_tickers(strategy: StrategyConfig) -> tuple[str, ...]:
+    """Tickers curados del cluster de semis (Tipo B de las alertas SL)."""
+    clusters = strategy.risk.clusters
+    return tuple(clusters.semis.tickers) if clusters is not None else ()
 
 
 def _enrich_panel(
@@ -308,11 +347,16 @@ def _enrich_panel(
             context["weight_invested_pct"] = value / invested * 100.0
         entry = _as_number(context.get("entry_usd"))
         price = _as_number(context.get("price_usd"))
+        stop: float | None = None
         if entry is not None and entry > 0.0:
             stop = entry * (1.0 - max_loss / 100.0)
             context["stop_rule"] = stop
             if price is not None and price > 0.0:
                 context["stop_dist_pct"] = (price - stop) / price * 100.0
+                # El stop es un nivel de referencia a la entrada, no una orden viva:
+                # si el precio ya lo perdio, el informe lo marca en vez de mostrar
+                # una distancia y un riesgo negativos.
+                context["stop_perforated"] = price < stop
         if value is not None and price is not None and stop is not None and patrimonio > 0.0:
             context["risk_patrimonio_pct"] = (value * (price - stop) / price) / patrimonio * 100.0
         out.append(replace(row, context=context))
@@ -358,13 +402,15 @@ def _portfolio_panel(
     }
 
 
-def _cluster_panel(cluster: Cluster, rows: Sequence[PositionStats], invested_clp: float) -> dict[str, float | None]:
+def _cluster_panel(cluster: Cluster, rows: Sequence[PositionStats], invested_clp: float) -> dict[str, object]:
     """Peso del cluster sobre el invertido: por ticker y por tema, sin repetir fila.
 
     Los ``tickers`` son la lista curada (incluye a SNDK, que el antiguo filtro por
     nombre de tema ``semicon*`` dejaba afuera); los ``themes`` son la red de arrastre.
+    ``members`` declara que posiciones abiertas componen el cluster.
     """
     pct: float | None = None
+    members: list[str] = []
     if invested_clp > 0.0:
         total = 0.0
         tickers = set(cluster.tickers)
@@ -373,9 +419,10 @@ def _cluster_panel(cluster: Cluster, rows: Sequence[PositionStats], invested_clp
             theme = str(row.context.get("theme") or "")
             if row.ticker not in tickers and theme not in themes:
                 continue
+            members.append(row.ticker)
             total += _as_number(row.context.get("value_clp")) or 0.0
         pct = total / invested_clp * 100.0
-    return {"pct": pct, "max_pct": cluster.max_pct}
+    return {"pct": pct, "max_pct": cluster.max_pct, "members": members}
 
 
 def _commodities(
@@ -685,12 +732,87 @@ def _as_number(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def _epoch_to_iso(epoch: object) -> str | None:
+    """Epoch de Yahoo (segundos; milisegundos en algunos campos) -> ISO8601 UTC."""
+    if isinstance(epoch, bool) or not isinstance(epoch, (int, float)):
+        return None
+    ts = float(epoch)
+    if math.isnan(ts):
+        return None
+    if ts > 1e18:  # la fuente devolvio milisegundos
+        ts = ts / 1000.0
+    try:
+        instant = dt.datetime.fromtimestamp(ts, tz=dt.UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return instant.isoformat().replace("+00:00", "Z")
+
+
+def _ext_from_quote(q: Mapping[str, object], prefix: Literal["preMarket", "postMarket"]) -> ExtMarket | None:
+    """Bloque pre/after de la foto cruda de Yahoo, o ``None`` sin precio.
+
+    El precio es la unica condicion de existencia: sin el, no hay sesion
+    extendida para ese lado (o la fuente no lo trajo) y el bloque se omite.
+    ``changePercent`` ya viene en **puntos porcentuales** (0.95 = +0.95 %), la
+    misma convencion de todo el informe, asi que se usa tal cual. Volúmenes
+    ``<= 0`` son "sin volumen" y quedan ``None``, no en cero.
+    """
+    price = q.get(f"{prefix}Price")
+    if price is None or (isinstance(price, float) and math.isnan(price)) or not isinstance(price, (int, float)):
+        return None
+    change = q.get(f"{prefix}Change")
+    pct = q.get(f"{prefix}ChangePercent")
+    volume = q.get(f"{prefix}Volume")
+    return ExtMarket(
+        price=float(price),
+        change=float(change) if isinstance(change, (int, float)) and not math.isnan(change) else None,
+        change_pct=float(pct) if isinstance(pct, (int, float)) and not math.isnan(pct) else None,
+        volume=(
+            int(volume)
+            if isinstance(volume, (int, float)) and not math.isnan(volume) and volume > 0
+            else None
+        ),
+        time_iso=_epoch_to_iso(q.get(f"{prefix}Time")),
+        source="yahoo",
+    )
+
+
+def _ext_to_dict(ext: ExtMarket | None) -> dict[str, object] | None:
+    """``ExtMarket`` -> JSON-able (``None`` si no hay bloque: la clave se omite)."""
+    if ext is None:
+        return None
+    return {
+        "price": ext.price,
+        "change": ext.change,
+        "change_pct": ext.change_pct,
+        "volume": ext.volume,
+        "time_iso": ext.time_iso,
+        "source": ext.source,
+    }
+
+
+def _ext_from_dict(data: object) -> ExtMarket | None:
+    """JSON-able -> ``ExtMarket``; cualquier forma rara es ``None`` (sin dato)."""
+    if not isinstance(data, Mapping):
+        return None
+    return ExtMarket(
+        price=_as_number(data.get("price")),
+        change=_as_number(data.get("change")),
+        change_pct=_as_number(data.get("change_pct")),
+        volume=_as_int(data.get("volume")),
+        time_iso=str(data.get("time_iso")) if data.get("time_iso") else None,
+        source=str(data.get("source")) if data.get("source") else None,
+    )
+
+
 def _quote_to_dict(quote: Quote) -> dict[str, object]:
     return {
         "price_usd": quote.price_usd,
         "price_source": quote.price_source,
         "earnings_date": quote.earnings_date.isoformat() if quote.earnings_date else None,
         "earnings_known": quote.earnings_known,
+        "pre_market": _ext_to_dict(quote.pre_market),
+        "after_market": _ext_to_dict(quote.after_market),
     }
 
 
@@ -701,7 +823,49 @@ def _quote_from_dict(data: Mapping[str, object]) -> Quote:
         price_source=str(data.get("price_source") or ""),
         earnings_date=dt.date.fromisoformat(str(raw)) if raw else None,
         earnings_known=bool(data.get("earnings_known")),
+        pre_market=_ext_from_dict(data.get("pre_market")),
+        after_market=_ext_from_dict(data.get("after_market")),
     )
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and not math.isnan(value):
+        return int(value)
+    return None
+
+
+def _enrich_extended_hours(report: StatsReport, bars: YahooDataProvider) -> StatsReport:
+    """Agrega pre/after market a ``report.quotes`` para los tickers del informe.
+
+    Best effort de verdad: sin foto de la fuente (offline, fallo de red, mercado
+    sin sesion extendida) el informe queda **igual**, sin claves nuevas. Lo que
+    si se agrega va al dict de ``quotes`` del ticker, que es lo que el render y
+    el JSON leen; la foto ya guardada (precio, earnings) no se toca.
+    """
+    quotes: dict[str, Mapping[str, object]] | None = None
+    for row in report.rows:
+        snapshot = bars.quote_snapshot(row.ticker)
+        if not snapshot:
+            continue
+        pre = _ext_from_quote(snapshot, "preMarket")
+        post = _ext_from_quote(snapshot, "postMarket")
+        if pre is None and post is None:
+            continue
+        if quotes is None:
+            quotes = {ticker: dict(value) for ticker, value in report.quotes.items()}
+        entry = dict(quotes.get(row.ticker) or {})
+        if pre is not None:
+            entry["pre_market"] = _ext_to_dict(pre)
+        if post is not None:
+            entry["after_market"] = _ext_to_dict(post)
+        quotes[row.ticker] = entry
+    if quotes is None:
+        return report
+    return replace(report, quotes=quotes)
 
 
 def save_report(report: StatsReport, path: Path) -> None:

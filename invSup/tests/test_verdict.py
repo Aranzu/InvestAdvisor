@@ -2,12 +2,13 @@
 
 Fija las garantias que reemplazan la aritmetica manual del prompt: los niveles de
 revision y alarma con sus clamps, el estado del objetivo, los disparadores T, los
-motivos M y los ejes E1-E4 con su mapeo a accion. Sin politica (``review`` ausente)
+motivos V y los ejes E1-E4 con su mapeo a accion. Sin politica (``review`` ausente)
 todo sale vacio: ningun umbral vive en el codigo.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 from swing.adapters.config_loader import load_strategy
@@ -97,10 +98,12 @@ def test_zona_tactica_exige_rr_minimo() -> None:
     assert con_techo.tactical_rr is not None and con_techo.tactical_rr >= 1.5
 
 
-def test_piso_de_catastrofe_solo_con_peso_alto_o_earnings_cerca() -> None:
+def test_piso_de_catastrofe_es_18_20_por_ciento_bajo_el_precio() -> None:
+    # Sin earnings cerca se usa el borde cercano del rango (18 %).
     sin = compute_levels({"atr": 3.0, "sma50": 97.0, "high_20": 104.0}, price=100.0, policy=REVIEW)
-    assert sin.catastrophe_floor is None
-    # Con earnings cerca se admite el borde lejano del rango (20 %).
+    assert sin.catastrophe_floor == 82.0
+    assert sin.catastrophe_distance_pct == 18.0
+    # Con earnings cerca se usa el borde lejano (20 %) para dar aire al gap.
     earnings = compute_levels(
         {"atr": 3.0, "sma50": 97.0, "high_20": 104.0},
         price=100.0,
@@ -108,15 +111,18 @@ def test_piso_de_catastrofe_solo_con_peso_alto_o_earnings_cerca() -> None:
         policy=REVIEW,
     )
     assert earnings.catastrophe_floor == 80.0
-    # Por peso sobre el tope, sin earnings, se usa el borde cercano (15 %).
-    alto = compute_levels(
-        {"atr": 3.0, "sma50": 97.0, "high_20": 104.0},
-        price=100.0,
-        weight_invested_pct=20.0,
-        position_max_pct=12.0,
-        policy=REVIEW,
-    )
-    assert alto.catastrophe_floor == 85.0
+    assert earnings.catastrophe_distance_pct == 20.0
+
+
+def test_catastrofe_no_supera_el_25_por_ciento_bajo_la_entrada() -> None:
+    # Precio 100, entrada 110: el 18 % bajo el precio (82) queda 25.45 % bajo la
+    # entrada, asi que manda el piso de la entrada (110 * 0.75 = 82.5).
+    levels = compute_levels({}, price=100.0, entry_usd=110.0, policy=REVIEW)
+    assert levels.catastrophe_floor == 82.5
+    assert levels.catastrophe_entry_distance_pct == 25.0
+    # Entrada 90: el piso de entrada (67.5) no aplica y queda el 18 % bajo el precio.
+    lejos = compute_levels({}, price=100.0, entry_usd=90.0, policy=REVIEW)
+    assert lejos.catastrophe_floor == 82.0
 
 
 def test_subir_stop_solo_al_alcanzar_el_multiplo_de_r() -> None:
@@ -138,13 +144,13 @@ def test_disparador_t6_por_balance_debil() -> None:
     assert detect_triggers({"debt_to_equity": 1.0, "current_ratio": 2.0}, policy=REVIEW) == ()
 
 
-def test_motivo_m2_objetivo_alcanzado_sin_momentum() -> None:
+def test_motivo_v2_objetivo_alcanzado_sin_momentum() -> None:
     levels = _levels(target_price=102.0, analyst_count=12.0)
     motives = find_motives(triggers=(), levels=levels, fields={}, momentum=False, policy=REVIEW)
-    assert [motive.code for motive in motives] == ["M2"]
+    assert [motive.code for motive in motives] == ["V2"]
 
 
-def test_motivo_m3_necesita_ruptura_y_fundamentales_debiles() -> None:
+def test_motivo_v3_necesita_ruptura_y_fundamentales_debiles() -> None:
     levels = _levels()
     fields = {
         "price_vs_sma200_pct": -5.0,
@@ -153,7 +159,7 @@ def test_motivo_m3_necesita_ruptura_y_fundamentales_debiles() -> None:
         "earnings_growth": -2.0,
     }
     motives = find_motives(triggers=(), levels=levels, fields=fields, momentum=False, policy=REVIEW)
-    assert "M3" in [motive.code for motive in motives]
+    assert "V3" in [motive.code for motive in motives]
     # Sin los fundamentales debiles no alcanza: la ruptura sola no es motivo.
     solo_tecnico = find_motives(
         triggers=(),
@@ -162,10 +168,10 @@ def test_motivo_m3_necesita_ruptura_y_fundamentales_debiles() -> None:
         momentum=False,
         policy=REVIEW,
     )
-    assert "M3" not in [motive.code for motive in solo_tecnico]
+    assert "V3" not in [motive.code for motive in solo_tecnico]
 
 
-def test_motivo_m5_pico_de_ciclo_con_crecimiento_en_baja() -> None:
+def test_motivo_v5_pico_de_ciclo_con_crecimiento_en_baja() -> None:
     levels = _levels()
     motives = find_motives(
         triggers=(),
@@ -174,7 +180,7 @@ def test_motivo_m5_pico_de_ciclo_con_crecimiento_en_baja() -> None:
         momentum=True,
         policy=REVIEW,
     )
-    assert "M5" in [motive.code for motive in motives]
+    assert "V5" in [motive.code for motive in motives]
     # Margen alto con crecimiento sano no es pico de ciclo.
     sano = find_motives(
         triggers=(),
@@ -183,7 +189,67 @@ def test_motivo_m5_pico_de_ciclo_con_crecimiento_en_baja() -> None:
         momentum=True,
         policy=REVIEW,
     )
-    assert "M5" not in [motive.code for motive in sano]
+    assert "V5" not in [motive.code for motive in sano]
+
+
+def test_motivo_v7_evento_binario_con_ganancia() -> None:
+    levels = _levels()
+    motives = find_motives(
+        triggers=(),
+        levels=levels,
+        fields={"rs_1m_pct": -2.0},
+        momentum=False,
+        policy=REVIEW,
+        ret_usd_pct=20.0,
+        sessions_open=12.0,
+        earnings_sessions=3.0,
+    )
+    assert "V7" in [motive.code for motive in motives]
+    # Sin ganancia suficiente o con la posicion demasiado nueva no aplica.
+    sin_ganancia = find_motives(
+        triggers=(),
+        levels=levels,
+        fields={"rs_1m_pct": -2.0},
+        momentum=False,
+        policy=REVIEW,
+        ret_usd_pct=10.0,
+        sessions_open=12.0,
+        earnings_sessions=3.0,
+    )
+    assert "V7" not in [motive.code for motive in sin_ganancia]
+    nueva = find_motives(
+        triggers=(),
+        levels=levels,
+        fields={"rs_1m_pct": -2.0},
+        momentum=False,
+        policy=REVIEW,
+        ret_usd_pct=20.0,
+        sessions_open=4.0,
+        earnings_sessions=3.0,
+    )
+    assert "V7" not in [motive.code for motive in nueva]
+
+
+def test_motivo_v8_desde_el_inicio_de_la_liquidacion() -> None:
+    levels = _levels()
+    antes = find_motives(
+        triggers=(),
+        levels=levels,
+        fields={},
+        momentum=False,
+        policy=REVIEW,
+        today=dt.date(2027, 1, 14),
+    )
+    assert "V8" not in [motive.code for motive in antes]
+    desde = find_motives(
+        triggers=(),
+        levels=levels,
+        fields={},
+        momentum=False,
+        policy=REVIEW,
+        today=dt.date(2027, 1, 15),
+    )
+    assert "V8" in [motive.code for motive in desde]
 
 
 def test_ejes_e1_e4_y_accion() -> None:
@@ -276,7 +342,7 @@ def test_decision_record_ida_y_vuelta() -> None:
         review_level=95.5,
         alarm_level=92.5,
         objective=130.0,
-        motive="M2",
+        motive="V2",
         trigger="T6",
     )
     again = DecisionRecord.from_dict(record.to_dict())

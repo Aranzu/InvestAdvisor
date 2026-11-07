@@ -366,3 +366,35 @@ def test_descarga_real_de_amd(tmp_path: Path) -> None:
     assert not serie.is_empty
     assert serie.last_date == SessionCalendar.us().last_session_on_or_before(hoy)
     assert p.earnings("AMD").source.startswith("yfinance")
+
+
+# --------------------------------------------------------------------------- #
+# Foto de cotizacion (horario extendido)
+# --------------------------------------------------------------------------- #
+
+
+def test_quote_snapshot_traduce_el_symbol_y_pide_la_foto(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def fetcher(symbol: str) -> dict[str, object]:
+        seen.append(symbol)
+        return {"preMarketPrice": 1.0, "postMarketPrice": 2.0}
+
+    p = YahooDataProvider(BarsCache(tmp_path / "bars"), quote_fetcher=fetcher)
+    assert p.quote_snapshot("AMD.US") == {"preMarketPrice": 1.0, "postMarketPrice": 2.0}
+    assert seen == ["AMD"]  # el symbol del broker se traduce antes de consultar
+
+
+def test_quote_snapshot_sin_fuente_no_levanta(tmp_path: Path) -> None:
+    def boom(symbol: str) -> dict[str, object]:
+        raise RuntimeError("sin red")
+
+    p = YahooDataProvider(BarsCache(tmp_path / "bars"), quote_fetcher=boom)
+    assert p.quote_snapshot("AMD") is None
+
+
+def test_provider_offline_no_consulta_la_foto_de_cotizacion(tmp_path: Path) -> None:
+    from swing.adapters.data_yahoo import provider_from_project
+
+    p = provider_from_project(tmp_path / "bars", offline=True)
+    assert p.quote_snapshot("AMD") is None

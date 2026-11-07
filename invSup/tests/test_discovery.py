@@ -13,11 +13,12 @@ from pathlib import Path
 
 from swing import cli
 from swing.adapters.config_loader import load_strategy
-from swing.core.discovery import rank_candidates
+from swing.core.discovery import DiscoveredCandidate, earnings_gate_rejection, rank_candidates
 from swing.core.engine import IndicatorFrame
 from swing.core.fundamentals import Fundamentals
 from swing.core.market import Bar, PriceSeries
 from swing.core.models import ThemesConfig, WatchlistConfig
+from swing.core.reasons import Reason
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 STRATEGY = load_strategy(CONFIG_DIR / "strategy.yaml")
@@ -261,3 +262,214 @@ def test_una_clase_de_accion_por_empresa() -> None:
     funds = {t: _fund(t, target_mean=_close(frames[t]) * 1.2, business_summary=resumen) for t in frames}
     result = rank_candidates(frames, themes, STRATEGY, top=10, fundamentals=funds)
     assert len(result.candidates) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Puerta G6 del screener: mismo juicio que el motor (fail-closed)
+# --------------------------------------------------------------------------- #
+
+
+def test_puerta_g6_rechaza_earnings_dentro_del_blackout() -> None:
+    rejection = earnings_gate_rejection(5, blackout=20, source_available=True, fail_closed=True)
+    assert rejection is not None
+    assert rejection.reason is Reason.EARNINGS_NEAR
+
+
+def test_puerta_g6_fail_closed_sin_fecha_con_fuente_viva() -> None:
+    rejection = earnings_gate_rejection(None, blackout=20, source_available=True, fail_closed=True)
+    assert rejection is not None
+    assert rejection.reason is Reason.INDICATOR_NOT_READY
+
+
+def test_puerta_g6_sin_fecha_y_fuente_apagada_no_filtra() -> None:
+    # ``--offline``: no se consulto la fuente, no se puede saber; no se rechaza a ciegas.
+    assert earnings_gate_rejection(None, blackout=20, source_available=False, fail_closed=True) is None
+
+
+def test_puerta_g6_sin_fecha_con_fail_closed_apagado_no_filtra() -> None:
+    assert earnings_gate_rejection(None, blackout=20, source_available=True, fail_closed=False) is None
+
+
+def test_puerta_g6_fecha_lejana_no_filtra() -> None:
+    assert earnings_gate_rejection(21, blackout=20, source_available=True, fail_closed=True) is None
+
+
+# --------------------------------------------------------------------------- #
+# Persistencia del screener: el ranking se escribe antes que la tesis de la IA
+# --------------------------------------------------------------------------- #
+
+
+def test_candidate_payload_escribe_ranking_y_anexa_veredicto() -> None:
+    from swing.core.llm import Confidence, LLMReview, ReviewContext, ThesisStatus, Verdict
+
+    candidate = DiscoveredCandidate(
+        ticker="GOOD",
+        theme="tema",
+        close=100.0,
+        momentum=1.3,
+        rs_percentile=90.0,
+        adv_usd=5_000_000.0,
+        atr_pct=2.0,
+        composite=70.0,
+        fundamental=60.0,
+        value=55.0,
+        quality=60.0,
+        growth=65.0,
+        projections=70.0,
+        coverage=1.0,
+        target_upside=0.2,
+    )
+    earnings = {"GOOD": dt.date(2026, 11, 1)}
+    to_earnings: dict[str, int | None] = {"GOOD": 12}
+
+    base = cli._candidate_payload([candidate], earnings, to_earnings, {})
+    assert base[0]["ticker"] == "GOOD"
+    assert base[0]["earnings_sessions"] == 12
+    assert base[0]["composite"] == 70.0
+    # Sin tesis todavia, el veredicto queda declarado en None (no se inventa).
+    assert base[0]["verdict"] is None
+
+    review = LLMReview(
+        ticker="GOOD",
+        context=ReviewContext.SCREEN_REVIEW,
+        thesis_status=ThesisStatus.INTACT,
+        veto=False,
+        veto_reason=None,
+        key_facts=(),
+        search_conclusive=False,
+        confidence=Confidence.HIGH,
+        requested_info=(),
+        accion="Comprar",
+        verdict=Verdict.BUY,
+        fundamento="crecimiento solido",
+    )
+    enriched = cli._candidate_payload([candidate], earnings, to_earnings, {"GOOD": review})
+    assert enriched[0]["verdict"] == "BUY"
+    assert enriched[0]["fundamento"] == "crecimiento solido"
+
+
+def test_presupuesto_de_tesis_corta_y_deja_los_restantes_sin_veredicto(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from swing.core.llm import Confidence, LLMReview, ReviewContext, ThesisStatus
+    from swing.services import research
+
+    seen: list[str] = []
+
+    class _Spy:
+        def review(self, ticker, context, facts, today):  # type: ignore[no-untyped-def]
+            seen.append(ticker)
+            return LLMReview(
+                ticker=ticker,
+                context=ReviewContext.SCREEN_REVIEW,
+                thesis_status=ThesisStatus.INTACT,
+                veto=False,
+                veto_reason=None,
+                key_facts=(),
+                search_conclusive=False,
+                confidence=Confidence.LOW,
+                requested_info=(),
+            )
+
+    # Reloj falso: cada lectura avanza 10 s. ``deadline = 10 + 15 = 25``; el primer
+    # chequeo (20 < 25) deja pasar al primer candidato y el segundo (30 >= 25) corta.
+    clock = {"n": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["n"] += 10.0
+        return clock["n"]
+
+    monkeypatch.setattr(research, "time", SimpleNamespace(monotonic=fake_monotonic))
+    frames, _ = _two_in_trend()
+    candidates = list(rank_candidates(frames, {}, STRATEGY, top=10).candidates)
+    assert len(candidates) == 2
+    reviews, skipped = research.review_candidates(_Spy(), candidates, {}, START, budget_s=15.0)
+    assert list(reviews) == [candidates[0].ticker]
+    assert skipped == (candidates[1].ticker,)
+    assert seen == [candidates[0].ticker]
+
+
+# --------------------------------------------------------------------------- #
+# Cruce con la cartera: no proponer lo que ya se tiene y avisar temas sobre el tope
+# --------------------------------------------------------------------------- #
+
+
+def _report(lots: tuple) -> object:
+    from swing.core.report import PositionReport
+
+    open_value = sum(lot.value_clp for lot in lots)
+    profit = sum(lot.profit_clp for lot in lots)
+    return PositionReport(
+        account="X",
+        generated_at=dt.datetime(2026, 10, 15),
+        closed=(),
+        cash=(),
+        lots=lots,
+        open_value_clp=open_value,
+        open_profit_clp=profit,
+        realized_clp=0.0,
+        cash_balance_clp=400_000.0,
+    )
+
+
+def test_held_y_peso_por_tema_desde_el_export(monkeypatch, tmp_path: Path) -> None:
+    import pytest
+
+    from swing.core.report import OpenLot
+
+    lots = (
+        OpenLot(
+            ticker="AMD.US",
+            name="AMD",
+            position_id="1",
+            volume=10.0,
+            value_clp=1_000_000.0,
+            price_usd=100.0,
+            open_price_usd=90.0,
+            open_date=dt.date(2026, 1, 1),
+            stop_usd=80.0,
+            profit_clp=100_000.0,
+        ),
+        OpenLot(
+            ticker="NVDA",
+            name="NVDA",
+            position_id="2",
+            volume=5.0,
+            value_clp=600_000.0,
+            price_usd=120.0,
+            open_price_usd=100.0,
+            open_date=dt.date(2026, 1, 1),
+            stop_usd=90.0,
+            profit_clp=100_000.0,
+        ),
+    )
+    path = tmp_path / "report.xlsx"
+    path.write_bytes(b"x")
+    monkeypatch.setattr(cli, "load_positions_report", lambda _p: _report(lots))
+    themes = {"AMD": "information_technology", "NVDA": "information_technology"}
+    # El sufijo ``.US`` del bróker no debe separar el ticker de la posicion.
+    held, pct = cli._held_and_theme_pct(path, themes, {})
+    assert held == {"AMD", "NVDA"}
+    # equity = 1.6M + 0.4M = 2.0M; costo = (1.0M-0.1M) + (0.6M-0.1M) = 1.4M -> 70 %.
+    assert pct["information_technology"] == pytest.approx(70.0)
+
+
+def test_sin_export_no_hay_cruce(tmp_path: Path) -> None:
+    held, pct = cli._held_and_theme_pct(tmp_path / "no-existe.xlsx", {}, {})
+    assert held == set()
+    assert pct == {}
+
+
+def test_export_ilegible_no_tumba_el_screener(monkeypatch, tmp_path: Path) -> None:
+    from swing.adapters.xtb_report import ReportFormatError
+
+    path = tmp_path / "report.xlsx"
+    path.write_bytes(b"x")
+
+    def _boom(_path: Path) -> object:
+        raise ReportFormatError("hoja faltante")
+
+    monkeypatch.setattr(cli, "load_positions_report", _boom)
+    held, pct = cli._held_and_theme_pct(path, {}, {})
+    assert held == set()
+    assert pct == {}

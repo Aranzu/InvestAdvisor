@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -82,6 +82,24 @@ FrameFetcher = Callable[[FetchRequest], pd.DataFrame]
 
 #: Devuelve la tabla de fechas de reporte, o ``None`` si la fuente no responde.
 EarningsFetcher = Callable[[str, int], pd.DataFrame | None]
+
+#: Devuelve la foto de cotizacion cruda de un symbol (``info`` de Yahoo), o ``None``.
+QuoteFetcher = Callable[[str], Mapping[str, object] | None]
+
+#: Campos de horario extendido que pide el informe. Yahoo los publica en ``info``;
+#: lo que no venga queda ``None`` (best effort, sin inventar).
+_EXT_QUOTE_FIELDS: tuple[str, ...] = (
+    "preMarketPrice",
+    "preMarketChange",
+    "preMarketChangePercent",
+    "preMarketVolume",
+    "preMarketTime",
+    "postMarketPrice",
+    "postMarketChange",
+    "postMarketChangePercent",
+    "postMarketVolume",
+    "postMarketTime",
+)
 
 
 def to_yahoo_symbol(ticker: str) -> str:
@@ -151,6 +169,24 @@ def _yfinance_earnings(symbol: str, limit: int) -> pd.DataFrame | None:
     except Exception:
         return None
     return frame if isinstance(frame, pd.DataFrame) else None
+
+
+def _yfinance_quote_snapshot(symbol: str) -> dict[str, object] | None:
+    """Foto de cotizacion de Yahoo (incluye horario extendido), best effort.
+
+    Devuelve solo los campos que interesan al informe, con sus claves originales
+    (``preMarketPrice``, ...); los que falten quedan ``None``. ``None`` si la
+    fuente no responde: es "sin dato", no una excepcion abierta.
+    """
+    import yfinance as yf
+
+    try:
+        info = yf.Ticker(symbol).get_info()
+    except Exception:
+        return None
+    if not isinstance(info, Mapping):
+        return None
+    return {key: info.get(key) for key in _EXT_QUOTE_FIELDS}
 
 
 def _ohlc_incoherent(open_: float, high: float, low: float, close: float) -> bool:
@@ -244,10 +280,12 @@ class YahooDataProvider:
         *,
         bars_fetcher: FrameFetcher = _yfinance_bars,
         earnings_fetcher: EarningsFetcher = _yfinance_earnings,
+        quote_fetcher: QuoteFetcher = _yfinance_quote_snapshot,
     ) -> None:
         self.cache = cache
         self._bars_fetcher = bars_fetcher
         self._earnings_fetcher = earnings_fetcher
+        self._quote_fetcher = quote_fetcher
 
     def daily_bars(self, ticker: str, *, start: dt.date, end: dt.date) -> PriceSeries:
         """Velas de ``[start, end]``, descargando solo lo que falte."""
@@ -270,6 +308,20 @@ class YahooDataProvider:
         if not upcoming:
             return EarningsInfo.unknown("yfinance:get_earnings_dates")
         return EarningsInfo(date=min(upcoming), source="yfinance:get_earnings_dates", confirmed=True)
+
+    def quote_snapshot(self, ticker: str) -> Mapping[str, object] | None:
+        """Foto de cotizacion de Yahoo (precio y horario extendido), best effort.
+
+        No toca la cache de velas: es una consulta al quote del dia. Un fallo de
+        red o de la fuente devuelve ``None`` (sin dato) y nunca levanta, porque
+        el horario extendido es informativo y su ausencia no puede tumbar el
+        informe.
+        """
+        try:
+            data = self._quote_fetcher(to_yahoo_symbol(ticker))
+        except Exception:
+            return None
+        return data if isinstance(data, Mapping) else None
 
     def fx_usdclp(self, on: dt.date) -> float | None:
         """CLP por USD del dia pedido; si no hay vela exacta, la ultima anterior."""
@@ -327,15 +379,24 @@ class YahooDataProvider:
         return frame_to_series(request.symbol, self._raw_frame(request))
 
 
+def _offline_quotes(symbol: str) -> Mapping[str, object] | None:
+    """Fetch de cotizacion que nunca toca la red (modo offline): sin dato."""
+    return None
+
+
 def provider_from_project(cache_dir: Path | None = None, *, offline: bool = False) -> YahooDataProvider:
     """Provider con la cache en ``cache/bars`` al lado del proyecto.
 
     Con ``offline=True`` no se toca la red: lo que falte en cache se declara
-    ``DataUnavailable`` en vez de descargarse.
+    ``DataUnavailable`` en vez de descargarse, y la foto de cotizacion (horario
+    extendido) devuelve ``None``.
     """
     root = cache_dir if cache_dir is not None else Path(__file__).resolve().parents[3] / "cache" / "bars"
-    fetcher = _offline_bars if offline else _yfinance_bars
-    return YahooDataProvider(BarsCache(root), bars_fetcher=fetcher)
+    if offline:
+        return YahooDataProvider(
+            BarsCache(root), bars_fetcher=_offline_bars, quote_fetcher=_offline_quotes
+        )
+    return YahooDataProvider(BarsCache(root), bars_fetcher=_yfinance_bars)
 
 
 def symbols_from(tickers: Sequence[str]) -> tuple[str, ...]:

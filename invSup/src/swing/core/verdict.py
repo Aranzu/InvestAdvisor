@@ -13,6 +13,7 @@ resultado lo declara como no evaluable en vez de inventar un disparador.
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -73,7 +74,11 @@ class Levels:
     objective_valid: bool = False
     """``True`` si N analistas alcanza el minimo: el objetivo es de referencia."""
     catastrophe_floor: float | None = None
-    """Piso de catastrofe (15-20 % bajo el precio): la unica orden real admitida."""
+    """Piso de catastrofe (18-20 % bajo el precio), acotado a 25 % bajo la entrada."""
+    catastrophe_distance_pct: float | None = None
+    """Distancia de la catastrofe al precio actual (positiva = bajo el precio)."""
+    catastrophe_entry_distance_pct: float | None = None
+    """Distancia de la catastrofe a la entrada (positiva = bajo la entrada)."""
     stop_raise_due: bool = False
     """``True`` si el avance alcanzo ``level_raise_r``: corresponde subir el stop a breakeven."""
 
@@ -87,6 +92,7 @@ def compute_levels(
     weight_invested_pct: float | None = None,
     position_max_pct: float | None = None,
     earnings_sessions: float | None = None,
+    entry_usd: float | None = None,
     progress_r: float | None = None,
     policy: ReviewConfig | None,
 ) -> Levels:
@@ -147,16 +153,25 @@ def compute_levels(
         zero=policy.axes.upside_zero_pct,
     )
 
-    catastrophe: float | None = None
-    high_weight = (
-        weight_invested_pct is not None and position_max_pct is not None and weight_invested_pct > position_max_pct
-    )
+    # v6: la catastrofe es una alerta de 18-20 % bajo el precio para las posiciones
+    # Tipo B. Con earnings cerca se usa el borde lejano (mas aire para el gap); en el
+    # resto, el borde cercano. Nunca puede quedar a mas de 25 % bajo la entrada.
     near_earnings = earnings_sessions is not None and earnings_sessions <= policy.axes.earnings_minus1_sessions
-    if near_earnings:
-        # Con earnings encima se admite el borde lejano del rango (mas aire para el evento).
-        catastrophe = price * (1.0 - cfg.catastrophe_max_pct / 100.0)
-    elif high_weight:
-        catastrophe = price * (1.0 - cfg.catastrophe_min_pct / 100.0)
+    catastrophe_pct = cfg.catastrophe_max_pct if near_earnings else cfg.catastrophe_min_pct
+    catastrophe: float | None = price * (1.0 - catastrophe_pct / 100.0)
+    if entry_usd is not None and entry_usd > 0.0:
+        entry_floor = entry_usd * (1.0 - cfg.catastrophe_entry_max_loss_pct / 100.0)
+        if catastrophe is not None and catastrophe < entry_floor:
+            catastrophe = entry_floor
+    if catastrophe is not None and catastrophe >= price:
+        catastrophe = None
+
+    catastrophe_distance = (price - catastrophe) / price * 100.0 if catastrophe is not None else None
+    catastrophe_entry_distance = (
+        (entry_usd - catastrophe) / entry_usd * 100.0
+        if catastrophe is not None and entry_usd is not None and entry_usd > 0.0
+        else None
+    )
 
     stop_raise_due = progress_r is not None and progress_r >= cfg.level_raise_r
 
@@ -174,6 +189,8 @@ def compute_levels(
         objective_state=objective_state,
         objective_valid=objective_valid,
         catastrophe_floor=catastrophe,
+        catastrophe_distance_pct=catastrophe_distance,
+        catastrophe_entry_distance_pct=catastrophe_entry_distance,
         stop_raise_due=stop_raise_due,
     )
 
@@ -266,7 +283,7 @@ def detect_triggers(fields: Mapping[str, object], *, policy: ReviewConfig | None
 
 
 # --------------------------------------------------------------------------- #
-# Motivos M1-M7 (los que se derivan del stats y del veredicto de la IA)
+# Motivos V1-V8 (los que se derivan del stats y del veredicto de la IA)
 # --------------------------------------------------------------------------- #
 
 
@@ -274,6 +291,11 @@ def detect_triggers(fields: Mapping[str, object], *, policy: ReviewConfig | None
 class Motive:
     code: str
     detail: str
+
+
+#: Motivos que exigen una fuente externa fechada (evento regulatorio, legal o de
+#: gobernanza). No se inventan con el ``stats``; los cubre la IA con la web.
+MOTIVES_EXTERNAL: tuple[str, ...] = ("V6",)
 
 
 def find_motives(
@@ -284,30 +306,36 @@ def find_motives(
     momentum: bool,
     policy: ReviewConfig | None,
     thesis_weak: bool = False,
+    ret_usd_pct: float | None = None,
+    sessions_open: float | None = None,
+    earnings_sessions: float | None = None,
+    today: dt.date | None = None,
 ) -> tuple[Motive, ...]:
-    """Motivos de venta admitidos, derivados de hechos del ``stats``.
+    """Motivos de venta admitidos de v6, derivados de hechos del ``stats``.
 
-    M1 tesis deteriorada, M2 objetivo alcanzado sin momentum, M3 ruptura tecnica CON
-    fundamentales debiles, M4 valorizacion exigente sin respaldo, M5 pico de ciclo
-    (margen alto con crecimiento en baja). M6/M7 (evento binario, riesgo regulatorio)
-    necesitan fuente externa y no se inventan aqui.
+    V1 tesis deteriorada, V2 objetivo alcanzado, V3 ruptura tecnica CON
+    fundamentales debiles, V4 valorizacion exigente sin respaldo, V5 pico de ciclo,
+    V7 evento binario con ganancia (recorte tactico) y V8 horizonte (liquidacion
+    escalonada desde el 15-ene-2027). V6 (evento negativo fechado) necesita fuente
+    externa y se declara pendiente, no se inventa aqui.
     """
     if policy is None:
         return ()
     out: list[Motive] = []
     if triggers or thesis_weak:
         detalle = "; ".join(f"{t.code} {t.detail}" for t in triggers) or "tesis debilitada por la IA"
-        out.append(Motive("M1", f"tesis deteriorada: {detalle}"))
+        out.append(Motive("V1", f"tesis deteriorada: {detalle}"))
 
-    if levels.objective_valid and levels.objective_state in {"alcanzado", "superado"} and not momentum:
-        out.append(Motive("M2", f"objetivo {levels.objective_state} sin momentum"))
+    if levels.objective_valid and levels.objective_state in {"alcanzado", "superado"}:
+        momentum_txt = "con momentum" if momentum else "sin momentum"
+        out.append(Motive("V2", f"objetivo {levels.objective_state} ({momentum_txt}); el TP ejecuta la venta"))
 
     below200 = (_field(fields, "price_vs_sma200_pct") or 0.0) < 0.0
     rs6 = _field(fields, "rs_pct")
     rupture = below200 and rs6 is not None and rs6 < 0.0
     cfg = policy.axes
     if rupture and _weak_fundamentals_count(fields, policy) >= cfg.weak_fundamentals_min:
-        out.append(Motive("M3", "ruptura tecnica (bajo SMA200 y RS 6M < 0) con fundamentales debiles"))
+        out.append(Motive("V3", "ruptura tecnica (bajo SMA200 y RS 6M < 0) con fundamentales debiles"))
 
     forward_pe = _field(fields, "forward_pe")
     eps_next = _field(fields, "eps_next_y")
@@ -316,11 +344,43 @@ def find_motives(
         forward_pe is not None and forward_pe > cfg.demanding_forward_pe and eps_next is not None and eps_next <= 0.0
     )
     if (over_target and not momentum) or demanding:
-        out.append(Motive("M4", "valorizacion exigente sin respaldo"))
+        out.append(Motive("V4", "valorizacion exigente sin respaldo"))
 
     oper = _field(fields, "oper_margin")
     if oper is not None and oper >= cfg.cycle_oper_margin_pct and _growth_decelerating(fields):
-        out.append(Motive("M5", f"pico de ciclo: margen operativo {oper:.0f} % con crecimiento en baja"))
+        out.append(Motive("V5", f"pico de ciclo: margen operativo {oper:.0f} % con crecimiento en baja"))
+
+    motive_cfg = policy.motives
+    gain = ret_usd_pct
+    if (
+        gain is not None
+        and gain >= motive_cfg.v7_gain_pct
+        and earnings_sessions is not None
+        and earnings_sessions <= motive_cfg.v7_earnings_sessions
+        and sessions_open is not None
+        and sessions_open >= motive_cfg.v7_min_sessions
+    ):
+        rs1 = _field(fields, "rs_1m_pct")
+        vs20 = _field(fields, "price_vs_sma20_pct")
+        fading = (rs1 is not None and rs1 < 0.0) or (vs20 is not None and vs20 < 0.0)
+        if fading:
+            out.append(
+                Motive(
+                    "V7",
+                    f"evento binario en {earnings_sessions:g} sesiones con ganancia {gain:+.1f} % en USD: "
+                    f"recorte tactico {motive_cfg.v7_partial_pct:g} %",
+                )
+            )
+
+    horizon = policy.horizon
+    if today is not None and today >= horizon.stagger_start:
+        out.append(
+            Motive(
+                "V8",
+                f"horizonte: liquidacion escalonada {horizon.tranche_pct:g} % cada "
+                f"{horizon.stagger_days} dias hasta {horizon.liquidation_date.isoformat()}",
+            )
+        )
     return tuple(out)
 
 
@@ -582,13 +642,17 @@ def compute(
     weight_invested_pct: float | None = None,
     position_max_pct: float | None = None,
     earnings_sessions: float | None = None,
+    entry_usd: float | None = None,
     progress_r: float | None = None,
     thesis_broken: bool = False,
     thesis_weak: bool = False,
     regime_low: bool = False,
+    ret_usd_pct: float | None = None,
+    sessions_open: float | None = None,
+    today: dt.date | None = None,
     policy: ReviewConfig | None,
 ) -> PositionVerdict:
-    """Ensambla el veredicto determinista de v4 para una posicion."""
+    """Ensambla el veredicto determinista de v6 para una posicion."""
     levels = compute_levels(
         fields,
         price=price,
@@ -597,6 +661,7 @@ def compute(
         weight_invested_pct=weight_invested_pct,
         position_max_pct=position_max_pct,
         earnings_sessions=earnings_sessions,
+        entry_usd=entry_usd,
         progress_r=progress_r,
         policy=policy,
     )
@@ -619,6 +684,10 @@ def compute(
         momentum=momentum,
         policy=policy,
         thesis_weak=thesis_weak,
+        ret_usd_pct=ret_usd_pct,
+        sessions_open=sessions_open,
+        earnings_sessions=earnings_sessions,
+        today=today,
     )
     return PositionVerdict(
         levels=levels,
@@ -651,6 +720,9 @@ class DecisionRecord:
     review_level: float | None = None
     alarm_level: float | None = None
     objective: float | None = None
+    take_profit: float | None = None
+    alarm_1: float | None = None
+    alarm_2: float | None = None
     motive: str = ""
     trigger: str = ""
 
@@ -664,6 +736,9 @@ class DecisionRecord:
             "review_level": self.review_level,
             "alarm_level": self.alarm_level,
             "objective": self.objective,
+            "take_profit": self.take_profit,
+            "alarm_1": self.alarm_1,
+            "alarm_2": self.alarm_2,
             "motive": self.motive,
             "trigger": self.trigger,
         }
@@ -682,6 +757,9 @@ class DecisionRecord:
             review_level=_num(data.get("review_level")),
             alarm_level=_num(data.get("alarm_level")),
             objective=_num(data.get("objective")),
+            take_profit=_num(data.get("take_profit")),
+            alarm_1=_num(data.get("alarm_1")),
+            alarm_2=_num(data.get("alarm_2")),
             motive=str(data.get("motive") or ""),
             trigger=str(data.get("trigger") or ""),
         )

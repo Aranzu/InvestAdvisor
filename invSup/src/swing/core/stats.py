@@ -22,12 +22,12 @@ Convenciones de unidad (fijas, para que mezclar fuentes no sume errores):
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from swing.core.briefing import Briefing, PositionBrief
 from swing.core.commodities import Commodity
-from swing.core.market_context import MarketInstrument
+from swing.core.market_context import MarketInstrument, MarketRegime
 from swing.core.verdict import Levels
 
 #: Como se formatea un campo. Ver ``_format``. ``qty`` = cantidad con 4 decimales
@@ -35,7 +35,7 @@ from swing.core.verdict import Levels
 FORMATS = frozenset({"text", "int", "qty", "num", "pct", "pct_signed", "ratio", "money", "clp"})
 
 #: Version del contrato JSON de ``StatsReport``. Sube cuando cambia la forma.
-STATS_SCHEMA = 6
+STATS_SCHEMA = 8
 
 #: Ventana (dias de calendario) de las transacciones de insiders que entran al informe.
 #: Vive aca porque el render la cita y ``services`` la usa para filtrar: una sola
@@ -348,11 +348,17 @@ class StatsReport:
     market: tuple[MarketInstrument, ...] = ()
     """Contexto de mercado determinista (indices, VIX, dolar/CLP, 10Y, DXY)."""
 
+    regime: MarketRegime | None = None
+    """Resumen del regimen de mercado del Paso 1 del prompt v6."""
+
     panel: Mapping[str, object] = field(default_factory=dict)
     """Resumen de cartera derivado (patrimonio, caja %, pesos por tema, concentracion)."""
 
     briefing: Briefing | None = None
     """Bloque determinista de la revision manual (banderas, stops, alertas). ``None`` si no hay politica."""
+
+    generated_at: dt.datetime = field(default_factory=dt.datetime.utcnow)
+    """Momento de generación del informe (UTC). Útil para saber si los datos son de cierre."""
 
     @property
     def total_fields(self) -> int:
@@ -364,6 +370,11 @@ class StatsReport:
             "schema": STATS_SCHEMA,
             "account": self.account,
             "today": self.today.isoformat(),
+            "generated_at": (
+                self.generated_at.replace(tzinfo=None).isoformat()
+                if self.generated_at.tzinfo
+                else self.generated_at.isoformat()
+            ),
             "mode": self.mode,
             "fx": self.fx,
             "fx_source": self.fx_source,
@@ -376,6 +387,7 @@ class StatsReport:
             "fundamentals": {ticker: dict(fund) for ticker, fund in self.fundamentals.items()},
             "commodities": [_commodity_to_dict(item) for item in self.commodities],
             "market": [_market_to_dict(item) for item in self.market],
+            "regime": _regime_to_dict(self.regime),
             "panel": dict(self.panel),
             "briefing": _briefing_to_dict(self.briefing),
             "rows": [_position_to_dict(row) for row in self.rows],
@@ -389,9 +401,20 @@ class StatsReport:
         schema = data.get("schema")
         if schema != STATS_SCHEMA:
             raise ValueError(f"schema de stats inesperado: {schema!r} (se esperaba {STATS_SCHEMA})")
+        gen = data.get("generated_at")
+        generated_at = dt.datetime.utcnow()
+        if gen:
+            try:
+                s = str(gen)
+                s2 = s.replace("Z", "")
+                s2 = s2.replace(" ", "T")
+                generated_at = dt.datetime.fromisoformat(s2.strip())
+            except Exception:
+                generated_at = dt.datetime.utcnow()
         return cls(
             account=_text(data.get("account")),
             today=_date(data.get("today")),
+            generated_at=generated_at,
             mode=_text(data.get("mode")),
             fx=_number(data.get("fx")),
             fx_source=_text(data.get("fx_source")),
@@ -407,6 +430,7 @@ class StatsReport:
             fundamentals={ticker: _mapping(value) for ticker, value in _mapping(data.get("fundamentals")).items()},
             commodities=tuple(_commodity_from_dict(item) for item in _list(data.get("commodities"))),
             market=tuple(_market_from_dict(item) for item in _list(data.get("market"))),
+            regime=_regime_from_dict(data.get("regime")),
             panel=_mapping(data.get("panel")),
             briefing=_briefing_from_dict(data.get("briefing")),
         )
@@ -494,6 +518,39 @@ def _market_from_dict(data: object) -> MarketInstrument:
     )
 
 
+def _regime_to_dict(item: MarketRegime | None) -> dict[str, object] | None:
+    if item is None:
+        return None
+    return {
+        "level": item.level,
+        "count": item.count,
+        "signals": list(item.signals),
+        "near_threshold": list(item.near_threshold),
+        "usdclp": item.usdclp,
+        "vix": item.vix,
+        "spy_vs_sma200_pct": item.spy_vs_sma200_pct,
+        "tnx_vs_sma200_pct": item.tnx_vs_sma200_pct,
+        "dxy_vs_sma200_pct": item.dxy_vs_sma200_pct,
+    }
+
+
+def _regime_from_dict(data: object) -> MarketRegime | None:
+    if not isinstance(data, Mapping):
+        return None
+    raw_count = _number(data.get("count"))
+    return MarketRegime(
+        level=_text(data.get("level")) or "sin dato",
+        count=int(raw_count) if raw_count is not None else None,
+        signals=tuple(_text(item) for item in _list(data.get("signals"))),
+        near_threshold=tuple(_text(item) for item in _list(data.get("near_threshold"))),
+        usdclp=_number(data.get("usdclp")),
+        vix=_number(data.get("vix")),
+        spy_vs_sma200_pct=_number(data.get("spy_vs_sma200_pct")),
+        tnx_vs_sma200_pct=_number(data.get("tnx_vs_sma200_pct")),
+        dxy_vs_sma200_pct=_number(data.get("dxy_vs_sma200_pct")),
+    )
+
+
 def _briefing_to_dict(briefing: Briefing | None) -> dict[str, object] | None:
     if briefing is None:
         return None
@@ -509,6 +566,9 @@ def _briefing_to_dict(briefing: Briefing | None) -> dict[str, object] | None:
         "semis_max_pct": briefing.semis_max_pct,
         "ia_pct": briefing.ia_pct,
         "ia_max_pct": briefing.ia_max_pct,
+        "liquidity_tp_pct": briefing.liquidity_tp_pct,
+        "liquidity_cash_clp": briefing.liquidity_cash_clp,
+        "liquidity_near_tp_pct": briefing.liquidity_near_tp_pct,
     }
 
 
@@ -516,12 +576,28 @@ def _brief_to_dict(brief: PositionBrief) -> dict[str, object]:
     return {
         "ticker": brief.ticker,
         "flags": list(brief.flags),
+        "flags_technical": list(brief.flags_technical),
+        "flags_fundamental": list(brief.flags_fundamental),
+        "flags_context": list(brief.flags_context),
         "stop": brief.stop,
         "stop_dist_pct": brief.stop_dist_pct,
         "stop_rule": brief.stop_rule,
         "risk_pct": brief.risk_pct,
         "take_profit": brief.take_profit,
         "tp_label": brief.tp_label,
+        "tp_distance_pct": brief.tp_distance_pct,
+        "tp_rr": brief.tp_rr,
+        "tp_note": brief.tp_note,
+        "sl_type": brief.sl_type,
+        "alarm_1": brief.alarm_1,
+        "alarm_1_dist_pct": brief.alarm_1_dist_pct,
+        "alarm_1_entry_dist_pct": brief.alarm_1_entry_dist_pct,
+        "alarm_1_rule": brief.alarm_1_rule,
+        "alarm_2": brief.alarm_2,
+        "alarm_2_dist_pct": brief.alarm_2_dist_pct,
+        "alarm_2_entry_dist_pct": brief.alarm_2_entry_dist_pct,
+        "risk_theoretical_pct": brief.risk_theoretical_pct,
+        "sessions_open": brief.sessions_open,
         "levels": _levels_to_dict(brief.levels),
     }
 
@@ -543,6 +619,9 @@ def _levels_to_dict(levels: Levels | None) -> dict[str, object] | None:
         "objective_state": levels.objective_state,
         "objective_valid": levels.objective_valid,
         "catastrophe_floor": levels.catastrophe_floor,
+        "catastrophe_distance_pct": levels.catastrophe_distance_pct,
+        "catastrophe_entry_distance_pct": levels.catastrophe_entry_distance_pct,
+        "stop_raise_due": levels.stop_raise_due,
     }
 
 
@@ -563,6 +642,9 @@ def _levels_from_dict(data: object) -> Levels | None:
         objective_state=_text(data.get("objective_state")) or "sin objetivo",
         objective_valid=bool(data.get("objective_valid")),
         catastrophe_floor=_number(data.get("catastrophe_floor")),
+        catastrophe_distance_pct=_number(data.get("catastrophe_distance_pct")),
+        catastrophe_entry_distance_pct=_number(data.get("catastrophe_entry_distance_pct")),
+        stop_raise_due=bool(data.get("stop_raise_due")),
     )
 
 
@@ -571,12 +653,28 @@ def _brief_from_dict(data: object) -> PositionBrief:
     return PositionBrief(
         ticker=_text(values.get("ticker")),
         flags=tuple(_text(item) for item in _list(values.get("flags"))),
+        flags_technical=tuple(_text(item) for item in _list(values.get("flags_technical"))),
+        flags_fundamental=tuple(_text(item) for item in _list(values.get("flags_fundamental"))),
+        flags_context=tuple(_text(item) for item in _list(values.get("flags_context"))),
         stop=_number(values.get("stop")),
         stop_dist_pct=_number(values.get("stop_dist_pct")),
         stop_rule=_text(values.get("stop_rule")),
         risk_pct=_number(values.get("risk_pct")),
         take_profit=_number(values.get("take_profit")),
         tp_label=_text(values.get("tp_label")),
+        tp_distance_pct=_number(values.get("tp_distance_pct")),
+        tp_rr=_number(values.get("tp_rr")),
+        tp_note=_text(values.get("tp_note")),
+        sl_type=_text(values.get("sl_type")) or "A",
+        alarm_1=_number(values.get("alarm_1")),
+        alarm_1_dist_pct=_number(values.get("alarm_1_dist_pct")),
+        alarm_1_entry_dist_pct=_number(values.get("alarm_1_entry_dist_pct")),
+        alarm_1_rule=_text(values.get("alarm_1_rule")),
+        alarm_2=_number(values.get("alarm_2")),
+        alarm_2_dist_pct=_number(values.get("alarm_2_dist_pct")),
+        alarm_2_entry_dist_pct=_number(values.get("alarm_2_entry_dist_pct")),
+        risk_theoretical_pct=_number(values.get("risk_theoretical_pct")),
+        sessions_open=_number(values.get("sessions_open")),
         levels=_levels_from_dict(values.get("levels")),
     )
 
@@ -596,6 +694,9 @@ def _briefing_from_dict(data: object) -> Briefing | None:
         semis_max_pct=_number(data.get("semis_max_pct")),
         ia_pct=_number(data.get("ia_pct")),
         ia_max_pct=_number(data.get("ia_max_pct")),
+        liquidity_tp_pct=_number(data.get("liquidity_tp_pct")),
+        liquidity_cash_clp=_number(data.get("liquidity_cash_clp")),
+        liquidity_near_tp_pct=_number(data.get("liquidity_near_tp_pct")),
     )
 
 
@@ -746,13 +847,18 @@ def _section(
     specs: Sequence[FieldSpec],
     rows: Sequence[PositionStats],
     source: str,
+    *,
+    cell_format: Callable[[PositionStats, FieldSpec], str] | None = None,
 ) -> list[str]:
     lines = [f"## {title}", ""]
     lines.append("| Ticker | " + " | ".join(spec.label for spec in specs) + " |")
     lines.append("|---|" + "---|" * len(specs))
     for row in rows:
         values = row.context if source == "context" else row.fields
-        cells = " | ".join(_format(spec.kind, values.get(spec.key)) for spec in specs)
+        cells = " | ".join(
+            cell_format(row, spec) if cell_format is not None else _format(spec.kind, values.get(spec.key))
+            for spec in specs
+        )
         lines.append(f"| {row.ticker} | {cells} |")
     lines.append("")
     return lines
@@ -777,10 +883,16 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
     lines.append(f"# Estadisticas de posiciones - cuenta {report.account}")
     lines.append("")
     fx = f"{report.fx:.2f}" if report.fx is not None else "sin dato"
+    gen = report.generated_at
+    if gen.tzinfo is None:
+        hora_str = gen.strftime("%H:%M:%S UTC")
+    else:
+        hora_str = gen.astimezone(dt.UTC).strftime("%H:%M:%S UTC")
     lines.append(
-        f"Datos al {report.today} - modalidad {report.mode} - FX {fx} ({report.fx_source}) - "
+        f"Datos al {report.today} {hora_str} - modalidad {report.mode} - FX {fx} ({report.fx_source}) - "
         f"equity XTB {report.equity_clp:,.0f} CLP"
     )
+    lines.append(f"Generado {_et_stamp(report.generated_at)} - {_session_hint(report.generated_at)}.")
     lines.append("")
     lines.append("| metrica | valor |")
     lines.append("|---|---|")
@@ -804,6 +916,7 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
         if position_specs:
             lines.extend(_section("Posicion y valuacion", position_specs, report.rows, "context"))
         lines.extend(_panel_section(report, show_context=show_context))
+        lines.extend(_extended_hours_section(report))
         for title, specs in SECTIONS:
             visible = _visible(specs, show_context=show_context)
             if not visible:
@@ -868,27 +981,85 @@ def _briefing_section(briefing: Briefing | None) -> list[str]:
         )
     if clusters:
         lines.append(f"- Concentracion por cluster: {'; '.join(clusters)}.")
+    if briefing.liquidity_tp_pct is not None:
+        near = briefing.liquidity_near_tp_pct
+        threshold = f" a <={_format('pct', near)} del precio" if near is not None else ""
+        cash = _format("clp", briefing.liquidity_cash_clp)
+        lines.append(
+            f"- Mapa de liquidez: {_format('pct', briefing.liquidity_tp_pct)} de la cartera invertida "
+            f"con TP{threshold}; caja si se ejecutan todos los TP: {cash}."
+        )
     if briefing.alerts:
         lines.append("- Alertas (solo informativas, no son motivo de venta por si solas):")
         lines.extend(f"  - {alert}" for alert in briefing.alerts)
     else:
-        lines.append("- Sin alertas de concentracion ni de caja.")
+        lines.append("- Sin alertas de concentracion, caja, earnings ni riesgo teorico.")
     lines.append("")
     if briefing.positions:
-        lines.append("| Ticker | Banderas | Stop tecnico | Dist. stop | Regla del stop | Riesgo patrim. | Take profit |")
-        lines.append("|---|---|---:|---:|---|---:|---:|")
+        lines.append(
+            "| Ticker | Tipo SL | Banderas | Stop tecnico | Dist. stop | Regla del stop | "
+            "Riesgo patrim. | Take profit | Dist. TP | R:R TP |"
+        )
+        lines.append("|---|---|---|---:|---|---:|---:|---:|---:|---:|")
         for brief in briefing.positions:
             flags = ", ".join(brief.flags) if brief.flags else "sin banderas"
             take_profit = _format("num", brief.take_profit)
             if brief.tp_label:
                 take_profit = f"{take_profit} ({brief.tp_label})"
             lines.append(
-                f"| {brief.ticker} | {flags} | {_format('num', brief.stop)} | "
+                f"| {brief.ticker} | {brief.sl_type} | {flags} | {_format('num', brief.stop)} | "
                 f"{_format('pct', brief.stop_dist_pct)} | {brief.stop_rule or '-'} | "
-                f"{_format('pct', brief.risk_pct)} | {take_profit} |"
+                f"{_format('pct', brief.risk_pct)} | {take_profit} | "
+                f"{_format('pct', brief.tp_distance_pct)} | {_format('ratio', brief.tp_rr)} |"
             )
         lines.append("")
+        lines.extend(_flags_table(briefing.positions))
+        lines.extend(_sl_alerts_table(briefing.positions))
         lines.extend(_levels_table(briefing.positions))
+    return lines
+
+
+def _sl_alerts_table(positions: Sequence[PositionBrief]) -> list[str]:
+    """Alertas SL del prompt v6: Tipo A/B, distancias y riesgo teorico.
+
+    Es una tabla **informativa**: las alertas obligan a reevaluar, no venden. El
+    riesgo teorico se mide contra la alerta que manda (la 2 en Tipo B).
+    """
+    with_alerts = [brief for brief in positions if brief.alarm_1 is not None or brief.alarm_2 is not None]
+    if not with_alerts:
+        return []
+    lines = ["### Alertas SL (solo alertas, no ordenes)", ""]
+    lines.append(
+        "| Ticker | Tipo | Alerta 1 | Dist. precio | Dist. entrada | Regla A1 | "
+        "Alerta 2 | Dist. precio | Dist. entrada | Riesgo teorico |"
+    )
+    lines.append("|---|---|---:|---:|---:|---|---:|---:|---:|---:|")
+    for brief in with_alerts:
+        lines.append(
+            f"| {brief.ticker} | {brief.sl_type} | {_format('num', brief.alarm_1)} | "
+            f"{_format('pct', brief.alarm_1_dist_pct)} | {_format('pct', brief.alarm_1_entry_dist_pct)} | "
+            f"{brief.alarm_1_rule or '-'} | {_format('num', brief.alarm_2)} | "
+            f"{_format('pct', brief.alarm_2_dist_pct)} | {_format('pct', brief.alarm_2_entry_dist_pct)} | "
+            f"{_format('pct', brief.risk_theoretical_pct)} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _flags_table(positions: Sequence[PositionBrief]) -> list[str]:
+    """Banderas clasificadas como pide el Paso 1 del prompt v6."""
+    with_flags = [brief for brief in positions if brief.flags]
+    if not with_flags:
+        return []
+    lines = ["### Banderas por tipo", ""]
+    lines.append("| Ticker | Tecnicas (ajustan tamano/tiempo) | Fundamentales/valorizacion | Contexto |")
+    lines.append("|---|---|---|---|")
+    for brief in with_flags:
+        technical = ", ".join(brief.flags_technical) or "-"
+        fundamental = ", ".join(brief.flags_fundamental) or "-"
+        contextual = ", ".join(brief.flags_context) or "-"
+        lines.append(f"| {brief.ticker} | {technical} | {fundamental} | {contextual} |")
+    lines.append("")
     return lines
 
 
@@ -905,9 +1076,10 @@ def _levels_table(positions: Sequence[PositionBrief]) -> list[str]:
     lines = ["### Niveles de vigilancia (no son ordenes)", ""]
     lines.append(
         "| Ticker | Nivel revision | Dist. rev | Nivel alarma | Dist. alarma | Regla | "
-        "Riesgo patrim. | Zona tactica | R:R | Objetivo | Estado | Piso catastrofe |"
+        "Riesgo patrim. | Zona tactica | R:R | Objetivo | Estado | Piso catastrofe | "
+        "Dist. cat. precio | Dist. cat. entrada |"
     )
-    lines.append("|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---|---:|")
+    lines.append("|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---|---:|---:|---:|")
     for brief in with_levels:
         levels = brief.levels
         assert levels is not None
@@ -921,7 +1093,9 @@ def _levels_table(positions: Sequence[PositionBrief]) -> list[str]:
             f"{_format('num', levels.alarm)} | {_format('pct', levels.alarm_distance_pct)} | "
             f"{levels.alarm_rule or '-'} | {_format('pct', levels.risk_pct)} | {zone} | {rr} | "
             f"{_format('num', levels.objective)} | {levels.objective_state} | "
-            f"{_format('num', levels.catastrophe_floor)} |"
+            f"{_format('num', levels.catastrophe_floor)} | "
+            f"{_format('pct', levels.catastrophe_distance_pct)} | "
+            f"{_format('pct', levels.catastrophe_entry_distance_pct)} |"
         )
     lines.append("")
     return lines
@@ -930,8 +1104,132 @@ def _levels_table(positions: Sequence[PositionBrief]) -> list[str]:
 def _panel_section(report: StatsReport, *, show_context: bool = False) -> list[str]:
     """Tabla derivada por posicion + resumen de cartera, todo calculado en codigo."""
     specs = _visible(PANEL_FIELDS, show_context=show_context)
-    lines = _section("Panel de posicion (derivado)", specs, report.rows, "context") if specs else []
+    lines = (
+        _section("Panel de posicion (derivado)", specs, report.rows, "context", cell_format=_panel_cell)
+        if specs
+        else []
+    )
     lines.extend(_portfolio_summary(report.panel))
+    return lines
+
+
+def _panel_cell(row: PositionStats, spec: FieldSpec) -> str:
+    """Celda del panel derivado, con el stop ya perforado marcado.
+
+    ``stop_rule`` es ``entrada x (1 - max_loss)``, no un nivel de mercado: si el
+    precio cayo por debajo, la distancia y el "riesgo" salen negativos y no
+    significan nada operativo. Se marca el nivel y se dejan esas dos celdas como
+    "sin dato" en vez de inventar un riesgo pendiente que ya se materializo.
+    """
+    perforated = row.context.get("stop_perforated") is True
+    if perforated:
+        if spec.key == "stop_rule":
+            return f"{_format(spec.kind, row.context.get(spec.key))} (perforado)"
+        if spec.key in {"stop_dist_pct", "risk_patrimonio_pct"}:
+            return "-"
+    return _format(spec.kind, row.context.get(spec.key))
+
+
+def _et_stamp(value: dt.datetime) -> str:
+    """Momento de generacion en hora del mercado (ET), con respaldo UTC."""
+    instant = value if value.tzinfo is not None else value.replace(tzinfo=dt.UTC)
+    try:
+        from zoneinfo import ZoneInfo
+
+        local = instant.astimezone(ZoneInfo("America/New_York"))
+        return local.strftime("%Y-%m-%d %H:%M ET")
+    except Exception:  # sin tzdata la hora UTC sigue siendo util
+        return instant.astimezone(dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _session_hint(value: dt.datetime) -> str:
+    """Indica si el informe parece de cierre, intradia o fuera de sesion regular."""
+    instant = value if value.tzinfo is not None else value.replace(tzinfo=dt.UTC)
+    try:
+        from zoneinfo import ZoneInfo
+
+        local = instant.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        local = instant.astimezone(dt.UTC)
+    if local.weekday() >= 5:
+        return "fuera de sesion regular (datos provisionales)"
+    minutes = local.hour * 60 + local.minute
+    if 9 * 60 + 30 <= minutes < 16 * 60:
+        return "intradia (cierre no confirmado)"
+    if minutes >= 16 * 60:
+        return "cierre probable"
+    return "fuera de sesion regular (datos provisionales)"
+
+
+def _et_hour(value: object) -> str:
+    """``time_iso`` (UTC) -> hora del mercado, en ET con respaldo UTC. ``""`` si no se puede leer."""
+    if not isinstance(value, str) or not value:
+        return ""
+    try:
+        instant = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if instant.tzinfo is None:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return instant.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M ET")
+    except Exception:  # sin tzdata el dato sigue siendo util, en UTC
+        return instant.astimezone(dt.UTC).strftime("%H:%M UTC")
+
+
+def _ext_side(data: object) -> tuple[str, str]:
+    """``(celda precio, celda volumen)`` de un bloque pre/after. Sin precio: ``("-", "-")``.
+
+    La celda es ``precio (+var %) hora ET``: la variacion contra el cierre
+    regular y la hora dejan a la vista si el dato es de la sesion de hoy o
+    quedo atras, que es el riesgo real de leer horario extendido.
+    """
+    values = data if isinstance(data, Mapping) else {}
+    price = _num(values.get("price"))
+    if price is None:
+        return "-", "-"
+    cell = _format("num", price)
+    pct = _num(values.get("change_pct"))
+    if pct is not None:
+        cell = f"{cell} ({_format('pct_signed', pct)})"
+    hour = _et_hour(values.get("time_iso"))
+    if hour:
+        cell = f"{cell} {hour}"
+    return cell, _format("int", _num(values.get("volume")))
+
+
+def _extended_hours_section(report: StatsReport) -> list[str]:
+    """Pre/after market por posicion, solo con datos (Yahoo, best effort).
+
+    Se muestra con o sin ``--contexto``: es el precio mas actualizado que tiene
+    el informe cuando corre fuera del horario regular, no contexto decorativo.
+    Una fila entra si al menos un lado trajo precio; lo que falte queda ``-``,
+    y sin ninguna fila la seccion no existe (cero ruido en modo offline).
+    """
+    body: list[str] = []
+    for row in report.rows:
+        quote = report.quotes.get(row.ticker)
+        if not isinstance(quote, Mapping):
+            continue
+        pre_price, pre_vol = _ext_side(quote.get("pre_market"))
+        post_price, post_vol = _ext_side(quote.get("after_market"))
+        if pre_price == "-" and post_price == "-":
+            continue
+        body.append(f"| {row.ticker} | {pre_price} | {pre_vol} | {post_price} | {post_vol} |")
+    if not body:
+        return []
+    lines = ["## Horario extendido (Pre/Post Market)", ""]
+    lines.append("| Ticker | Pre-Market | Vol. pre | After-Market | Vol. post |")
+    lines.append("|---|---:|---:|---:|---:|")
+    lines.extend(body)
+    lines.append("")
+    lines.append(
+        "Precio (variacion contra el cierre regular, hora ET) y volumen de la sesion extendida, "
+        "fuente Yahoo. Solo aparece lo publicado: sin sesion extendida o sin dato la celda queda ``-``."
+    )
+    lines.append("")
     return lines
 
 
@@ -965,29 +1263,54 @@ def _portfolio_summary(panel: Mapping[str, object]) -> list[str]:
         lines.append("")
     clusters = panel.get("clusters")
     if isinstance(clusters, Mapping) and clusters:
-        lines.append("| cluster | peso | tope |")
-        lines.append("|---|---:|---:|")
+        lines.append("| cluster | peso | tope | miembros |")
+        lines.append("|---|---:|---:|---|")
         for name, raw in clusters.items():
             values = raw if isinstance(raw, Mapping) else {}
             pct = _num(values.get("pct"))
             cap = _num(values.get("max_pct"))
             flag = " **+**" if (cap is not None and pct is not None and pct > cap) else ""
-            lines.append(f"| {_CLUSTER_LABELS.get(name, name)} | {_format('pct', pct)}{flag} | {_format('pct', cap)} |")
+            members = values.get("members")
+            joined = ", ".join(str(item) for item in members) if isinstance(members, (list, tuple)) else ""
+            lines.append(
+                f"| {_CLUSTER_LABELS.get(name, name)} | {_format('pct', pct)}{flag} | "
+                f"{_format('pct', cap)} | {joined or '-'} |"
+            )
         lines.append("")
     return lines
 
 
 def _market_section(report: StatsReport) -> list[str]:
-    if not report.market:
+    if not report.market and report.regime is None:
         return []
     lines = ["## Contexto de mercado", ""]
-    lines.append("| Benchmark | Nivel | 1 mes | SMA200 | vs SMA200 |")
-    lines.append("|---|---:|---:|---:|---:|")
-    for item in report.market:
-        lines.append(
-            f"| {item.label} | {_format('num', item.price)} | {_format('pct_signed', item.chg_1m_pct)} | "
-            f"{_format('num', item.sma200)} | {_format('pct_signed', item.vs_sma200_pct)} |"
-        )
+    if report.regime is not None:
+        lines.extend(_regime_block(report.regime))
+    if report.market:
+        lines.append("| Benchmark | Nivel | 1 mes | SMA200 | vs SMA200 |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for item in report.market:
+            lines.append(
+                f"| {item.label} | {_format('num', item.price)} | {_format('pct_signed', item.chg_1m_pct)} | "
+                f"{_format('num', item.sma200)} | {_format('pct_signed', item.vs_sma200_pct)} |"
+            )
+        lines.append("")
+    return lines
+
+
+def _regime_block(regime: MarketRegime) -> list[str]:
+    """Regimen del Paso 1: senales cumplidas, cercanas al umbral y USD/CLP."""
+    count = "-" if regime.count is None else str(regime.count)
+    lines = ["### Regimen (Paso 1)", ""]
+    lines.append(f"- Nivel **{regime.level}** ({count} senales de estres de 4).")
+    if regime.signals:
+        lines.append(f"- Senales cumplidas: {', '.join(regime.signals)}.")
+    else:
+        lines.append("- Senales cumplidas: ninguna.")
+    if regime.near_threshold:
+        lines.append(f"- A menos de 1 pp del umbral: {', '.join(regime.near_threshold)}.")
+    if regime.usdclp is not None:
+        lines.append(f"- USD/CLP: {_format('num', regime.usdclp)}.")
     lines.append("")
     return lines
 
@@ -1064,12 +1387,13 @@ def _insiders_section(report: StatsReport) -> list[str]:
 
 def _coverage_section(report: StatsReport) -> list[str]:
     lines = ["## Cobertura de datos", ""]
-    lines.append("| Ticker | campos | sin dato |")
-    lines.append("|---|---|---|")
+    lines.append("| Ticker | campos | cobertura | sin dato |")
+    lines.append("|---|---:|---:|---|")
     total = report.total_fields
     for row in report.rows:
         present, missing = coverage(row.fields)
+        pct = present / total * 100.0 if total > 0 else None
         panel = ", ".join(missing[:12]) + ("..." if len(missing) > 12 else "")
-        lines.append(f"| {row.ticker} | {present}/{total} | {panel or '-'} |")
+        lines.append(f"| {row.ticker} | {present}/{total} | {_format('pct', pct)} | {panel or '-'} |")
     lines.append("")
     return lines

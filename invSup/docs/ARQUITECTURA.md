@@ -60,11 +60,12 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
 6. **Narrativa de cartera** (una sola llamada `PORTFOLIO_REVIEW`, sin búsquedas nuevas) que
    llena el veredicto, la cobertura y los supuestos del informe.
 6. Informe con `--formato`:
-   - `informe` (por defecto): **10 secciones** — Veredicto, Cobertura, Decisiones, Niveles,
-     Alertas, Supuestos y vacíos, Fuentes clave, Auditoría de ventas, Registro de decisiones y
-     Qué cambió. Puntaje por ejes V/C/G/P (`-8..+8`). Con la política `review` agrega el
-     veredicto de `PROMPT PORTAFOLIO` (niveles de revisión/alarma, disparadores T1-T6, motivos
-     M1-M7, ejes E1-E4 con F/M y acción implícita) y guarda el registro en `state/`.
+   - `informe` (por defecto): **11 secciones** (la 11 solo si la caja post-venta supera
+     20 %) — Veredicto y liquidez, Tabla de decisión, Auditoría de ventas, Tabla de TP y SL,
+     Cobertura, Alertas, Supuestos y vacíos, Fuentes clave, Registro de decisiones, Qué cambió
+     y Oportunidades. Puntaje por ejes V/C/G/P (`-8..+8`). Con la política `review` agrega el
+     veredicto de `PROMPT PORTAFOLIO v6` (niveles de revisión/alarma, disparadores T1-T6,
+     motivos V1-V8, ejes E1-E4 con F/M y acción implícita) y guarda el registro en `state/`.
    - `detalle` (el de `nightly`): bloques explicados.
    - `tabla`: `Activo · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`.
    - `acciones`: una sola tabla `Activo · Retorno · Peso (actual → post) · Acción ·
@@ -79,10 +80,15 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
    liquidez y precio.
 3. Fundamentales y proyecciones (`adapters/fundamentals`, cacheados con TTL):
    puertas (`fundamentals:` en `strategy.yaml`) y **score compuesto** por bloque
-   (valor/calidad/crecimiento/proyecciones; `core/fundamentals.py`).
-4. Ranking por score → los `top` mejores y `min_composite_score` van a
-   `state/candidates.json`. La IA (obligatoria cuando hay clave) emite su tesis de compra
-   (`BUY/WATCH`) por candidato.
+   (valor/calidad/crecimiento/proyecciones; `core/fundamentals.py`). El P/B está apagado
+   por defecto (`use_price_to_book`): no es comparable entre sectores.
+4. Cruce con la cartera (best effort, `--portfolio` o el export más nuevo): los tickers
+   abiertos salen del recorte y se avisa si un candidato cae en un tema sobre
+   `risk.max_theme_pct`.
+5. Ranking por score → los `top` mejores y `min_composite_score` se escriben en
+   `state/candidates.json` **antes** de la IA; después la IA (obligatoria cuando hay clave)
+   emite su tesis de compra (`BUY/WATCH`) por candidato y se **anexa** al mismo archivo,
+   con la fase acotada por `llm.screen_budget_s`.
 
 ### 3.4 Corrida nocturna (fase 8) — `swing nightly`
 
@@ -93,6 +99,14 @@ cada subcomando falla cerrado como ya lo hacía, así que datos obsoletos termin
 La **notificación** (`adapters/notify`) es opcional y **best-effort** (webhook o
 Telegram); un fallo de red se reporta y no tumba la corrida. `swing schedule` calcula
 la hora local `America/Santiago` e imprime el comando `schtasks`. Ver `docs/PROGRAMACION.md`.
+
+### 3.5 Medición del screener — `swing track`
+
+Cada `screen` sin `--out` deja una foto en `state/picks/<sesión>.json` (journal forward,
+`services/picks_log.py`). `swing track` (oculto) junta ese journal con las velas y mide, para
+los picks ya maduros, el retorno a 21/63 sesiones y su exceso contra `regime.index`
+(`core/track.py`, puro). **Sin lookahead**: entrada = sesión del pick, salida = sesión
+posterior. Es la medición honesta que se puede hacer sin snapshot histórico de fundamentales.
 
 ## 4. El motor `decide()` (`core/engine.py`)
 
@@ -185,7 +199,7 @@ El CLI expone **tres comandos**: `stats`, `review` y `screen`. El resto está **
 | `verify-broker` (oculto) | campos de `broker.yaml` sin verificar |
 | `data-health` (oculto) | frescura/huecos/earnings por ticker |
 | `analyze-positions` (oculto) | valúa la cartera y hallazgos (sin reglas de salida completas) |
-| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), insiders (compras y ventas, Form 4), resumen determinista (banderas/stops/alertas según `briefing`, más los niveles de `PROMPT PORTAFOLIO` según `review`) y materias primas (oro/plata/cobre, precio y variación de Trading Economics con respaldo de Yahoo); oculta el contexto informativo por defecto (`--contexto` lo incluye); emite `stats_<reporte>_<marca>.md` y `.json` (`schema: 6`), que `analyze-positions` y `review` reutilizan |
+| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), insiders (compras y ventas, Form 4), **horario extendido** (pre/after market de Yahoo, solo cuando hay dato), resumen determinista (banderas clasificadas, stops, alertas SL Tipo A/B, mapa de liquidez y alertas según `briefing`, más los niveles de `PROMPT PORTAFOLIO` según `review`) y materias primas (oro/plata/cobre, precio y variación de Trading Economics con respaldo de Yahoo); con `--contexto` agrega **régimen de mercado** (VIX, SPY/10Y/DXY vs SMA200 y USD/CLP); oculta el contexto informativo por defecto; emite `stats_<reporte>_<marca>.md` y `.json` (`schema: 8`), que `analyze-positions` y `review` reutilizan |
 | `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto. `--formato informe` (10 secciones, por defecto), `detalle` o `tabla` |
 | `screen` (alias `discover`) | **funcion 2**: screener de compra (técnico + fundamentales + proyecciones) |
 | `nightly` (oculto) | **fase 8**: `screen` + `review --formato detalle` en una corrida, resumen y notificación opcional |

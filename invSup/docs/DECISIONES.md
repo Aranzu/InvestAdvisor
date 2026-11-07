@@ -604,9 +604,38 @@ distorsionaba por como se leian y puntuaban los datos, no por los parametros.
 - **Coherencia con G6.** Con `screener.exclude_earnings_blackout` el recorte saca a quien
   reporta dentro de `gates.earnings_entry_blackout_sessions` (mismo `<=` que G6) y
   rellena con los siguientes: el screener no recomienda una compra que el motor
-  rechazaria. `--min-score` se aplica **antes** del recorte. Una sola clase de accion
+  rechazaria. Con `screener.fail_closed_earnings` una fecha **ausente** con la fuente
+  consultada tambien queda fuera (`INDICATOR_NOT_READY`), como el G6 del motor; `--offline`
+  no filtra por fecha ausente (no se consulto la fuente y el informe declara `-`).
+  `--min-score` se aplica **antes** del recorte. Una sola clase de accion
   por empresa (GOOG/GOOGL). Fundamentales solo para los que pasan el tecnico (~60 en vez
   de ~500 llamadas).
+- **Persistencia temprana.** `state/candidates.json` se escribe con el ranking apenas se
+  calcula (antes del bloque de IA) y la tesis se **anexa** despues. Una corrida real de 10
+  minutos se perdio entera porque el archivo se escribia al final y la fase de tesis del LLM
+  (secuencial, con reintentos) la dejo sin completar: el trabajo determinista ya hecho no
+  puede depender de una llamada al modelo.
+- **Presupuesto de tesis.** `llm.screen_budget_s` (240 s) acota la fase de tesis: antes de
+  cada candidato se mira el reloj y, agotado el presupuesto, los que falten quedan sin
+  veredicto (el ranking ya esta escrito y el aviso los lista). Es el tope de la **fase**,
+  no de una llamada: la que esta en curso termina (su tope es `timeout` x reintentos), asi
+  que el corte real puede pasarse por un candidato a lo sumo. Se prefirio un presupuesto
+  determinista y sin hilos a la concurrencia: el cliente LLM acumula uso y fecha en estado
+  compartido y el proyecto no usa hilos en ningun lado.
+- **P/B apagado por defecto.** El P/B absoluto no es comparable entre sectores y su tope
+  (`max_price_to_book: 12`) descartaba empresas asset-light de alto ROE (AAPL P/B 46,
+  ANET 16), mientras dejaba pasar bancos baratos en libros: sesgo estructural hacia
+  sectores de activos tangibles. `fundamentals.use_price_to_book: false` lo saca de la
+  puerta y del bloque de valor (que queda en el P/E) y lo excluye de la cobertura. La
+  opcion sector-relativa (P/B vs mediana del sector) queda como trabajo pendiente; hoy se
+  elige quitarlo antes que arriesgar una normalizacion con pocos pares por sector.
+- **Cruce con la cartera.** Con el export de XTB (`--portfolio` o el mas nuevo de
+  `posiciones/`) `screener.exclude_held` saca del recorte los tickers ya abiertos (rellena
+  con el siguiente) y avisa si un candidato cae en un tema ya sobre `risk.max_theme_pct`.
+  El tema usa el vocabulario del propio screener (sector GICS del universo) para que
+  cartera y candidato se midan igual; un ticker fuera del universo cae a `themes.yaml` y
+  luego a `sin_tema`. Es best-effort: sin export (o si no se puede leer) el screener sigue
+  sin cruce y lo declara.
 - **IA.** El prompt lleva `fecha_hoy`; un hecho con fecha futura se descarta antes de
   contar evidencia. `llm.max_searches_per_ticker` acota de verdad las busquedas. El
   screener le pasa a la IA tecnico (RSI, extension sobre SMA50/200, distancia al maximo
@@ -642,9 +671,15 @@ posicion abierta (tipo Finviz) para analisis posterior, sin inventar datos.
   seccion **Cobertura de datos** cuenta campos y lista faltantes. Una **vela incoherente**
   de Yahoo (fail-closed en `frame_to_series`) degrada a ese ticker **sin tecnicos** en vez
   de tumbar el informe, y se declara en **Limites de esta evaluacion**.
+- **Horario extendido (pre/after market).** Cuando la fuente publica precio fuera de
+  rueda, el informe agrega la seccion **Horario extendido (Pre/Post Market)**: precio,
+  variacion contra el cierre regular, volumen y hora **ET** de cada lado (`Quote.pre_market`
+  / `after_market`, de Yahoo). Sin dato la seccion no existe: no se inventa un precio de
+  pre-market ni se rellena con el cierre. Va al JSON del ticker, asi que `review` tambien
+  lo ve.
 - **Contrato JSON y consumo.** Junto al `.md`, `stats` escribe `stats_<reporte>_<marca>.json`
-  (`schema: 1`) con el mismo contenido (posiciones, cotizaciones, fundamentales, temas,
-  sectores, insiders). `analyze-positions` y `review` lo **reutilizan** si es de hoy y de la
+  (`schema: 8`) con el mismo contenido (posiciones, cotizaciones, fundamentales, temas,
+  sectores, insiders, régimen, briefing). `analyze-positions` y `review` lo **reutilizan** si es de hoy y de la
   misma cuenta, para no repetir las consultas a Yahoo ya hechas; lo que falte se completa con
   el proveedor. El match por cuenta evita que un informe de otra cartera contamine la corrida.
 
@@ -840,3 +875,40 @@ ganancias". El trail por ATR se adapta a la volatilidad de cada nombre (la carte
 en una sola sesion (hueco grande) no se fuerza la venta —no se fija un stop sobre el mercado—; el
 `STOP_BREACH` de la noche siguiente, con el stop ya elevado en la corrida anterior, es el que
 ejecuta. `protect_gain` no cambia la R, la meta ni el tamano: solo el nivel del stop.
+
+---
+
+## D36. Medir el screener hacia adelante (journal), no reescribir el pasado
+
+**Que estaba abierto.** El screener ordenaba candidatos pero **nada medía si acertaba**. La
+puerta de validación del backtest nunca se corrió sobre datos reales, así que todo peso y ancla
+eran convenciones sin evidencia (D30 lo declara como límite). La tentación era un backtest
+histórico del screener.
+
+**Decisión.** Un **journal forward**, no un backtest hacia atrás.
+
+- **Por qué no un backtest.** El score del screener depende de fundamentales y objetivos de
+  analistas, que **no son point-in-time**: solo existe el snapshot de hoy. Un backtest los
+  aplicaría al pasado → lookahead, y el `fund`/`score` mediría un futuro que no se conocía. El
+  S&P es además el de hoy (sesgo de supervivencia, D12). Un número así sería una mentira con
+  forma de evidencia.
+- **`services/picks_log.py`.** Cada `screen` sin `--out` escribe `state/picks/<sesión>.json`
+  con lo propuesto (ticker, cierre de la sesión, score, tema). Un archivo por sesión: dos
+  corridas del mismo día no duplican y las fechas viejas no se tocan. Una corrida con `--out`
+  es exploratoria y no ensucia el journal. La lectura salta archivos corruptos.
+- **`core/track.py` (puro).** Dado el journal y las velas, mide el retorno a **21 y 63
+  sesiones** (≈1 y 3 meses) y su **exceso** contra `regime.index` (SPY), con media, mediana y
+  `bate al S&P %`. La entrada es la primera vela en/después de la sesión del pick y la salida
+  esa posición `+ horizonte`: **sin lookahead**. Un pick sin madurar no produce fila (no se
+  estima ni se descarta en silencio).
+- **`swing track` (oculto).** Junta journal + velas de cache y muestra la tabla por horizonte.
+  Sin picks o sin madurar lo dice; sin SPY en cache, el retorno igual se mide y el exceso queda
+  `-`.
+
+**Por que.** Pedido: "¿es necesario seguir agregando features?". La prioridad no es más
+screener, es **evidencia**. El journal tarda semanas en juntar señal, pero es la única medición
+honesta que se puede hacer hoy.
+
+**Limite declarado.** La señal es lenta (63 sesiones ≈ 3 meses) y se acumula sólo si `screen`
+corre seguido. Mide el ranking determinista (lo que se propone), no la tesis de la IA. Los
+candidatos salen del S&P de hoy —sin supervivencia histórica, pero es el universo que existe—.

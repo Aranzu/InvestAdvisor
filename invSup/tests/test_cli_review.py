@@ -41,6 +41,9 @@ class _FakeProvider:
     def daily_bars_report(self, ticker: str, *, start: dt.date, end: dt.date) -> tuple[PriceSeries, bool]:
         return self.daily_bars(ticker, start=start, end=end), False
 
+    def quote_snapshot(self, ticker: str) -> dict[str, object] | None:
+        return None  # sin horario extendido en el doble
+
     def fx_usdclp(self, on: dt.date) -> float | None:
         return 950.0
 
@@ -108,7 +111,7 @@ def test_review_llm_anota_la_tesis_sin_cambiar_la_regla(monkeypatch, tmp_path: P
     assert result.exit_code == 2, result.output
     informe = out.read_text(encoding="utf-8")
     assert "# Review de cartera" in informe
-    assert "## 5. Alertas" in informe
+    assert "## 6. Alertas (informativas)" in informe
     assert "TESIS DEBILITADA" in informe
     # WEAKENED queda como tesis a vigilar y el motor sigue mandando.
     assert "Coloca un Sell Stop" in informe
@@ -239,8 +242,9 @@ def test_review_escribe_el_registro_de_decisiones_junto_al_informe(monkeypatch, 
     )
     assert result.exit_code == 2, result.output
     informe = out.read_text(encoding="utf-8")
-    # El informe con la politica ``review`` trae las tres secciones nuevas de v4.
-    assert "## 8. Auditoria de ventas" in informe
+    # El informe con la politica ``review`` trae las secciones de v6.
+    assert "## 3. Auditoria de ventas" in informe
+    assert "## 4. Tabla de TP y SL" in informe
     assert "## 9. Registro de decisiones" in informe
     assert "## 10. Que cambio" in informe
     # El registro se guarda junto al informe (con --out) y trae la linea del dia.

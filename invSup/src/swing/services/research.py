@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -357,14 +358,26 @@ def review_candidates(
     *,
     technical: Mapping[str, Mapping[str, object]] | None = None,
     macro_context: str = "",
-) -> dict[str, LLMReview]:
+    budget_s: float | None = None,
+) -> tuple[dict[str, LLMReview], tuple[str, ...]]:
     """Tesis de compra de la IA por candidato; un fallo puntual no tira el resto.
 
     ``technical`` (RSI, extension sobre medias, earnings) y ``macro_context`` se
     inyectan para que la IA distinga "buena empresa" de "buen momento de entrada".
+
+    ``budget_s`` acota la fase entera: antes de cada candidato se mira el reloj y, si
+    el presupuesto se agoto, los que faltan se saltan y se devuelven aparte. La llamada
+    en curso no se interrumpe (el tope de una llamada es su ``timeout`` x reintentos),
+    asi que el corte real puede pasarse del presupuesto por un candidato a lo sumo. Se
+    devuelve ``(tesis por ticker, tickers saltados por presupuesto)``.
     """
     reviews: dict[str, LLMReview] = {}
-    for candidate in candidates:
+    skipped: list[str] = []
+    deadline = None if budget_s is None else time.monotonic() + budget_s
+    for index, candidate in enumerate(candidates):
+        if deadline is not None and time.monotonic() >= deadline:
+            skipped.extend(c.ticker for c in candidates[index:])
+            break
         facts: dict[str, object] = {
             "theme": candidate.theme,
             "close": candidate.close,
@@ -387,7 +400,7 @@ def review_candidates(
             except LLMError:
                 if attempt == 1:
                     typer.secho(f"  aviso LLM: sin tesis para {candidate.ticker}", fg=typer.colors.YELLOW)
-    return reviews
+    return reviews, tuple(skipped)
 
 
 def macro_brief(client: LLMClient, today: dt.date, out_dir: Path, *, refresh: bool = False) -> LLMReview | None:
@@ -448,7 +461,7 @@ def macro_data(provider: YahooDataProvider, today: dt.date) -> dict[str, str]:
     for name, symbol in (("10Y", "^TNX"), ("DXY", "DX-Y.NYB")):
         try:
             series = provider.daily_bars(symbol, start=today - dt.timedelta(days=30), end=today)
-        except (CacheError, DataUnavailable):
+        except (CacheError, DataUnavailable, ValueError):
             continue
         if not series.is_empty:
             out[name] = f"{series.last_close:.2f}"

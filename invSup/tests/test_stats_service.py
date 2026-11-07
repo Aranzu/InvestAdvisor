@@ -23,15 +23,21 @@ from swing.adapters.tradingeconomics import TeCommodity
 from swing.core.commodities import Commodity
 from swing.core.fundamentals import Fundamentals
 from swing.core.market import Bar, PriceSeries
-from swing.core.stats import PositionStats, StatsReport
+from swing.core.market_context import MarketInstrument
+from swing.core.stats import PositionStats, StatsReport, all_field_keys
 from swing.services.stats import (
     _change_pct,
     _commodities,
+    _context,
     _driver_fields,
+    _enrich_extended_hours,
     _enrich_panel,
+    _ext_from_quote,
     _fundamentals_to_dict,
     _insider_trades,
     _limitations,
+    _market_context,
+    _market_regime,
     _portfolio_panel,
     _series,
     _technical_fields,
@@ -240,6 +246,23 @@ def test_enrich_panel_calcula_peso_stop_y_riesgo() -> None:
     stop = 100.0 * (1.0 - max_loss / 100.0)
     assert context["stop_rule"] == pytest.approx(stop)
     assert context["stop_dist_pct"] == pytest.approx((110.0 - stop) / 110.0 * 100.0)
+    assert context["stop_perforated"] is False
+
+
+def test_enrich_panel_marca_el_stop_perforado_sin_tocar_los_numeros() -> None:
+    row = PositionStats(
+        ticker="MU",
+        context={"value_clp": 800_000.0, "entry_usd": 100.0, "price_usd": 80.0},
+        fields={},
+    )
+    enriched, _ = _enrich_panel([row], equity_clp=1_000_000.0, cash_clp=0.0, strategy=STRATEGY)
+    context = enriched[0].context
+    stop = 100.0 * (1.0 - STRATEGY.legacy.max_loss_from_cost_pct / 100.0)
+    assert context["stop_rule"] == pytest.approx(stop)
+    assert context["stop_perforated"] is True
+    # El dato crudo se conserva: el render decide como mostrarlo.
+    assert context["stop_dist_pct"] == pytest.approx((80.0 - stop) / 80.0 * 100.0)
+    assert context["risk_patrimonio_pct"] < 0.0
 
 
 def test_portfolio_panel_patrimonio_caja_y_temas() -> None:
@@ -277,6 +300,72 @@ def test_portfolio_panel_cluster_ticker_sin_tema_incluye_sndk() -> None:
     assert clusters["semis"]["pct"] == pytest.approx(50.0)
     # IA ampliada suma por tema 'Technology' a ambos, sin duplicar a SNDK.
     assert clusters["ia_ampliada"]["pct"] == pytest.approx(100.0)
+
+
+def test_portfolio_panel_declara_los_miembros_de_cada_cluster() -> None:
+    rows = [
+        PositionStats(ticker="NVDA", context={"theme": "semiconductors", "value_clp": 300_000.0}, fields={}),
+        PositionStats(ticker="B", context={"theme": "Technology", "value_clp": 200_000.0}, fields={}),
+    ]
+    analysis = SimpleNamespace(equity_clp=600_000.0, cash_clp=100_000.0)
+    panel = _portfolio_panel(rows, analysis=analysis, invested_clp=500_000.0, strategy=STRATEGY)  # type: ignore[arg-type]
+    clusters = panel["clusters"]
+    assert isinstance(clusters, dict)
+    assert clusters["semis"]["members"] == ["NVDA"]
+    assert clusters["ia_ampliada"]["members"] == ["NVDA", "B"]
+
+
+def test_context_agrega_cobertura_porcentual() -> None:
+    view = SimpleNamespace(
+        name="Acorp",
+        theme="IA",
+        volume=10.0,
+        cost_clp=1_000.0,
+        value_clp=1_200.0,
+        weight_pct=12.0,
+        price_usd=120.0,
+        price_source="yahoo",
+        pl_clp=200.0,
+        price_effect_clp=100.0,
+        fx_effect_clp=100.0,
+        sessions_open=30.0,
+        stop_usd=90.0,
+        earnings_known=False,
+        earnings_date=None,
+        earnings_sessions=None,
+        open_price_usd=100.0,
+    )
+    context = _context(view, fields={"pe": 10.0, "roe": 20.0, "sma50": 110.0})  # type: ignore[arg-type]
+    expected = 3 / len(all_field_keys()) * 100.0
+    assert context["coverage_pct"] == pytest.approx(expected)
+
+
+class _RecordingBars:
+    def __init__(self, series: dict[str, PriceSeries]) -> None:
+        self._series = series
+        self.calls: list[tuple[str, dt.date, dt.date]] = []
+
+    def daily_bars_report(self, ticker: str, *, start: dt.date, end: dt.date) -> tuple[PriceSeries, bool]:
+        self.calls.append((ticker, start, end))
+        if ticker not in self._series:
+            raise DataUnavailable("sin cache")
+        return self._series[ticker], False
+
+
+def test_market_context_usa_la_ventana_corta_de_usdclp_y_arma_el_regimen() -> None:
+    bars = _RecordingBars({"SPY": _series_of(30, 500.0), "USDCLP=X": _series_of(12, 950.0)})
+    market = _market_context(bars, TODAY, 400)  # type: ignore[arg-type]
+    usdclp_call = next(call for call in bars.calls if call[0] == "USDCLP=X")
+    assert usdclp_call[1] == TODAY - dt.timedelta(days=10)
+    assert next(item for item in market if item.symbol == "USDCLP=X").price == pytest.approx(950.0)
+    regime = _market_regime(market, STRATEGY)
+    assert regime is not None
+    assert regime.level in {"bajo", "medio", "alto", "sin dato"}
+
+
+def test_market_regime_sin_politica_es_none() -> None:
+    strategy = STRATEGY.model_copy(update={"briefing": None})
+    assert _market_regime((MarketInstrument(symbol="^VIX", label="VIX", price=18.0),), strategy) is None
 
 
 def _series_of(count: int, price: float) -> PriceSeries:
@@ -343,3 +432,119 @@ def test_save_load_report_round_trip(tmp_path: Path) -> None:
     assert loaded == report
     assert fundamentals_from_report(loaded)["NVDA"].trailing_pe == 10.0
     assert quotes_from_report(loaded)["NVDA"].price_usd == 5.0
+
+
+class _FakeQuotes:
+    """Provider minimo con la sola capacidad que usa el enriquecimiento."""
+
+    def __init__(self, snapshots: dict[str, dict[str, object]]) -> None:
+        self._snapshots = snapshots
+
+    def quote_snapshot(self, ticker: str) -> dict[str, object] | None:
+        return self._snapshots.get(ticker)
+
+
+def _report(rows: tuple[PositionStats, ...], quotes: dict[str, dict[str, object]]) -> StatsReport:
+    return StatsReport(
+        account="1",
+        today=TODAY,
+        mode="live",
+        fx=950.0,
+        fx_source="x",
+        equity_clp=0.0,
+        cash_clp=0.0,
+        positions_value_clp=0.0,
+        rows=rows,
+        quotes=quotes,
+    )
+
+
+def test_ext_from_quote_traduce_pct_y_hora() -> None:
+    ext = _ext_from_quote(
+        {
+            "preMarketPrice": 245.69,
+            "preMarketChange": 2.31,
+            "preMarketChangePercent": 0.95,  # Yahoo entrega puntos porcentuales
+            "preMarketVolume": 8_815_477,
+            "preMarketTime": 1_760_000_000,
+        },
+        "preMarket",
+    )
+    assert ext is not None
+    assert ext.price == pytest.approx(245.69)
+    assert ext.change == pytest.approx(2.31)
+    assert ext.change_pct == pytest.approx(0.95)  # puntos porcentuales, sin reescalar
+    assert ext.volume == 8_815_477
+    assert ext.time_iso is not None and ext.time_iso.endswith("Z")
+    assert ext.source == "yahoo"
+
+
+def test_ext_from_quote_sin_precio_o_con_volumen_cero() -> None:
+    assert _ext_from_quote({}, "preMarket") is None
+    assert _ext_from_quote({"preMarketPrice": None}, "preMarket") is None
+    ext = _ext_from_quote({"postMarketPrice": 10.0, "postMarketVolume": 0}, "postMarket")
+    assert ext is not None
+    assert ext.volume is None  # volumen no positivo es "sin dato", no cero
+    assert ext.change is None and ext.change_pct is None
+
+
+def test_enrich_extended_hours_agrega_pre_y_post_sin_tocar_la_foto() -> None:
+    bars = _FakeQuotes(
+        {
+            "NVDA": {
+                "preMarketPrice": 100.0,
+                "preMarketChangePercent": 1.0,
+                "postMarketPrice": 101.0,
+                "postMarketChangePercent": -2.0,
+            }
+        }
+    )
+    report = _report(
+        (PositionStats(ticker="NVDA", context={}, fields={}),),
+        {"NVDA": {"price_usd": 99.0, "price_source": "p", "earnings_date": None, "earnings_known": False}},
+    )
+    enriched = _enrich_extended_hours(report, bars)
+    quote = enriched.quotes["NVDA"]
+    assert quote["price_usd"] == 99.0  # la foto guardada no se toca
+    pre = quote["pre_market"]
+    assert pre["price"] == pytest.approx(100.0)
+    assert pre["change"] is None
+    assert pre["change_pct"] == pytest.approx(1.0)
+    assert pre["volume"] is None
+    assert pre["time_iso"] is None
+    assert pre["source"] == "yahoo"
+    assert quote["after_market"]["change_pct"] == pytest.approx(-2.0)
+
+
+def test_enrich_extended_hours_sin_datos_deja_el_informe_igual() -> None:
+    report = _report(
+        (PositionStats(ticker="NVDA", context={}, fields={}),),
+        {"NVDA": {"price_usd": 99.0}},
+    )
+    assert _enrich_extended_hours(report, _FakeQuotes({})) is report
+
+
+def test_save_load_report_conserva_el_horario_extendido(tmp_path: Path) -> None:
+    quote = {
+        "price_usd": 99.0,
+        "price_source": "p",
+        "earnings_date": None,
+        "earnings_known": False,
+        "pre_market": {
+            "price": 100.0,
+            "change": 1.0,
+            "change_pct": 1.02,
+            "volume": 5,
+            "time_iso": "2026-10-10T13:00:00Z",
+            "source": "yahoo",
+        },
+    }
+    report = _report((PositionStats(ticker="NVDA", context={}, fields={}),), {"NVDA": quote})
+    path = tmp_path / "stats.json"
+    save_report(report, path)
+    loaded = load_report(path)
+    assert loaded == report
+    ext = quotes_from_report(loaded)["NVDA"].pre_market
+    assert ext is not None
+    assert ext.price == pytest.approx(100.0)
+    assert ext.volume == 5

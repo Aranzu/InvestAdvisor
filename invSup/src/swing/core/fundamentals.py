@@ -188,7 +188,9 @@ def score_fundamentals(f: Fundamentals, price: float, config: FundamentalsConfig
     a = config.score
     upside = f.target_upside(price)
     distorted = f.negative_equity
-    price_to_book = None if distorted else f.price_to_book
+    # El P/B solo entra si la config lo pide: por defecto no, porque no es comparable
+    # entre sectores y su tope absoluto descarta a las empresas asset-light.
+    price_to_book = None if (distorted or not config.use_price_to_book) else f.price_to_book
     debt_to_equity = None if distorted else f.debt_to_equity
     return_on_equity = None if distorted else f.return_on_equity
 
@@ -240,9 +242,11 @@ def score_fundamentals(f: Fundamentals, price: float, config: FundamentalsConfig
     has_data = any(block is not None for block in blocks.values())
     composite = weighted / total_weight * 100.0 if has_data and total_weight > 0.0 else None
 
-    present = sum(1 for name in _SCORED_FIELDS if getattr(f, name) is not None)
-    coverage = present / len(_SCORED_FIELDS)
-    missing = tuple(name for name in _SCORED_FIELDS if getattr(f, name) is None)
+    # La cobertura cuenta solo lo que el score usa: con el P/B apagado no se exige.
+    fields = _SCORED_FIELDS if config.use_price_to_book else tuple(n for n in _SCORED_FIELDS if n != "price_to_book")
+    present = sum(1 for name in fields if getattr(f, name) is not None)
+    coverage = present / len(fields)
+    missing = tuple(name for name in fields if getattr(f, name) is None)
 
     def pct(block: float | None) -> float | None:
         return None if block is None else block * 100.0
@@ -366,7 +370,8 @@ def check_fundamentals(
     over(f.trailing_pe, config.max_trailing_pe, "trailing_pe")
     # Con patrimonio negativo P/B, D/E y ROE no son comparables: no filtran.
     if not f.negative_equity:
-        over(f.price_to_book, config.max_price_to_book, "price_to_book")
+        if config.use_price_to_book:
+            over(f.price_to_book, config.max_price_to_book, "price_to_book")
         over(f.debt_to_equity, config.max_debt_to_equity, "debt_to_equity")
         under(f.return_on_equity, config.min_return_on_equity, "return_on_equity")
     under(f.profit_margin, config.min_profit_margin, "profit_margin")

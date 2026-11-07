@@ -191,6 +191,20 @@ class BriefingStopConfig(StrictModel):
     """Stop de respaldo (``precio - n*ATR``) cuando ningun soporte esta dentro del techo."""
 
 
+class BriefingRegimeConfig(StrictModel):
+    """Umbrales del regimen de mercado que resume ``stats --contexto``.
+
+    Reproduce el Paso 1 de ``PROMPT PORTAFOLIO``: cuatro senales de estres y un
+    conteo 0-1 bajo, 2 medio, >=3 alto. ``near_threshold_pp`` marca la senal que
+    esta a menos de esos puntos porcentuales de su umbral.
+    """
+
+    vix_max: float = Field(gt=0.0, le=200.0)
+    tnx_above_sma200_pct: float = Field(ge=0.0, le=100.0)
+    dxy_above_sma200_pct: float = Field(ge=0.0, le=100.0)
+    near_threshold_pp: float = Field(ge=0.0, le=100.0)
+
+
 class BriefingConfig(StrictModel):
     """Politica de la revision manual que alimenta el bloque "Resumen determinista".
 
@@ -210,6 +224,31 @@ class BriefingConfig(StrictModel):
     atr_flag_pct: float = Field(gt=0.0, le=100.0)
     upside_flag_pct: float = Field(gt=0.0, le=100.0)
     earnings_flag_sessions: int = Field(ge=0, le=250)
+    min_sessions_alert: int = Field(ge=0, le=250)
+    """Sesiones desde la entrada bajo las que se avisa antes de recomendar vender."""
+    coverage_min_pct: float = Field(ge=0.0, le=100.0)
+    """Cobertura de campos bajo la que se marca la posicion como de baja cobertura."""
+    growth_trap_pct: float = Field(gt=0.0, le=10000.0)
+    """Crecimiento a/a sobre el que se sospecha efecto base (``300`` %)."""
+    cycle_oper_margin_pct: float = Field(ge=0.0, le=100.0)
+    """Margen operativo sobre el que un multiple bajo no es barato (``60`` %)."""
+    rsi_percentile_high: float = Field(gt=50.0, le=100.0)
+    rsi_percentile_low: float = Field(gt=0.0, lt=50.0)
+    atr_percentile_high: float = Field(gt=50.0, le=100.0)
+    earnings_windows_sessions: tuple[int, ...] = ()
+    """Ventanas (sesiones) con las que se agrupan los earnings proximos."""
+    risk_alert_pct: float = Field(gt=0.0, le=100.0)
+    """Riesgo teorico por posicion sobre el que se emite una alerta informativa."""
+    take_profit_min_rr: float = Field(ge=0.0, le=100.0)
+    """R:R minimo del TP contra la Alerta 1 (``1.5``)."""
+    take_profit_max_upside_a_pct: float = Field(gt=0.0, le=200.0)
+    """Tope de recorrido del TP para una posicion Tipo A (``30`` %)."""
+    take_profit_max_upside_b_pct: float = Field(gt=0.0, le=200.0)
+    """Tope de recorrido del TP para una posicion Tipo B (``40`` %)."""
+    sl_type_b_atr_pct: float = Field(gt=0.0, le=100.0)
+    """ATR % desde el que la posicion usa dos alertas SL (Tipo B)."""
+    liquidity_near_tp_pct: float = Field(ge=0.0, le=100.0)
+    """Distancia al precio bajo la que un TP cuenta para el mapa de liquidez (``15`` %)."""
     take_profit_min_upside_pct: float = Field(ge=0.0, le=100.0)
     """Recorrido minimo sobre el precio para aceptar un nivel como take profit.
 
@@ -218,6 +257,7 @@ class BriefingConfig(StrictModel):
     no llega a este recorrido no se ofrece: sale ``sin techo claro``.
     """
     stop: BriefingStopConfig
+    regime: BriefingRegimeConfig
 
     @model_validator(mode="after")
     def _check(self) -> BriefingConfig:
@@ -225,6 +265,17 @@ class BriefingConfig(StrictModel):
             raise ValueError(
                 f"briefing.cash_min_pct ({self.cash_min_pct} %) tiene que ser menor que "
                 f"briefing.cash_max_pct ({self.cash_max_pct} %)"
+            )
+        if self.rsi_percentile_low >= self.rsi_percentile_high:
+            raise ValueError("briefing requiere rsi_percentile_low < rsi_percentile_high")
+        if any(window <= 0 for window in self.earnings_windows_sessions):
+            raise ValueError("briefing.earnings_windows_sessions solo admite enteros positivos")
+        if tuple(sorted(self.earnings_windows_sessions)) != self.earnings_windows_sessions:
+            raise ValueError("briefing.earnings_windows_sessions debe venir en orden ascendente")
+        if self.take_profit_max_upside_b_pct < self.take_profit_max_upside_a_pct:
+            raise ValueError(
+                "briefing.take_profit_max_upside_b_pct no puede ser menor que "
+                "take_profit_max_upside_a_pct: el Tipo B admite mas recorrido que el Tipo A"
             )
         return self
 
@@ -246,9 +297,21 @@ class ReviewLevelsConfig(StrictModel):
     alarm_max_distance_pct: float = Field(gt=0.0, le=100.0)
     """Tope: la alarma nunca queda mas lejos que esto bajo el precio (``15`` %)."""
     catastrophe_min_pct: float = Field(ge=0.0, le=100.0)
-    """Piso de catastrofe: borde cercano del rango bajo el precio (``15`` %)."""
+    """Piso de catastrofe: borde cercano del rango bajo el precio (``18`` %)."""
     catastrophe_max_pct: float = Field(ge=0.0, le=100.0)
     """Piso de catastrofe: borde lejano del rango bajo el precio (``20`` %)."""
+    catastrophe_entry_max_loss_pct: float = Field(gt=0.0, le=100.0)
+    """Perdida maxima desde la entrada que la catastrofe no puede superar (``25`` %)."""
+    sl_support_proximity_pct: float = Field(ge=0.0, le=100.0)
+    """Si una alerta queda a menos de esto de un soporte, se mueve bajo el soporte (``3`` %)."""
+    sl_support_buffer_pct: float = Field(ge=0.0, le=100.0)
+    """Colchon bajo el soporte al mover una alerta (``1`` %)."""
+    breakeven_gain_pct: float = Field(ge=0.0, le=1000.0)
+    """Ganancia en USD desde la que la Alerta 1 sube a la entrada (``15`` %)."""
+    breakeven_extra_gain_pct: float = Field(ge=0.0, le=1000.0)
+    """Ganancia en USD desde la que la Alerta 1 sube a entrada + ``breakeven_extra_pct`` (``30`` %)."""
+    breakeven_extra_pct: float = Field(ge=0.0, le=100.0)
+    """Colchon sobre la entrada que se exige con ganancia >= ``breakeven_extra_gain_pct`` (``10`` %)."""
     tactical_min_rr: float = Field(ge=0.0, le=10.0)
     """R:R minimo para ofrecer una zona tactica (``1.5``)."""
     level_raise_r: float = Field(ge=0.0, le=10.0)
@@ -262,6 +325,10 @@ class ReviewLevelsConfig(StrictModel):
             raise ValueError(
                 f"review.levels.catastrophe_min_pct ({self.catastrophe_min_pct}) no puede superar "
                 f"catastrophe_max_pct ({self.catastrophe_max_pct})"
+            )
+        if self.breakeven_extra_gain_pct < self.breakeven_gain_pct:
+            raise ValueError(
+                "review.levels.breakeven_extra_gain_pct no puede ser menor que breakeven_gain_pct"
             )
         return self
 
@@ -334,17 +401,58 @@ class ReviewAxesConfig(StrictModel):
         return self
 
 
+class ReviewMotivesConfig(StrictModel):
+    """Umbrales del motivo V7 (evento binario con ganancia).
+
+    V7 no exige deterioro de tesis: protege una ganancia ya ganada antes de un
+    evento binario cercano. El recorte es tactico y siempre del mismo tamano.
+    """
+
+    v7_gain_pct: float = Field(ge=0.0, le=1000.0)
+    """Ganancia en USD desde la que V7 aplica (``15`` %)."""
+    v7_earnings_sessions: int = Field(ge=0, le=250)
+    """Sesiones maximas al evento binario (``5``)."""
+    v7_min_sessions: int = Field(ge=0, le=250)
+    """Sesiones minimas desde la entrada: bajo eso V7 no aplica (``10``)."""
+    v7_partial_pct: float = Field(gt=0.0, le=100.0)
+    """Fraccion tactica que propone V7 (``25`` %)."""
+
+
+class ReviewHorizonConfig(StrictModel):
+    """Calendario del motivo V8 (horizonte de liquidacion hacia marzo de 2027)."""
+
+    liquidation_date: dt.date
+    """Fecha limite para consolidar el capital en efectivo (``2027-03-01``)."""
+    stagger_start: dt.date
+    """Desde esta fecha se propone la liquidacion escalonada (``2027-01-15``)."""
+    stagger_days: int = Field(ge=1, le=90)
+    """Dias entre tramos de la liquidacion escalonada (``14``)."""
+    tranche_pct: float = Field(gt=0.0, le=100.0)
+    """Fraccion que se liquida en cada tramo (``25`` %)."""
+
+    @model_validator(mode="after")
+    def _check(self) -> ReviewHorizonConfig:
+        if self.stagger_start >= self.liquidation_date:
+            raise ValueError(
+                "review.horizon.stagger_start tiene que ser anterior a liquidation_date"
+            )
+        return self
+
+
 class ReviewConfig(StrictModel):
     """Politica de la revision de ``PROMPT PORTAFOLIO`` implementada como codigo puro.
 
-    Los cuatro bloques (``levels``, ``triggers``, ``axes``) traducen a numeros lo que
-    el prompt pedia calcular a mano, para que la IA no gaste tokens en aritmetica.
-    Es **informativo**: no cambia las reglas del motor ni dispara ordenes.
+    Los bloques (``levels``, ``triggers``, ``axes``, ``motives`` y ``horizon``)
+    traducen a numeros lo que el prompt pedia calcular a mano, para que la IA no gaste
+    tokens en aritmetica. Es **informativo**: no cambia las reglas del motor ni dispara
+    ordenes.
     """
 
     levels: ReviewLevelsConfig
     triggers: ReviewTriggersConfig
     axes: ReviewAxesConfig
+    motives: ReviewMotivesConfig
+    horizon: ReviewHorizonConfig
     registry_name: str = "decisions.json"
     """Archivo del registro de decisiones dentro de ``state/``."""
 
@@ -574,6 +682,10 @@ class LlmConfig(StrictModel):
     enabled: bool
     veto_only: bool
     max_searches_per_ticker: int = Field(ge=0, le=20)
+    screen_budget_s: float = Field(default=240.0, gt=0.0)
+    """Presupuesto de la fase de tesis del screener, en segundos. Acota la corrida sin
+    tocar el numero de candidatos: agotado el presupuesto, los que falten quedan en
+    ``candidates.json`` con ``verdict: null`` (el ranking determinista ya esta escrito)."""
     weekly_day: Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
@@ -711,6 +823,12 @@ class FundamentalsConfig(StrictModel):
     max_forward_pe: float | None = Field(default=None, gt=0.0)
     max_trailing_pe: float | None = Field(default=None, gt=0.0)
     max_price_to_book: float | None = Field(default=None, gt=0.0)
+    use_price_to_book: bool = False
+    """Si el P/B entra en la puerta y en el score de valor. Por defecto ``False``: el
+    P/B no es comparable entre sectores (una empresa asset-light tiene P/B alto sin
+    estar cara: AAPL 46, ANET 16) y como tope absoluto descarta compounders de alto ROE.
+    El P/E sigue midiendo el valor. ``max_price_to_book``/``pb_good``/``pb_bad`` solo se
+    aplican con ``True``."""
     min_return_on_equity: float | None = None
     min_profit_margin: float | None = None
     min_revenue_growth: float | None = None
@@ -741,6 +859,14 @@ class ScreenerConfig(StrictModel):
     exclude_earnings_blackout: bool = False
     """Saca del recorte a quien reporta dentro de ``gates.earnings_entry_blackout_sessions``
     (la misma puerta G6 que el motor aplica a una entrada) y rellena con los siguientes."""
+    fail_closed_earnings: bool = True
+    """Con ``exclude_earnings_blackout``, una fecha de earnings ausente **con la fuente
+    consultada** tambien rechaza (``INDICATOR_NOT_READY``), como el G6 del motor. Con
+    la fuente no disponible (``--offline``) no se puede saber y no filtra."""
+    exclude_held: bool = True
+    """No propone comprar lo que ya tenes: si hay export de XTB, los tickers abiertos
+    salen del recorte y entra el siguiente. Tambien avisa si un candidato cae en un tema
+    que ya esta sobre ``risk.max_theme_pct``."""
 
 
 class StrategyConfig(StrictModel):

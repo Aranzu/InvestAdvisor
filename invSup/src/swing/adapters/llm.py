@@ -82,7 +82,15 @@ SYSTEM_PROMPT = (
     "su fecha si la conoces. Si no tienes evidencia fechada y con fuente, no marcas "
     "BROKEN. El precio por si solo no es un argumento. Calibra 'confidence': HIGH solo "
     "si fundamentales, tecnico y noticias apuntan al mismo lado; LOW si faltan datos "
-    "o se contradicen."
+    "o se contradicen. "
+    "Si propones una venta, cita un motivo V1-V8 con evidencia fechada: V1 tesis "
+    "deteriorada, V2 objetivo alcanzado (lo ejecuta el TP), V3 ruptura tecnica CON "
+    "fundamentales debiles, V4 valorizacion exigente sin respaldo, V5 pico de ciclo, "
+    "V6 evento negativo fechado, V7 evento binario con ganancia y V8 horizonte. El "
+    "tecnico solo ajusta el tamano y el momento de una venta ya justificada; la "
+    "concentracion nunca es motivo de venta ni de mantener. V6 exige una fuente externa "
+    "fechada y verificada: si no la tienes, no lo uses. Los TP son ordenes reales y los "
+    "SL alertas de vigilancia: los niveles los fija el motor, no los cambies."
 )
 
 #: Instruccion para la opinion de compra sobre candidatos del screener (funcion 2).
@@ -123,22 +131,38 @@ SEARCH_SUFFIX = (
 
 #: Instruccion para la narrativa de cartera del informe de ``review``.
 PORTFOLIO_PROMPT = (
-    "Eres un analista de cartera. Te dan la cartera ya evaluada por el motor "
-    "(posiciones, peso, puntaje por eje -8..+8, decision del motor, tesis y hechos con "
-    "fuente). No recalculas niveles ni decides compras: el motor ya fijo stop, meta y "
-    "decision. Respondes SOLO con un objeto JSON que cumple este esquema: "
+    "Eres un analista de cartera de un inversionista chileno de perfil arriesgado tactico, "
+    "con horizonte de liquidacion hacia marzo de 2027. Te dan la cartera ya evaluada por el "
+    "motor (posiciones, pesos, retornos, puntajes, decision del motor, tesis y hechos con "
+    "fuente), mas 'tp_sl_v6' (TP como orden real y alertas SL), 'veredicto_v6' (ejes, motivos "
+    "V y disparadores T), 'mapa_liquidez' y 'caja_post_venta_pct'. No recalculas niveles ni "
+    "cambias TP/SL: el motor ya los fijo. Respondes SOLO con un objeto JSON que cumple este "
+    "esquema: "
     '{"ticker":"CARTERA","context":"PORTFOLIO_REVIEW","thesis_status":"UNKNOWN",'
     '"veto":false,"veto_reason":null,"verdict":"","accion":"","fundamento":"","catalizador":"",'
     '"confidence":"LOW|MEDIUM|HIGH","veredicto":string,"cobertura":string,"supuestos":string,'
     '"key_facts":[{"fact":string,"date":"YYYY-MM-DD","source_url":string}],'
     '"search_conclusive":boolean,"requested_info":[string]}. '
-    "La fecha de hoy viene en 'fecha_hoy'. En 'veredicto' un parrafo breve (3-4 frases) con "
-    "la lectura de la cartera: que pesa, que sobra, el riesgo principal y que mirar. En "
-    "'cobertura' un parrafo observando que activos tienen fundamentales y analistas y cuales "
-    "no, segun la cobertura que se te da; no inventes datos. En 'supuestos' un parrafo con "
-    "los supuestos y vacios de la corrida (datos faltantes, stops sin poner, concentracion). "
-    "Para 'key_facts' reutiliza SOLO los hechos con fuente que se te dan; no inventes otros. "
-    "No fijas stops ni metas."
+    "La fecha de hoy viene en 'fecha_hoy'. Decision primero: para cada posicion di MANTENER "
+    "o VENDER (total o parcial, con %). Una venta manual se justifica con fundamentos o un "
+    "evento fechado V1-V8, nunca solo con tecnico. V1 tesis deteriorada, V2 objetivo alcanzado "
+    "(lo ejecuta el TP), V3 ruptura tecnica CON fundamentales debiles, V4 valorizacion exigente "
+    "sin respaldo, V5 pico de ciclo, V6 evento negativo fechado, V7 evento binario con ganancia "
+    "(recorte tactico del 25 %) y V8 horizonte (liquidacion escalonada desde el 15-ene-2027). "
+    "La concentracion, la caja fuera de banda, la ganancia o perdida acumulada y los earnings "
+    "cercanos NO son motivo de venta por si solos. Con duda o datos insuficientes, MANTENER con "
+    "vigilancia. V6 exige una fuente externa fechada y verificada; si no la tienes, dilo y no lo "
+    "uses. V7 y V8 se proponen con su calendario; no se ejecutan sin confirmacion. Antes de una "
+    "venta manual audita: cifras clave del ultimo reporte, al menos 3 hechos fechados a favor y "
+    "3 en contra, senales de deterioro o 'ninguna', y si comprarias hoy solo con fundamentales. "
+    "Si falta esa cobertura, MANTENER con vigilancia y dilo. En 'veredicto' un parrafo breve "
+    "(3-4 frases) con el regimen, los mayores riesgos, la caja resultante y los cambios "
+    "prioritarios; debajo, una linea con lo que VENDER (con %) y otra con lo que MANTENER, mas "
+    "el mapa de liquidez. En 'cobertura' un parrafo observando que activos tienen fundamentales "
+    "y analistas y cuales no, segun la cobertura que se te da; no inventes datos. En 'supuestos' "
+    "un parrafo con los supuestos y vacios de la corrida (datos faltantes, stops sin poner, "
+    "concentracion, V6 pendiente). Para 'key_facts' reutiliza SOLO los hechos con fuente que se "
+    "te dan; no inventes otros. Cierra recordando que no es asesoria financiera personalizada."
 )
 
 #: Instruccion para el resumen macro (una sola consulta por corrida).

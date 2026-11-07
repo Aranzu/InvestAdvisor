@@ -46,13 +46,41 @@ from swing.core.report import (
 
 
 @dataclass(frozen=True, slots=True)
+class ExtMarket:
+    """Cotizacion de horario extendido (pre/after market) de un ticker.
+
+    Los cambios van en la misma unidad que el resto del informe: ``change`` en
+    la moneda del activo y ``change_pct`` en **puntos porcentuales** (0.95 =
+    +0.95 %). ``time_iso`` es el instante de la ultima publicacion en UTC y
+    ``source`` la fuente; son ``None`` cuando la fuente no los trajo. Best
+    effort por diseno: el campo que falte queda ``None`` y se muestra ``-``,
+    nunca se inventa un precio de horario extendido.
+    """
+
+    price: float | None = None
+    change: float | None = None
+    change_pct: float | None = None
+    volume: int | None = None
+    time_iso: str | None = None
+    source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Quote:
-    """Cotizacion de un ticker el dia ``Market.today``."""
+    """Cotizacion de un ticker el dia ``Market.today``.
+
+    ``pre_market``/``after_market`` son la foto de horario extendido si la
+    fuente la publico (Yahoo lo hace en ``info``); ``None`` cuando no hay dato
+    o cuando el mercado no tiene sesion extendida abierta, que es lo normal en
+    una corrida de cache offline.
+    """
 
     price_usd: float | None
     price_source: str
     earnings_date: dt.date | None
     earnings_known: bool
+    pre_market: ExtMarket | None = None
+    after_market: ExtMarket | None = None
 
 
 @dataclass(frozen=True, slots=True)

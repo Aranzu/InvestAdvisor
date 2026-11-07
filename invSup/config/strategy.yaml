@@ -74,10 +74,34 @@ briefing:
   atr_flag_pct: 4
   upside_flag_pct: 10
   earnings_flag_sessions: 10
+  # Avisos de contexto que pide el prompt v6 antes de decidir.
+  min_sessions_alert: 10
+  coverage_min_pct: 60
+  growth_trap_pct: 300
+  cycle_oper_margin_pct: 60
+  rsi_percentile_high: 80
+  rsi_percentile_low: 20
+  atr_percentile_high: 80
+  earnings_windows_sessions: [5, 10, 15]
+  risk_alert_pct: 2
+  take_profit_min_rr: 1.5
+  # Tope de recorrido del TP desde el precio actual, por tipo de SL (v6).
+  take_profit_max_upside_a_pct: 30
+  take_profit_max_upside_b_pct: 40
+  # Tipo B (dos alertas SL): ATR % >= 4 o pertenecer al cluster de semis.
+  sl_type_b_atr_pct: 4
+  # Mapa de liquidez: TP a menos de 15 % del precio.
+  liquidity_near_tp_pct: 15
   # Recorrido minimo sobre el precio para aceptar un nivel como take profit. Un
   # nivel mas cercano no es un objetivo: sale "sin techo claro" en vez de un
   # "objetivo" a 0.02 % que empujaria a tomar utilidades en el primer techo.
   take_profit_min_upside_pct: 5
+  # Regimen de mercado del Paso 1 del prompt v6.
+  regime:
+    vix_max: 20
+    tnx_above_sma200_pct: 10
+    dxy_above_sma200_pct: 5
+    near_threshold_pp: 1
   # Stop = soporte mas cercano por debajo del precio - buffer_atr*ATR; sin soporte
   # dentro de max_distance_pct, precio - fallback_atr_mult*ATR. Se acota a
   # [min_atr_mult*ATR, max_distance_pct] bajo el precio. min_atr_mult es piso de
@@ -100,8 +124,17 @@ review:
     alarm_atr_mult: 3.0
     alarm_floor_atr: 2.5
     alarm_max_distance_pct: 15
-    catastrophe_min_pct: 15
+    catastrophe_min_pct: 18
     catastrophe_max_pct: 20
+    # La catastrofe nunca puede quedar a mas de 25 % bajo la entrada.
+    catastrophe_entry_max_loss_pct: 25
+    # Si una alerta queda a <3 % de un soporte, baja a 1 % bajo ese soporte.
+    sl_support_proximity_pct: 3
+    sl_support_buffer_pct: 1
+    # Las alertas solo suben: +15 % lleva la Alerta 1 a la entrada; +30 % a entrada+10 %.
+    breakeven_gain_pct: 15
+    breakeven_extra_gain_pct: 30
+    breakeven_extra_pct: 10
     tactical_min_rr: 1.5
     level_raise_r: 2.0
     objective_min_analysts: 10
@@ -126,6 +159,18 @@ review:
     weak_fundamentals_min: 2
     action_maintain_total: 2
     action_sell_total: -2
+  # Motivo V7 (evento binario con ganancia): recorte tactico del 25 %.
+  motives:
+    v7_gain_pct: 15
+    v7_earnings_sessions: 5
+    v7_min_sessions: 10
+    v7_partial_pct: 25
+  # Motivo V8: liquidacion escalonada hacia marzo de 2027.
+  horizon:
+    liquidation_date: 2027-03-01
+    stagger_start: 2027-01-15
+    stagger_days: 14
+    tranche_pct: 25
   registry_name: decisions.json
 
 gates:
@@ -145,6 +190,11 @@ fundamentals:
   max_forward_pe: 40.0
   max_trailing_pe: 60.0
   max_price_to_book: 12.0
+  # El P/B no es comparable entre sectores y su tope absoluto descarta a las empresas
+  # asset-light de alto ROE (AAPL P/B 46, ANET 16). Apagado, el valor lo mide el P/E y
+  # max_price_to_book / pb_good / pb_bad quedan sin efecto. Encenderlo solo si se acepta
+  # el sesgo hacia sectores de activos tangibles.
+  use_price_to_book: false
   min_return_on_equity: 0.05
   min_profit_margin: 0.0
   min_revenue_growth: -0.05
@@ -202,6 +252,14 @@ screener:
   # Misma puerta G6 que el motor aplica a una entrada: quien reporta dentro de
   # gates.earnings_entry_blackout_sessions sale del recorte y entra el siguiente.
   exclude_earnings_blackout: true
+  # Con la fuente de earnings consultada (no --offline), una fecha ausente no se
+  # asume: se rechaza como el motor (INDICATOR_NOT_READY) en vez de recomendar a
+  # ciegas. En false, solo filtra el blackout de las fechas conocidas.
+  fail_closed_earnings: true
+  # No proponer lo que ya se tiene: con export de XTB, los tickers abiertos salen del
+  # recorte y entra el siguiente; ademas avisa si un candidato cae en un tema ya sobre
+  # risk.max_theme_pct.
+  exclude_held: true
 
 
 setups:
@@ -262,6 +320,11 @@ llm:
   # niveles: stop, meta, tamano). true = conserva el diseno original de solo veto.
   veto_only: false
   max_searches_per_ticker: 3
+  # Presupuesto de la fase de tesis del screener (segundos). Acota la corrida: agotado
+  # el tiempo, los candidatos que falten quedan en candidates.json con verdict null
+  # (el ranking determinista ya quedo escrito). Un candidato puede pasarse del tope por
+  # el tiempo de su propia llamada (timeout x reintentos).
+  screen_budget_s: 240
   weekly_day: sunday
 
 safety:

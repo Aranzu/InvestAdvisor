@@ -30,6 +30,11 @@ def registry_path(name: str = "decisions.json") -> Path:
     return report_dir().parent / "state" / name
 
 
+def picks_dir() -> Path:
+    """``state/picks/``: una foto por corrida del screener (journal forward)."""
+    return report_dir().parent / "state" / "picks"
+
+
 def _stamp(when: dt.datetime) -> str:
     """Sello de tiempo legible y ordenable para el nombre de los informes."""
     return when.strftime("%Y%m%d-%H%M%S")

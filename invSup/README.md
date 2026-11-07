@@ -41,7 +41,7 @@ opcional. Ver `docs/PROGRAMACION.md`.
 
 El CLI expone **tres comandos**: `stats`, `review` y `screen`. El resto sigue existiendo
 pero está **oculto** (`check-config`, `verify-broker`, `data-health`, `analyze-positions`,
-`discover`, `nightly`, `schedule`): son herramientas de diagnóstico y automatización.
+`discover`, `track`, `nightly`, `schedule`): son herramientas de diagnóstico y automatización.
 
 ```powershell
 python -m venv .venv
@@ -88,6 +88,8 @@ desde el último giro—, mín/máx de **20 y 50 sesiones**, **fuerza relativa (
 contra el SPY y máximos/mínimos de 52 semanas) se calculan localmente desde las velas y Finviz
 aporta lo que Yahoo no publica (float y short interest, propiedad de insiders e institucional,
 ROA/ROIC, payout, desempeño por período, y el detalle de compras/ventas de insiders con su neto).
+Cuando Yahoo publica **horario extendido**, se agrega la sección **Horario extendido (Pre/Post
+Market)** con el precio de pre/after market (variación y hora ET) y su volumen.
 
 Además, **todo lo que se puede derivar se calcula en código** (no lo inventa la IA):
 
@@ -135,14 +137,16 @@ entradas. La IA (siempre encendida cuando hay clave; sin clave el informe sale i
 un aviso) entrega su veredicto (`BUY/HOLD/SELL/WATCH`) y **decide** mantener o vender;
 el motor sigue fijando stop, meta y tamaño. Hay cuatro formatos con `--formato`:
 
-- `informe` (por defecto): **10 secciones** — 1. Veredicto, 2. Cobertura, 3. Decisiones,
-  4. Niveles, 5. Alertas, 6. Supuestos y vacíos, 7. Fuentes clave, 8. Auditoría de ventas,
-  9. Registro de decisiones, 10. Qué cambió. El motor resuelve decisiones, puntaje por ejes
-  (V/C/G/P) y, con la política `review` de `config/strategy.yaml`, también el **veredicto de
-  `PROMPT PORTAFOLIO`**: niveles de revisión y alarma, disparadores T1-T6, motivos M1-M7 y
-  ejes E1-E4 con su acción implícita. La IA aporta una narrativa en **una sola llamada**
-  (`PORTFOLIO_REVIEW`, sin búsquedas nuevas) que llena el veredicto, la cobertura y los
-  supuestos.
+- `informe` (por defecto): **11 secciones** (la 11 solo si la caja post-venta supera
+  20 %) — 1. Veredicto y liquidez, 2. Tabla de decisión, 3. Auditoría de ventas,
+  4. Tabla de TP y SL, 5. Cobertura, 6. Alertas, 7. Supuestos y vacíos, 8. Fuentes clave,
+  9. Registro de decisiones, 10. Qué cambió, 11. Oportunidades. El motor resuelve
+  decisiones, puntaje por ejes (V/C/G/P), TP como órdenes reales y SL como alertas; con la
+  política `review` de `config/strategy.yaml`, también el **veredicto de
+  `PROMPT PORTAFOLIO v6`**: niveles de revisión y alarma, disparadores T1-T6, motivos
+  V1-V8 y ejes E1-E4 con su acción implícita. La IA aporta una narrativa en **una sola
+  llamada** (`PORTFOLIO_REVIEW`, sin búsquedas nuevas) que llena el veredicto, la
+  cobertura y los supuestos.
 - `detalle`: bloque por posición con **qué hacer** y **qué más aplica** (las reglas que la
   precedencia tapa) y la tesis de la IA; cierra con un glosario. Es el que usa `nightly`.
 - `tabla`: `Activo · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Próximo
@@ -171,11 +175,28 @@ la sección de Alertas.
 prefiltro técnico de tendencia/rango/liquidez y las **puertas fundamentales**
 (`fundamentals:` en `strategy.yaml`: valoración, ROE, margen, deuda, crecimiento y
 potencial al objetivo de analistas) y ordena por **score compuesto** (valor/calidad/
-crecimiento/proyecciones mezclado con la fuerza relativa del universo). Saca a quien
-reporta resultados dentro del blackout de entrada (la misma puerta G6 del motor) y deja
-una sola clase de acción por empresa. Con `--min-score` filtra por ese score; la IA
-(obligatoria cuando hay clave) agrega la tesis de compra (veredicto `BUY/WATCH`) y la deja
-en el JSON. Los candidatos quedan en `state/candidates.json`.
+crecimiento/proyecciones mezclado con la fuerza relativa del universo). El P/B está
+**apagado por defecto** (`use_price_to_book`): no es comparable entre sectores y su tope
+absoluto descartaba empresas asset-light de alto ROE (AAPL, ANET); el valor lo mide el P/E.
+Saca a quien reporta resultados dentro del blackout de entrada (la misma puerta G6 del motor):
+con la fuente de earnings consultada, una fecha ausente también queda fuera
+(`INDICATOR_NOT_READY`) en vez de recomendar a ciegas. Deja una sola clase de acción por
+empresa. Con el export de XTB (`--portfolio` o el más nuevo de `posiciones/`) **no propone
+lo que ya tenés** y avisa si un candidato cae en un tema que ya está sobre
+`risk.max_theme_pct`. Con `--min-score` filtra por ese score; la IA (obligatoria cuando hay
+clave) agrega la tesis de compra (veredicto `BUY/WATCH`) y la deja en el JSON. El ranking
+determinista se escribe en `state/candidates.json` **antes** de la IA y la tesis se anexa
+después: la corrida no se pierde si la tesis tarda o falla. La fase de tesis está acotada por
+`llm.screen_budget_s` (240 s por defecto): agotado el presupuesto, los candidatos que falten
+quedan en el JSON con `verdict: null` en vez de alargar la corrida.
+
+La **medición** está separada del producto: `swing track` (oculto) lee el journal
+(`state/picks/`, una foto por corrida de `screen`) y, para los candidatos cuyo horizonte ya
+maduró, calcula el retorno a **21 y 63 sesiones** y su exceso contra `regime.index` (SPY).
+**No hay lookahead**: la entrada es la sesión en que se propuso y la salida una sesión
+posterior ya en la cache. Los fundamentales y los objetivos de analistas **no se pueden
+medir hacia atrás** (no hay snapshot histórico) y el S&P es el de hoy, así que el journal es
+*forward* a propósito: la señal tarda semanas en juntarse, pero no miente.
 
 ### Clave del LLM (fase 6)
 
@@ -271,6 +292,7 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `core/market_context.py` | — | Contexto de mercado determinista (VIX, SPY, QQQ, SOXX, Chile, 10Y, DXY) |
 | `core/stats.py` | — | Ficha por posición: specs de campos, derivados y render Markdown |
 | `core/briefing.py` | — | Bloque determinista de la revisión: banderas, stop técnico, take profit y alertas |
+| `core/track.py` | — | Medición forward de candidatos: retorno a 21/63 sesiones y exceso vs benchmark |
 | `adapters/config_loader.py` | 7 | YAML → modelos, con errores que dicen qué falta |
 | `adapters/cache.py` | 6 | Una vela diaria por símbolo en CSV, escritura atómica, rango faltante |
 | `adapters/data_yahoo.py` | 6, 8 | Yahoo sin ajustes, earnings, `CLP=X`, mapeo de símbolos, sector |
@@ -283,6 +305,7 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `adapters/finviz.py` | — | Snapshot de Finviz por ticker (scraping best effort, cache por día) |
 | `adapters/tradingeconomics.py` | — | Materias primas de Trading Economics (scraping best effort, cache por día) |
 | `services/paths.py` | — | Rutas del proyecto (`posiciones/`, `output/`, `state/`) y nombres únicos de informes |
+| `services/picks_log.py` | — | Journal forward en `state/picks/`: una foto por sesión, idempotente y tolerante a corrupción |
 | `services/market_data.py` | 6 | Arma velas, FX, quotes, earnings y fuerza relativa del snapshot |
 | `services/stats.py` | 5.2 | Ensambla el informe de stats (Yahoo base + técnicos + Finviz) |
 | `services/research.py` | 12 | Hechos para el prompt de la IA y contexto macro con caché |

@@ -26,7 +26,13 @@ swing review --formato detalle        # bloque por posicion, como lo deja `night
 
 # Funcion 2 - que comprar (screener dinamico: tecnico + fundamentales + proyecciones):
 swing screen --top 20                 # deja state/candidates.json con score y veredicto
+swing screen --portfolio posiciones/CLP_...xlsx   # ademas no propone lo que ya tenes
 ```
+
+La medicion del screener es aparte: `swing track` (oculto) lee el journal `state/picks/`
+y, para los candidatos con horizonte ya madurado, muestra el retorno a 21 y 63 sesiones y
+su exceso contra el S&P. Es **forward** a proposito (los fundamentales no se pueden medir
+hacia atras sin lookahead), asi que la señal tarda semanas en juntarse.
 
 ## Corrida nocturna (fase 8)
 
@@ -49,7 +55,7 @@ esta en `docs/PROGRAMACION.md`.
 
 `stats` escribe `output/stats_<reporte>_<marca>.md` (o `--out`) y, junto a él, un
 `stats_<reporte>_<marca>.json` con el mismo contenido en forma estructurada (contrato
-`schema: 1`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
+`schema: 8`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
 sello de la corrida (`AAAAMMDD-HHMMSS`), para que dos corridas del mismo día o de cuentas
 distintas no se pisen. `analyze-positions` y `review` **consumen** ese JSON si es de hoy y
 de la misma cuenta, para no volver a pedir a Yahoo los fundamentales y las
@@ -72,26 +78,34 @@ Yahoo es la base, los técnicos se calculan localmente y Finviz aporta lo que Ya
 publica; escribe `output/stats_<reporte>_<marca>.md` (o `--out`). Un `-` es "sin dato"; la sección
 **Cobertura de datos** dice cuántos campos llegaron y cuáles faltan por ticker, y
 **Límites de esta evaluación** declara offline, montos en CLP y velas incoherentes de Yahoo.
+Además, cuando Yahoo publica **pre-market y after-market** aparece la sección
+**Horario extendido (Pre/Post Market)** con el precio (variación contra el cierre regular y
+hora ET) y el volumen de cada lado; sin dato la sección no se muestra.
 Por defecto el informe **oculta el contexto informativo** (dividendos, desempeño,
 liquidez/propiedad, insiders, driver, mercado y materias primas) y deja solo lo que decide
-(decisión, niveles y puntaje); `--contexto` muestra la ficha completa. La IA de `review`
-recibe el contexto igual. Con `--offline` solo lee cache.
+(decisión, niveles y puntaje); `--contexto` muestra la ficha completa. Con `--contexto`
+también aparecen el **régimen de mercado** del Paso 1 de `Prompt portafolio v6` (VIX, SPY
+bajo su SMA200, 10Y y DXY sobre su SMA200, más USD/CLP y las señales a menos de un punto
+porcentual del umbral), el **mapa de liquidez** de la cartera y el detalle de **alertas SL**
+(Tipo A/B, alerta 1 y 2, distancias a precio y entrada, y riesgo teórico % del patrimonio).
+La IA de `review` recibe el contexto igual. Con `--offline` solo lee cache.
 
 ## Como leer el informe
 
-`review --formato informe` (por defecto) trae **10 secciones**: 1. Veredicto, 2. Cobertura,
-3. Decisiones, 4. Niveles, 5. Alertas, 6. Supuestos y vacíos, 7. Fuentes clave, 8. Auditoría
-de ventas, 9. Registro de decisiones, 10. Qué cambió. El motor resuelve decisiones, el puntaje
-por ejes (V/C/G/P, suma `-8..+8`), los niveles y las alertas; con la política `review` de
-`config/strategy.yaml` agrega el **veredicto de `PROMPT PORTAFOLIO`**: niveles de revisión y
-alarma, disparadores T1-T6, motivos M1-M7 y ejes E1-E4 (con subtotales F y M) y su acción
-implícita. La IA aporta una narrativa en una sola llamada (sin búsquedas nuevas) que llena
-el veredicto, la cobertura y los supuestos.
+`review --formato informe` (por defecto) trae **11 secciones** (la 11 solo si la caja
+post-venta supera 20 %): 1. Veredicto y liquidez, 2. Tabla de decisión, 3. Auditoría de
+ventas, 4. Tabla de TP y SL, 5. Cobertura, 6. Alertas, 7. Supuestos y vacíos, 8. Fuentes
+clave, 9. Registro de decisiones, 10. Qué cambió, 11. Oportunidades. El motor resuelve
+decisiones, el puntaje por ejes (V/C/G/P, suma `-8..+8`), los TP como órdenes y las alertas
+SL; con la política `review` de `config/strategy.yaml` agrega el **veredicto de
+`PROMPT PORTAFOLIO v6`**: niveles de revisión y alarma, disparadores T1-T6, motivos V1-V8 y
+ejes E1-E4 (con subtotales F y M) y su acción implícita. La IA aporta una narrativa en una
+sola llamada (sin búsquedas nuevas) que llena el veredicto, la cobertura y los supuestos.
 
-Las secciones 8-10 se guardan en `state/decisions.json`: la **auditoría de ventas** exige
-motivo admitido y hechos con fuente antes de vender; el **registro de decisiones** deja una
-línea por activo para medir a 30/90 días; y **qué cambió** compara la corrida con la anterior
-(vigila que el nivel de alarma no baje sin motivo).
+La **auditoría de ventas** (sección 3) exige motivo admitido y hechos con fuente antes de
+vender; el **registro de decisiones** (sección 9) se guarda en `state/decisions.json` con una
+línea por activo para medir a 30/90 días; y **qué cambió** (sección 10) compara la corrida con
+la anterior (vigila que la Alerta 1 no baje sin motivo).
 
 `review --formato detalle` (el que usa `nightly`) repite la lectura de siempre:
 
@@ -109,8 +123,16 @@ En `screen`, lee la tabla por **score** (sobre 100): mezcla el score fundamental
 `screener.momentum_weight`. `upside%` = potencial al objetivo de analistas, `cobert%` =
 cuántas métricas tenía el ticker y `earn (ses)` = sesiones hasta el próximo reporte (`!` =
 dentro del blackout de entrada). Con `exclude_earnings_blackout: true` esos quedan fuera
-del recorte y entra el siguiente. Un `-` significa "sin dato" (nunca un cero).
+del recorte y entra el siguiente; con `fail_closed_earnings: true` (por defecto) un `-`
+(earnings sin fecha) también queda fuera cuando la fuente se consultó (no `--offline`),
+igual que la puerta G6 del motor. Un `-` significa "sin dato" (nunca un cero).
 `--min-score` filtra antes del recorte y `--top` (por defecto `screener.top`) lo fija.
+El P/B está apagado por defecto (`fundamentals.use_price_to_book`), así que `cobert%` no lo
+cuenta y el valor lo mide el P/E. Con el export de XTB (`--portfolio` o el más nuevo) los
+tickers ya abiertos salen del recorte (`screener.exclude_held`) y se avisa si un candidato
+cae en un tema ya sobre `risk.max_theme_pct`.
+La tesis de la IA se anexa al JSON ya escrito y su fase esta acotada por
+`llm.screen_budget_s` (240 s): los candidatos que no lleguen quedan con `verdict: null`.
 
 ## Codigos de salida
 
