@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -302,6 +303,9 @@ class OpenAICompatibleClient:
         init=False,
         repr=False,
     )
+    #: Varias consultas de posicion corren en paralelo; el contador de tokens es
+    #: compartido y se actualiza bajo este candado.
+    _usage_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def usage_line(self) -> str | None:
         """Resumen de tokens de la corrida; ``None`` si no hubo llamadas exitosas."""
@@ -521,11 +525,12 @@ class OpenAICompatibleClient:
         usage = data.get("usage")
         if not isinstance(usage, dict):
             return
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            value = usage.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
-                self._usage[key] += value
-        self._usage["calls"] += 1
+        with self._usage_lock:
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    self._usage[key] += value
+            self._usage["calls"] += 1
 
 
 def _first_message(data: Mapping[str, object]) -> dict[str, object]:

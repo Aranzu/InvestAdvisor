@@ -326,6 +326,9 @@ llm:
   # niveles: stop, meta, tamano). true = conserva el diseno original de solo veto.
   veto_only: false
   max_searches_per_ticker: 3
+  # Consultas de posicion en paralelo. Cada una tarda ~2-3 min con busqueda web;
+  # con 6 la cartera de ~16 nombres se revisa en ~3 lotes en vez de 16 turnos.
+  review_parallelism: 6
   # Presupuesto de la fase de tesis del screener (segundos). Acota la corrida: agotado
   # el tiempo, los candidatos que falten quedan en candidates.json con verdict null
   # (el ranking determinista ya quedo escrito). Un candidato puede pasarse del tope por

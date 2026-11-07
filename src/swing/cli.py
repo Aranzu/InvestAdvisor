@@ -626,6 +626,11 @@ def review(
     else:
         out_dir = out.parent if out is not None else _output_dir()
         macro = _macro_brief(client, market.today, out_dir, refresh=refresh_contexto)
+        if macro is None:
+            typer.secho(
+                "  aviso: sin contexto macro de la IA; se usa el contexto determinista",
+                fg=typer.colors.YELLOW,
+            )
         contexto = macro.fundamento if macro is not None and macro.fundamento else ""
         reviews, failed = _review_positions(
             client,
@@ -638,6 +643,7 @@ def review(
             calendar=market.calendar,
             blackout=market.strategy.gates.earnings_entry_blackout_sessions,
             stats=stats_report,
+            max_workers=market.strategy.llm.review_parallelism,
         )
         if failed:
             llm_failed = True

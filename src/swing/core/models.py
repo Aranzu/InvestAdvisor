@@ -791,6 +791,9 @@ class LlmConfig(StrictModel):
     enabled: bool
     veto_only: bool
     max_searches_per_ticker: int = Field(ge=0, le=20)
+    review_parallelism: int = Field(default=6, ge=1, le=16)
+    """Consultas de posicion en paralelo. Cada una tarda ~2-3 min con busqueda web,
+    asi que la cartera se revisa por lotes en vez de una posicion por vez."""
     screen_budget_s: float = Field(default=240.0, gt=0.0)
     """Presupuesto de la fase de tesis del screener, en segundos. Acota la corrida sin
     tocar el numero de candidatos: agotado el presupuesto, los que falten quedan en

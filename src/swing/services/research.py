@@ -10,8 +10,10 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import threading
 import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from pathlib import Path
 
@@ -287,6 +289,7 @@ def review_positions(
     calendar: SessionCalendar | None = None,
     blackout: int = 0,
     stats: StatsReport | None = None,
+    max_workers: int = 1,
 ) -> tuple[list[LLMReview], list[str]]:
     """Segunda opinion de la IA por posicion; la IA decide mantener o vender.
 
@@ -299,9 +302,48 @@ def review_positions(
     con el motivo (``TICKER (HTTP 503)``) para que el aviso del CLI lo declare.
     Con ``stats`` se inyecta la ficha completa de la posicion (contexto y todos los
     campos) mas el contexto de materias primas, para que la IA pondere todo.
+    ``max_workers`` consulta varias posiciones en paralelo (cada consulta con
+    busqueda web tarda minutos); el resultado conserva el orden por ticker.
     """
-    reviews: list[LLMReview] = []
+    tasks: list[tuple[str, float, dict[str, object]]] = []
+    for judgment in sorted(plan.exits, key=lambda j: j.ticker):
+        trade = judgment.trade
+        context: dict[str, object] = {}
+        if snapshot is not None:
+            frame = snapshot.frames.get(trade.ticker)
+            if frame is not None:
+                context.update(technical_facts(frame))
+            day = snapshot.earnings.get(trade.ticker)
+            sessions = sessions_to_earnings(calendar, snapshot.today, day) if calendar is not None else None
+            context.update(earnings_facts(day, sessions, blackout))
+        tasks.append(
+            (
+                trade.ticker,
+                trade.close,
+                {
+                    "theme": themes.themes.get(trade.ticker, "sin_tema"),
+                    "entry": trade.entry_price,
+                    "close": trade.close,
+                    "retorno_pct": round((trade.close / trade.entry_price - 1.0) * 100.0, 2)
+                    if trade.entry_price > 0
+                    else None,
+                    "current_r": round(trade.current_r, 2),
+                    "days_open": trade.days_open,
+                    "stop": trade.stop,
+                    "pct_hasta_stop": round((trade.stop / trade.close - 1.0) * 100.0, 2)
+                    if trade.close > 0
+                    else None,
+                    **context,
+                },
+            )
+        )
+    if not tasks:
+        return [], []
+
+    reviews_by_ticker: dict[str, LLMReview] = {}
     failed: list[str] = []
+    counter = {"done": 0, "total": len(tasks)}
+    lock = threading.Lock()
 
     def _consult(ticker: str, price: float, facts: dict[str, object]) -> None:
         payload = position_facts(
@@ -314,40 +356,27 @@ def review_positions(
         )
         for attempt in range(2):
             try:
-                reviews.append(client.review(ticker, ReviewContext.POSITION_REVIEW, payload, today))
-                return
+                review = client.review(ticker, ReviewContext.POSITION_REVIEW, payload, today)
+                with lock:
+                    reviews_by_ticker[ticker] = review
+                break
             except LLMError as exc:
                 if attempt == 1:
-                    failed.append(f"{ticker} ({_short_error(exc)})")
+                    with lock:
+                        failed.append(f"{ticker} ({_short_error(exc)})")
 
-    for judgment in sorted(plan.exits, key=lambda j: j.ticker):
-        trade = judgment.trade
-        context: dict[str, object] = {}
-        if snapshot is not None:
-            frame = snapshot.frames.get(trade.ticker)
-            if frame is not None:
-                context.update(technical_facts(frame))
-            day = snapshot.earnings.get(trade.ticker)
-            sessions = sessions_to_earnings(calendar, snapshot.today, day) if calendar is not None else None
-            context.update(earnings_facts(day, sessions, blackout))
-        _consult(
-            trade.ticker,
-            trade.close,
-            {
-                "theme": themes.themes.get(trade.ticker, "sin_tema"),
-                "entry": trade.entry_price,
-                "close": trade.close,
-                "retorno_pct": round((trade.close / trade.entry_price - 1.0) * 100.0, 2)
-                if trade.entry_price > 0
-                else None,
-                "current_r": round(trade.current_r, 2),
-                "days_open": trade.days_open,
-                "stop": trade.stop,
-                "pct_hasta_stop": round((trade.stop / trade.close - 1.0) * 100.0, 2) if trade.close > 0 else None,
-                **context,
-            },
-        )
-    return reviews, failed
+    workers = max(1, min(max_workers, len(tasks)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_consult, *task): task[0] for task in tasks}
+        for future in as_completed(futures):
+            future.result()
+            with lock:
+                counter["done"] += 1
+                done = counter["done"]
+            typer.echo(f"  IA {done}/{counter['total']} posiciones ({futures[future]})")
+
+    reviews = [reviews_by_ticker[ticker] for ticker, _, _ in tasks if ticker in reviews_by_ticker]
+    return reviews, sorted(failed)
 
 
 def review_candidates(

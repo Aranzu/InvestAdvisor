@@ -188,6 +188,11 @@ las tareas rudimentarias (decidir búsquedas y redactar consultas).
 }
 ```
 
+Cada posición se consulta con búsqueda web y tarda minutos; `review` las lanza en
+paralelo (`llm.review_parallelism`, 6 por defecto) e imprime el avance por ticker.
+El contexto macro se calcula una vez y se reutiliza el resto del día
+(`output/contexto_<fecha>.json`).
+
 También se pueden fijar con `SWING_LLM_MODEL` (base), `SWING_LLM_MODEL_FLASH` /
 `SWING_LLM_MODEL_SEARCH` y `SWING_LLM_MODEL_PRO` / `SWING_LLM_MODEL_ANALYSIS`.
 
