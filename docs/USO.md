@@ -10,42 +10,26 @@ las ordenes en el broker y confirmas lo hecho.
 - Opcional (segunda opinion de la IA): claves locales en `.secrets/` (ignorado por git):
   - `.secrets/tavily_api_key.txt` o `TAVILY_API_KEY` → busqueda web.
   - `.secrets/llm_api_key.txt` / `.secrets/llm.json` → LLM (endpoint/modelo).
-- Opcional (notificacion de la corrida nocturna): `SWING_NOTIFY_WEBHOOK` o
-  `SWING_TELEGRAM_BOT_TOKEN` + `SWING_TELEGRAM_CHAT_ID` (ver `docs/PROGRAMACION.md`).
-
 Sin clave del LLM, `review` y `screen` funcionan igual en modo determinista (con un aviso).
+En `.secrets/llm.json`, `model_analysis` usa DeepSeek Pro para el análisis y
+`model_search` usa DeepSeek Flash para las tareas rudimentarias de búsqueda.
 
 ## Flujo semanal (o diario, si queres candidatos frescos)
 
-Las dos funciones del producto:
+Las tres funciones del producto:
 
 ```powershell
-# Funcion 1 - que hacer con lo que ya tenes (el motor fija el stop; la IA narra y decide):
-swing review                          # informe de 10 secciones (con --web-search agrega la busqueda)
-swing review --formato detalle        # bloque por posicion, como lo deja `nightly`
+# 1) Ficha de cada posicion (no decide nada):
+swing stats --contexto
 
-# Funcion 2 - que comprar (screener dinamico: tecnico + fundamentales + proyecciones):
+# 2) Que hacer con lo que ya tenes (usa stats; el motor fija el stop):
+swing review                          # informe v7 (con --web-search agrega la busqueda)
+swing review --formato detalle        # bloque por posicion
+
+# 3) Recomendador de acciones (tecnico + fundamentales + proyecciones):
 swing screen --top 20                 # deja state/candidates.json con score y veredicto
 swing screen --portfolio posiciones/CLP_...xlsx   # ademas no propone lo que ya tenes
 ```
-
-La medicion del screener es aparte: `swing track` (oculto) lee el journal `state/picks/`
-y, para los candidatos con horizonte ya madurado, muestra el retorno a 21 y 63 sesiones y
-su exceso contra el S&P. Es **forward** a proposito (los fundamentales no se pueden medir
-hacia atras sin lookahead), asi que la señal tarda semanas en juntarse.
-
-## Corrida nocturna (fase 8)
-
-Para dejarlo agendado y sin intervencion, una sola pasada:
-
-```powershell
-swing nightly --web-search            # screen + review --formato detalle, resumen en output/nightly_<fecha>.md
-swing schedule                        # imprime la hora local y el comando schtasks
-```
-
-`nightly` escribe el resumen, lo notifica si hay canal configurado y devuelve un
-codigo combinado (`config/datos` > `IA` > `hallazgos`). El detalle del agendado
-esta en `docs/PROGRAMACION.md`.
 
 ## Salida
 
@@ -55,19 +39,16 @@ esta en `docs/PROGRAMACION.md`.
 
 `stats` escribe `output/stats_<reporte>_<marca>.md` (o `--out`) y, junto a él, un
 `stats_<reporte>_<marca>.json` con el mismo contenido en forma estructurada (contrato
-`schema: 8`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
+`schema: 9`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
 sello de la corrida (`AAAAMMDD-HHMMSS`), para que dos corridas del mismo día o de cuentas
-distintas no se pisen. `analyze-positions` y `review` **consumen** ese JSON si es de hoy y
-de la misma cuenta, para no volver a pedir a Yahoo los fundamentales y las
-cotizaciones ya capturados; lo que falte se completa con el proveedor.
+distintas no se pisen. `review` **consume** ese JSON si es de hoy y de la misma cuenta,
+para no volver a pedir a Yahoo los fundamentales y las cotizaciones ya capturados; lo que
+falte se completa con el proveedor.
 
 ## Diagnostico
 
 ```powershell
-swing check-config               # valida config/ (sin red)
-swing verify-broker              # que de broker.yaml sigue sin verificar
-swing data-health                # velas, frescura, huecos y earnings por ticker
-swing stats                      # ficha por posicion con todos los campos (tipo Finviz)
+swing stats --offline            # ficha con lo que haya en cache, sin tocar red
 ```
 
 `stats` no recomienda nada: reúne la mayor cantidad de campos posible de cada posición
@@ -97,22 +78,20 @@ La IA de `review` recibe el contexto igual. Con `--offline` solo lee cache.
 
 ## Como leer el informe
 
-`review --formato informe` (por defecto) trae **11 secciones** (la 11 solo si la caja
-post-venta supera 20 %): 1. Veredicto y liquidez, 2. Tabla de decisión, 3. Auditoría de
-ventas, 4. Tabla de TP y SL, 5. Cobertura, 6. Alertas, 7. Supuestos y vacíos, 8. Fuentes
-clave, 9. Registro de decisiones, 10. Qué cambió, 11. Oportunidades. El motor resuelve
-decisiones, el puntaje por ejes (V/C/G/P, suma `-8..+8`), los TP como órdenes y las alertas
-SL; con la política `review` de `config/strategy.yaml` agrega el **veredicto de
-`PROMPT PORTAFOLIO v6`**: niveles de revisión y alarma, disparadores T1-T6, motivos V1-V8 y
-ejes E1-E4 (con subtotales F y M) y su acción implícita. La IA aporta una narrativa en una
-sola llamada (sin búsquedas nuevas) que llena el veredicto, la cobertura y los supuestos.
+`review --formato informe` (por defecto) sigue el **`PROMPT PORTAFOLIO v7`**:
+0. cobertura y modo del stats, 1. veredicto (régimen/modo, riesgo abierto, factor IA y
+caja), 2. panel de cumplimiento P1-P11, 3. tabla de decisión con stop/TP/riesgo y
+disparador, 4. auditoría, 5. cobertura de datos, 6. alertas, 7. supuestos, 8. fuentes,
+9. registro de decisiones, 10. qué cambió, 11. desvíos OVERRIDE y 12. oportunidades
+(solo si la caja post-venta supera 20 %). La IA aporta una narrativa en una sola llamada
+(sin búsquedas nuevas) que llena el veredicto, la cobertura y los supuestos.
 
 La **auditoría de ventas** (sección 3) exige motivo admitido y hechos con fuente antes de
 vender; el **registro de decisiones** (sección 9) se guarda en `state/decisions.json` con una
 línea por activo para medir a 30/90 días; y **qué cambió** (sección 10) compara la corrida con
 la anterior (vigila que la Alerta 1 no baje sin motivo).
 
-`review --formato detalle` (el que usa `nightly`) repite la lectura de siempre:
+`review --formato detalle` repite la lectura de siempre:
 
 - **Qué hacer:** la acción concreta (el nivel del stop, el % a vender).
 - **Qué más aplica:** las reglas que la precedencia tapa.

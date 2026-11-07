@@ -154,7 +154,7 @@ class LLMReview:
 
 @dataclass(frozen=True, slots=True)
 class VetoOutcome:
-    """Resultado de aplicar las opiniones del LLM a las entradas de la noche."""
+    """Resultado de aplicar las opiniones del LLM a las entradas de la corrida."""
 
     allowed_entries: tuple[str, ...]
     deferred_entries: tuple[str, ...]

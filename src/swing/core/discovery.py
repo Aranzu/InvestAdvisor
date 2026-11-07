@@ -10,7 +10,7 @@ score fundamental con la fuerza relativa segun ``screener.momentum_weight``.
 
 La fuerza relativa es el percentil del retorno **en todo el universo**, no entre
 los que sobrevivieron al prefiltro: medirla solo entre ganadores la infla y la
-vuelve incomparable de una noche a otra.
+vuelve incomparable de una corrida a otra.
 
 Todo es puro: recibe los ``IndicatorFrame`` y los ``Fundamentals`` ya calculados y
 devuelve el ranking y los rechazos. Sin datos fundamentales (p. ej. ETFs) el

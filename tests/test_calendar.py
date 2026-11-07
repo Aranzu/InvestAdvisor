@@ -70,13 +70,13 @@ def test_rango_invertido_no_revienta() -> None:
 
 
 def test_dos_sesiones_hasta_el_reporte() -> None:
-    # Caso 16.4: earnings el jueves 5, lead_sessions 2 -> la noche del martes 3 ya
-    # estan a dos sesiones, y la orden sale esa noche para el miercoles 4.
+    # Caso 16.4: earnings el jueves 5, lead_sessions 2 -> la corrida del martes 3 ya
+    # estan a dos sesiones, y la orden sale esa corrida para el miercoles 4.
     assert CAL_US.sessions_until(EARNINGS, TUESDAY) == 2
     assert CAL_US.next_session(TUESDAY) == d(2026, 11, 4)
 
 
-def test_la_noche_anterior_al_reporte_solo_mira_una_sesion() -> None:
+def test_la_corrida_anterior_al_reporte_solo_mira_una_sesion() -> None:
     assert CAL_US.sessions_until(EARNINGS, MONDAY) == 3
 
 

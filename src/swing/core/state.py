@@ -117,8 +117,8 @@ class TradeState:
         """Meta pendiente mas cercana, en multiplos de R.
 
         Un tramo con meta sigue abierto despues de que el cierre pasara su meta
-        significa que la venta nocturna quedo sin ejecutar (seccion 4.3: se
-        reevalua la noche siguiente). Por eso la meta se busca sobre los tramos
+        significa que la venta programada quedo sin ejecutar (seccion 4.3: se
+        reevalua la corrida siguiente). Por eso la meta se busca sobre los tramos
         **abiertos**, no sobre los historicos.
         """
         for tranche in self.tranches:

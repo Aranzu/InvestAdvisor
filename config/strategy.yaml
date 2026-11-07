@@ -44,7 +44,7 @@ risk:
   # Colchon para el dia de relleno sin stop (seccion 4.5).
   unprotected_buffer_atr: 1.0
   # CAP_TRIM: se dispara cuando el tema pasa max_theme_pct + 5 pp y se vende
-  # hasta max_theme_pct + 2 pp (seccion 5.8). Una sola vez por tema y noche.
+  # hasta max_theme_pct + 2 pp (seccion 5.8). Una sola vez por tema y corrida.
   theme_trim_trigger_pp: 5
   theme_trim_target_pp: 2
   clusters:
@@ -304,8 +304,8 @@ exits:
   reentry_cooldown_days: 5
 
 operations:
-  max_actions_per_evening: 8
-  max_new_entries_per_evening: 2
+  max_actions_per_run: 8
+  max_new_entries_per_run: 2
 
 legacy:
   adopt: true

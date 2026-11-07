@@ -8,7 +8,7 @@ TTL para no golpear la red en cada corrida.
 Por que cache con TTL y no incremental como las velas: los fundamentales no
 tienen "rango de fechas". Cambian de golpe (cuando la empresa reporta o cuando un
 analista mueve el objetivo), asi que se guardan por dia y se refrezcan cuando
-vence el TTL. Un valor de hoy es "actualizado" por definicion de corrida nocturna.
+vence el TTL. Un valor de hoy es "actualizado" por definicion de corrida programada.
 
 El parseo de ``Ticker.info`` vive aca y no en ``core``: es I/O disfrazado. ``core``
 solo ve un ``Fundamentals`` ya normalizado.

@@ -5,7 +5,7 @@ como base, Finviz para lo que falta, técnicos calculados encima":
 
 - **Contexto de la posición**: valor, peso, P/L, efecto precio/FX, sesiones, stop y
   earnings, reutilizando ``core.analysis.analyze`` para no reimplementar la
-  valuación (una sola fuente de verdad para el número que ya usa ``analyze-positions``).
+  valuación (una sola fuente de verdad para el número que ya usa ``review``).
 - **Yahoo (fundamentales)**: valoración, márgenes, crecimiento, proyecciones.
 - **Técnicos de las velas**: SMA20/50/200, RSI(14), ATR(14), máximo/mínimo de 52
   semanas, calculados localmente para que no dependan de la red de Finviz.
@@ -208,6 +208,7 @@ def collect_stats(
         beta_qqq=beta_qqq,
         drawdown_pct=curve.drawdown_pct if curve is not None else None,
         drawdown_mode=curve.mode if curve is not None else "normal",
+        suspicious_benchmarks=", ".join(market_regime.suspicious) if market_regime is not None else "",
     )
     closed = _closed_history(analysis, SessionCalendar.us())
 
@@ -667,6 +668,7 @@ def _compliance_to_dict(
             "drawdown_pct": summary.drawdown_pct,
             "drawdown_mode": summary.drawdown_mode,
             "regime_mode": summary.regime_mode,
+            "suspicious_benchmarks": summary.suspicious_benchmarks,
             "sessions_to_purchases": sessions_purchase,
             "sessions_to_liquidation": sessions_liquidate,
             "purchases_until": compliance.purchases_until.isoformat(),

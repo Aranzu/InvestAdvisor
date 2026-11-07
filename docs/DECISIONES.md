@@ -182,7 +182,7 @@ economica con un parametro de otro dominio.
 
 **Decision.** No hay tope de precio superior. `gates.min_price` sigue siendo el piso
 (10 USD, contra penny stocks que rompen el supuesto de stops en porcentaje). La
-fraccion de `SINGLE` es un KPI propio del informe de cada noche y del backtest.
+fraccion de `SINGLE` es un KPI propio del informe de cada corrida y del backtest.
 
 **Consecuencia que hay que mirar.** Si `SINGLE` es una fraccion relevante del libro,
 la palanca correcta es `risk.risk_per_trade_pct` o el tamaño del equity, no el
@@ -262,7 +262,7 @@ informe del backtest para que quede claro que la fecha fue movida y no cumplida.
 
 ---
 
-## D14. Una sola accion por posicion y noche; las demas quedan con su motivo
+## D14. Una sola accion por posicion y corrida; las demas quedan con su motivo
 
 **Que estaba abierto.** La seccion 5.7 lista diez reglas de salida "en orden de
 precedencia" sin decir que pasa cuando dos se cumplen a la vez. La lectura literal
@@ -286,13 +286,13 @@ sin proteccion.
 
 **Reglas informativas no compiten.** `Action.NONE` (por ejemplo "el runner esta
 asegurado, se mantiene ante earnings") no desplaza a nadie. Sin esa distincion, un
-detalle informativo se volveria la accion de la noche.
+detalle informativo se volveria la accion de la corrida.
 
 ---
 
-## D15. `CAP_TRIM`: un ticket por tema y noche, del trade de menor fuerza relativa
+## D15. `CAP_TRIM`: un ticket por tema y corrida, del trade de menor fuerza relativa
 
-**Que estaba abierto.** La seccion 5.8 dice "una `CAP_TRIM` por tema y noche" cuando el
+**Que estaba abierto.** La seccion 5.8 dice "una `CAP_TRIM` por tema y corrida" cuando el
 tema pasa el tope + 5 pp, y que se vende "hasta el tope + 2 pp". No dice de que posicion,
 cuanto, ni que hacer si el exceso no cabe en un solo trade.
 
@@ -300,19 +300,19 @@ cuanto, ni que hacer si el exceso no cabe en un solo trade.
 
 1. **Un ticket, del trade mas debil.** Se vende el trade de **menor percentil de fuerza
    relativa** del tema, por el valor que haga falta para bajar a tope + 2 pp. Vender de
-   tres tickers en una noche seria tres tickets, y el tope de la seccion 4.1 es de 8
-   acciones por noche; ademas el trade mas fuerte es el que menos va a sufrir la venta.
+   tres tickers en una corrida seria tres tickets, y el tope de la seccion 4.1 es de 8
+   acciones por corrida; ademas el trade mas fuerte es el que menos va a sufrir la venta.
    Si ese trade no cubre el exceso, se vende entero y el detalle dice cuanto queda para
-   la noche siguiente.
+   la corrida siguiente.
 2. **Sin percentil de fuerza relativa no se vende nada.** Un `CAP_TRIM` a ciegas es peor
    que no trimmerar: el plan emite un `CapTrim` con volumen 0 y detalle pidiendo el dato.
    Vender "por peso" o "por perdida" seria inventar un criterio que el spec no autoriza.
-3. **Un `CAP_TRIM` por tema y noche** se respeta con un conjunto de temas ya
+3. **Un `CAP_TRIM` por tema y corrida** se respeta con un conjunto de temas ya
    intervenidos que el planificador pasa a la funcion.
 
 **Efecto lateral que hay que saber.** `CAP_TRIM` es una venta y compite por precedencia
 con `STOP_BREACH`, earnings y `THESIS_EXIT` (D14). Cuando las dos cosas son ciertas la
-misma noche, el `CAP_TRIM` queda suprimido y la salida que manda es la del stop.
+misma corrida, el `CAP_TRIM` queda suprimido y la salida que manda es la del stop.
 
 ---
 
@@ -322,7 +322,7 @@ misma noche, el `CAP_TRIM` queda suprimido y la salida que manda es la del stop.
 forma de registrar "el broker no admite X", y tambien es lo que se ve si nadie respondio
 la pregunta y se guardo un default.
 
-**Decision.** `swing verify-broker` muestra `false` como **pendiente**, igual que
+**Decision.** La verificacion manual muestra `false` como **pendiente**, igual que
 `unknown`, y el planificador sigue usando el valor conservador. No se agrega un cuarto
 estado ("verificado negativo") porque no se tiene de donde sacarlo sin mentir sobre el
 origen del dato.
@@ -335,28 +335,9 @@ ajustar con una linea de configuracion.
 
 ---
 
-## D17. `swing data-health` existe antes que el planificador
+## D17. (retirado) Diagnostico de datos
 
-**Que estaba abierto.** El spec (seccion 15) no define ningun comando de diagnostico de
-datos: define `daily` (produce plan e informe) y `verify-broker`. La capa de datos, sin
-embargo, ya se puede construir y probar, y sin una forma de mirarla hay que abrir un
-Python REPL para descubrir si el provider baja velas, si la cache esta al dia o si
-earnings viene sin fecha.
-
-**Decision.** Se agrega `swing data-health` como comando de solo lectura: por ticker
-imprime numero de velas, fecha de la ultima, estado de frescura (D3), huecos recientes
-(D4), y el reporte de earnings con las sesiones que faltan. Sale con codigo 2 si algun
-ticker tiene datos incompletos, el mismo codigo que usa `daily` (seccion 14).
-
-**Por que es desviacion y no una inicializacion faltante.** Produce una lista de tickers y
-su estado, no tickets ni acciones. Es el unico comando cuyo proposito es mirar la fuente, y
-no se puede expresar con `daily` sin planificador. Se declara aqui para que no se lea
-como una puerta de entrada que el spec prohibe: no calcula entradas, no toca el estado y
-no escribe nada fuera de la cache.
-
-**Que no hace.** No repara cache. Si un dia falta en medio del rango, el comando lo
-reporta; la correccion es borrar el CSV del simbolo y volver a correr. Un comando que
-borra datos de la cache por sorpresa es peor que uno que dice que hacer.
+El comando de diagnostico de datos se retiro: el producto tiene solo `stats`, `review` y `screen`. La validacion de datos sigue viviendo en `core/dataquality.py` y se ejerce dentro de esos tres comandos.
 
 ---
 
@@ -400,12 +381,12 @@ no fija niveles.
 
 ## D20. `swing review`: recomendacion sobre las posiciones, en dos formatos
 
-**Que estaba abierto.** El plan nocturno (`daily`) mezcla entradas y salidas; para "¿que
+**Que estaba abierto.** El plan anterior mezclaba entradas y salidas; para "¿que
 hago con lo que tengo?" faltaba un comando que mire **solo** lo abierto.
 
 **Decision.** `review` corre `decide(universe=())` (sin entradas) sobre las posiciones
 adoptadas. Tres formatos: `informe` (por defecto; ver D32), `detalle`
-(bloque por posicion con que hacer / que mas aplica / tesis, el que usa `nightly`) y
+(bloque por posicion con que hacer / que mas aplica / tesis) y
 `tabla` (`Activo·Retorno%·Accion·Conf.·Fundamento·Stop·TP·Catalizador`). El **stop y
 el TP los fija el motor**; la accion/fundamento/catalizador los aporta la IA. `WEAKENED`
 sale como `TESIS DEBILITADA` (vigilar) y un `BROKEN` confirmado entra al motor como
@@ -438,12 +419,11 @@ limite de perdida; el valor vive en config (`legacy`) y el plan pide colocar el 
 **Que estaba abierto.** D2 dejaba el universo estatico; el usuario pidio no mantener una
 lista fija.
 
-**Decision.** `swing discover` rastrea el **S&P 500 vivo** (Wikipedia, que trae Symbol +
+**Decision.** `swing screen` rastrea el **S&P 500 vivo** (Wikipedia, que trae Symbol +
 GICS Sector; de ahi sale tambien el tema), aplica un prefiltro (`core/discovery`: tendencia
 SMA200/stack, rango 52 semanas, liquidez, precio) y ordena por fuerza relativa; deja
-`state/candidates.json`. Hoy `screen` (y su alias `discover`) aceptan
-`--breadth sp500|watchlist`; los comandos archivados (`daily`, `scan`, `allocate`,
-`backtest`) tambien aceptaban `candidates`.
+`state/candidates.json`. Hoy `screen` acepta
+`--breadth sp500|watchlist`.
 
 **Por que Wikipedia y por que cache.** Es enumerable sin key; se cachea en
 `cache/universe/sp500.json` y sin red se usa la copia (o `watchlist.yaml`). Limitacion
@@ -457,56 +437,42 @@ declarada: son los constituyentes **de hoy** (sesgo de supervivencia del §11.1)
 `rebased_series` existia pero nadie la llamaba.
 
 **Decision.** El **backtest** aplica `rebased_series` a todas las series (D6: serie
-continua para SMA/ATR/52 semanas). En **vivo** (`daily`/`review`/`scan`/`allocate`/
-`discover`) **no** se reescala: `_warn_jumps` detecta y avisa los saltos no ajustados,
+continua para SMA/ATR/52 semanas). En **vivo** (`stats`/`review`/`screen`) **no** se reescala: `_warn_jumps` detecta y avisa los saltos no ajustados,
 porque `detect_split_ratio` mide el ratio crudo y un salto grande puede ser un split o una
 caida real; el motor no puede decidirlo solo.
 
 **Por que un tratamiento distinto.** El backtest necesita series continuas para medir; en
 vivo el dato correcto es declarar (`DATA_GAP`) y revisar, no borrar el movimiento.
 
-> **Estado (D25).** El backtest esta archivado; en vivo quedan `review`, `screen` y
-> `discover`, que siguen sin reescalar y avisando con `_warn_jumps`.
+> **Estado (D25).** El backtest esta archivado; en vivo quedan `stats`, `review` y
+> `screen`, que siguen sin reescalar y avisando con `_warn_jumps`.
 
 ---
 
-## D24. Journal en SQLite + CSV
+## D24. (retirado) Journal SQLite + CSV
 
-**Que estaba abierto.** §9 pide persistir runs/acciones/trades y un `journal.csv`.
-
-**Decision.** `adapters/journal.py` crea las tablas del spec en `state/journal.db` y escribe
-`state/journal.csv` append-only. `daily` registra la noche (run + acciones `PENDING` +
-snapshot de metricas); `stats` calcula metricas y kill switch; `confirm` marca
-`DONE`/`SKIPPED`. `state/` esta ignorado por git (contiene datos de la cuenta).
-
-**Por que SQLite.** Sin dependencias, local y transaccional; suficiente para el volumen.
-
-> **Estado (D25).** El journal y sus comandos (`stats`, `confirm`) estan archivados en
-> `legacy/adapters_journal.py`; `core/metrics.py` sigue en el paquete porque `decide()` lo
-> usa para el `KillState`.
+El journal `state/journal.db`/`.csv` y los comandos que lo alimentaban (`daily`, `confirm`) se retiraron. El producto tiene solo `stats`, `review` y `screen`.
 
 ---
 
-## D25. El producto pasa a dos funciones: revision de posiciones y screener de compra
+## D25. El producto queda en tres funciones: stats, revision de posiciones y recomendador
 
-**Que estaba abierto.** El motor original era una operacion nocturna completa (descubrir,
-escanear, comprar, vender, asignar, confirmar). El usuario pide dos funciones concretas:
-(1) analizar posiciones con fundamentales/noticias/proyecciones/macro y la IA recomendando
-mantener o vender, y (2) un screener **dinamico** que recomiende compras por
-tecnico+fundamentales+proyecciones.
+**Que estaba abierto.** El motor original era una operacion completa (descubrir, escanear,
+comprar, vender, asignar, confirmar). El usuario pide una superficie concreta: una ficha de
+datos, una revision de posiciones con IA y un recomendador de compras.
 
 **Decision.** El motor (y lo que sirve: universo, velas, reglas de salida, niveles) se
-**extiende** para alimentar ambas funciones y se **poda** lo que deja de aportar. Las dos
-funciones implementadas:
-- `swing review` (funcion 1): la IA pondera fundamentales, proyecciones, noticias y
+**extiende** para alimentar las tres funciones y se **poda** lo que deja de aportar:
+- `swing stats`: ficha completa de cada posicion, sin veredicto.
+- `swing review`: usa `stats`; la IA pondera fundamentales, proyecciones, noticias y
   contexto macro y emite su veredicto (`BUY/HOLD/SELL/WATCH`).
-- `swing screen` (funcion 2): con el mismo universo, aplica puertas **fundamentales** y
-  ordena por score compuesto; la IA agrega la tesis de compra.
+- `swing screen`: recomendador de acciones; con el mismo universo, aplica puertas
+  **fundamentales** y ordena por score compuesto; la IA agrega la tesis de compra.
 
-El resto (`backtest`, `allocate`, `confirm`, journal, `scan`, `daily`) se **poda**: su
-codigo queda archivado en `legacy/` (fuera del paquete, no se instala) para consulta, y sus
-comandos salen del CLI. La superficie publica queda en `check-config`, `verify-broker`,
-`data-health`, `analyze-positions`, `review` y `screen`/`discover`.
+El resto (`backtest`, `allocate`, `confirm`, journal, `scan`, `daily`, `nightly`,
+`schedule`, `track`, `discover` y diagnosticos) se **poda**: su codigo historico queda
+archivado en `legacy/` (fuera del paquete, no se instala) y sus comandos salen del CLI.
+La superficie publica queda en `stats`, `review` y `screen`.
 
 ## D26. Fundamentales y proyecciones: yfinance + cache con TTL
 
@@ -531,7 +497,7 @@ rechaza— y en `screen`. El motor jamas delega los numeros: stop, meta, tamaño
 siguen auditables en `decide()`. `veto_only: false` en `strategy.yaml`; el campo queda por
 compatibilidad y `true` restaura el comportamiento viejo.
 
-**Por que.** La razon de ser de las dos funciones es la opinion (con fundamentos y
+**Por que.** La razon de ser de las tres funciones es la opinion (con fundamentos y
 fuentes), y la evidencia numerica de los niveles sigue siendo del motor.
 
 ## D28. Screener S&P 500 con score compuesto configurable
@@ -545,35 +511,9 @@ los pesa (`weights:`); el compuesto ordena el ranking. Las **puertas** fundament
 `fundamentals:` en `strategy.yaml`; `screener:` fija `top` y `min_composite_score`. Sin
 datos fundamentales el screener vuelve a ordenar por fuerza relativa y lo declara.
 
-## D29. Fase 8: una corrida nocturna (`nightly`) y notificacion best-effort
+## D29. (retirado) Corrida programada y notificacion
 
-**Que estaba abierto.** El spec (seccion 14) pedia documentar como agendar `daily`
-en el Programador de tareas de Windows, con zona `America/Santiago` y al menos 60
-minutos tras el cierre, y la fase 8 pedia "corrida nocturna sin intervencion;
-falla segura con datos obsoletos". Con D25 el producto quedo en `review` y `screen`,
-asi que no habia un unico comando que agendara.
-
-**Decision.** Se agregan `swing nightly` y `swing schedule`:
-
-- **`nightly`** corre `screen` (siempre) y `review` (si hay export) en una pasada,
-  escribe `output/nightly_<fecha>.md` y combina los codigos de salida con
-  precedencia **config/datos > IA > hallazgos**. No inventa un camino propio: cada
-  subcomando falla cerrado como ya lo hacia, de modo que datos obsoletos terminan
-  en codigo 2 y no en un plan silencioso.
-- **`schedule`** calcula la hora local `America/Santiago` (cierre de NYSE 16:00 ET +
-  `data.min_minutes_after_close`) e **imprime** el comando `schtasks`. No toca el
-  sistema: registrar una tarea es una accion del usuario, no del motor.
-- **Notificacion opcional** (`adapters/notify.py`): webhook generico o Telegram,
-  activados por entorno o `.secrets/`. El envio es **best-effort**: un fallo de red
-  se reporta y no tumba una corrida que ya escribio sus informes.
-
-**Por que best-effort y no bloqueante.** El valor de la corrida son los informes; el
-aviso es una comodidad. Hacer que un webhook caido convierta una corrida correcta en
-un fallo ensuciaria el codigo de salida que usan los scripts que la agendan.
-
-**Limite declarado.** El horario local se corre con el DST de Chile y el de EE. UU.
-(que no coinciden); el comando lo advierte y `docs/PROGRAMACION.md` pide revisarlo en
-marzo y septiembre. `schedule` no corrige el horario solo.
+La corrida programada, el agendado y la notificacion se retiraron: el producto tiene solo `stats`, `review` y `screen`.
 
 ---
 
@@ -678,8 +618,8 @@ posicion abierta (tipo Finviz) para analisis posterior, sin inventar datos.
   pre-market ni se rellena con el cierre. Va al JSON del ticker, asi que `review` tambien
   lo ve.
 - **Contrato JSON y consumo.** Junto al `.md`, `stats` escribe `stats_<reporte>_<marca>.json`
-  (`schema: 8`) con el mismo contenido (posiciones, cotizaciones, fundamentales, temas,
-  sectores, insiders, régimen, briefing). `analyze-positions` y `review` lo **reutilizan** si es de hoy y de la
+  (`schema: 9`) con el mismo contenido (posiciones, cotizaciones, fundamentales, temas,
+  sectores, insiders, régimen, briefing, panel de cumplimiento). `review` lo **reutiliza** si es de hoy y de la
   misma cuenta, para no repetir las consultas a Yahoo ya hechas; lo que falte se completa con
   el proveedor. El match por cuenta evita que un informe de otra cartera contamine la corrida.
 
@@ -696,7 +636,7 @@ campos depende de que Yahoo y Finviz cambien o no su formato.
   y aceptar el sesgo de supervivencia (D12), con veredicto probablemente
   `NO CONCLUYENTE` para 69 tickers. Se decide **no** hacerlo por ahora: el producto
   queda **NO VALIDADO** y no debe operarse con dinero real. El camino y los
-  prerequisitos quedan en `docs/PROGRAMACION.md`.
+  prerequisitos se documentan en este archivo.
 - **Verificaciones de broker #4, #6 y #10.** Necesitan una cuenta demo real del
   usuario. No bloquean el motor puro: bloquean el cierre de `broker.yaml` y la
   operacion. La #10 en particular (costo de mano por conversion) puede mover el
@@ -706,7 +646,7 @@ campos depende de que Yahoo y Finviz cambien o no su formato.
 - ~~**Poda de comandos (D25).**~~ **Resuelto: se poda.** `backtest`, `allocate`,
   `confirm`, journal, `scan` y `daily` salen del CLI y su codigo se archiva en
   `legacy/` (`legacy/backtest/`, `legacy/adapters_journal.py`, `legacy/tests/`). El
-  paquete `swing` queda con las dos funciones de D25.
+  paquete `swing` queda con las tres funciones de D25.
 
 ---
 
@@ -722,7 +662,7 @@ acotada a lo narrativo, sin sumar costo de tokens.
 - **Formato `informe` (por defecto).** Siete secciones base: 1. Veredicto, 2. Cobertura,
   3. Decisiones, 4. Niveles, 5. Alertas, 6. Supuestos y vacios, 7. Fuentes clave (D33 agrega
   8. Auditoria de ventas, 9. Registro de decisiones y 10. Que cambio con el bloque `review`).
-  `detalle` y `tabla` siguen disponibles (`nightly` usa `detalle`).
+  `detalle` y `tabla` siguen disponibles.
 - **El motor manda.** Decision, puntaje por ejes, niveles (stop/meta) y alertas salen del
   motor y del `stats`. El **puntaje** de cada activo es la suma de cuatro ejes —valor,
   calidad, crecimiento, proyecciones— en rango `-8..+8`; los cortes viven en
@@ -871,44 +811,13 @@ magico nuevo:
 ganancias". El trail por ATR se adapta a la volatilidad de cada nombre (la cartera mezcla ATR % de
 <1 % con >4 %), ya estaba configurado y no agrega umbrales.
 
-**Limite declarado.** El stop se revisa una vez por noche. Si el precio cae por debajo del trail
+**Limite declarado.** El stop se revisa una vez por corrida. Si el precio cae por debajo del trail
 en una sola sesion (hueco grande) no se fuerza la venta —no se fija un stop sobre el mercado—; el
-`STOP_BREACH` de la noche siguiente, con el stop ya elevado en la corrida anterior, es el que
+`STOP_BREACH` de la corrida siguiente, con el stop ya elevado en la corrida anterior, es el que
 ejecuta. `protect_gain` no cambia la R, la meta ni el tamano: solo el nivel del stop.
 
 ---
 
-## D36. Medir el screener hacia adelante (journal), no reescribir el pasado
+## D36. (retirado) Medicion forward del screener
 
-**Que estaba abierto.** El screener ordenaba candidatos pero **nada medía si acertaba**. La
-puerta de validación del backtest nunca se corrió sobre datos reales, así que todo peso y ancla
-eran convenciones sin evidencia (D30 lo declara como límite). La tentación era un backtest
-histórico del screener.
-
-**Decisión.** Un **journal forward**, no un backtest hacia atrás.
-
-- **Por qué no un backtest.** El score del screener depende de fundamentales y objetivos de
-  analistas, que **no son point-in-time**: solo existe el snapshot de hoy. Un backtest los
-  aplicaría al pasado → lookahead, y el `fund`/`score` mediría un futuro que no se conocía. El
-  S&P es además el de hoy (sesgo de supervivencia, D12). Un número así sería una mentira con
-  forma de evidencia.
-- **`services/picks_log.py`.** Cada `screen` sin `--out` escribe `state/picks/<sesión>.json`
-  con lo propuesto (ticker, cierre de la sesión, score, tema). Un archivo por sesión: dos
-  corridas del mismo día no duplican y las fechas viejas no se tocan. Una corrida con `--out`
-  es exploratoria y no ensucia el journal. La lectura salta archivos corruptos.
-- **`core/track.py` (puro).** Dado el journal y las velas, mide el retorno a **21 y 63
-  sesiones** (≈1 y 3 meses) y su **exceso** contra `regime.index` (SPY), con media, mediana y
-  `bate al S&P %`. La entrada es la primera vela en/después de la sesión del pick y la salida
-  esa posición `+ horizonte`: **sin lookahead**. Un pick sin madurar no produce fila (no se
-  estima ni se descarta en silencio).
-- **`swing track` (oculto).** Junta journal + velas de cache y muestra la tabla por horizonte.
-  Sin picks o sin madurar lo dice; sin SPY en cache, el retorno igual se mide y el exceso queda
-  `-`.
-
-**Por que.** Pedido: "¿es necesario seguir agregando features?". La prioridad no es más
-screener, es **evidencia**. El journal tarda semanas en juntar señal, pero es la única medición
-honesta que se puede hacer hoy.
-
-**Limite declarado.** La señal es lenta (63 sesiones ≈ 3 meses) y se acumula sólo si `screen`
-corre seguido. Mide el ranking determinista (lo que se propone), no la tesis de la IA. Los
-candidatos salen del S&P de hoy —sin supervivencia histórica, pero es el universo que existe—.
+El journal y la medicion forward se retiraron. El producto tiene solo `stats`, `review` y `screen`.

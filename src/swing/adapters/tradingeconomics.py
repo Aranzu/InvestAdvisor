@@ -34,7 +34,7 @@ DEFAULT_TTL_DAYS = 1
 #: Version del formato cacheado; sube cuando cambia la normalizacion.
 CACHE_SCHEMA = 1
 
-#: Timeout por peticion. Sin esto un socket colgado frena la corrida nocturna.
+#: Timeout por peticion. Sin esto un socket colgado frena la corrida programada.
 HTTP_TIMEOUT_S = 30.0
 
 #: Trading Economics responde 403 a un cliente sin User-Agent de navegador.

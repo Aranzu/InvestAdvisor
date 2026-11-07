@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 from pathlib import Path
 
 from swing.adapters.config_loader import load_strategy
@@ -256,15 +257,16 @@ def test_informe_de_review_tiene_las_secciones_v6() -> None:
     informe = render_review_report(report)
     for seccion in (
         "## 1. Veredicto",
-        "## 2. Tabla de decision",
-        "## 3. Auditoria de ventas",
-        "## 4. Tabla de TP y SL",
+        "## 2. Panel de cumplimiento",
+        "## 3. Tabla de decision",
+        "## 4. Auditoria de ventas",
         "## 5. Cobertura",
         "## 6. Alertas (informativas)",
         "## 7. Supuestos y vacios",
         "## 8. Fuentes clave",
         "## 9. Registro de decisiones",
         "## 10. Que cambio",
+        "## 11. Desvios del periodo",
     ):
         assert seccion in informe
     assert "| AAA |" in informe
@@ -274,6 +276,61 @@ def test_informe_de_review_tiene_las_secciones_v6() -> None:
     assert "perdida mensual no evaluable" in informe
     assert "Sin fuentes citadas" in informe
     assert "No es asesoria financiera personalizada" in informe
+
+
+def test_el_informe_v7_renderiza_el_panel_p1_p11() -> None:
+    row = PositionStats(
+        ticker="AAA",
+        context={"theme": "semis", "value_clp": 300_000.0, "price_usd": 110.0, "weight_invested_pct": 30.0},
+        fields={},
+    )
+    stats = replace(
+        _stats(row),
+        compliance={
+            "summary": {
+                "open_risk_pct": 8.9,
+                "max_open_risk_pct": 10.0,
+                "cash_pct": 10.0,
+                "min_cash_pct": 10.0,
+                "factor_pcts": {"ia_ampliada": 57.0},
+                "factor_max_pct": {"ia_ampliada": 40.0},
+                "biggest_theme": "semis",
+                "biggest_theme_pct": 30.0,
+                "max_theme_pct": 25.0,
+                "infractions": 2,
+                "mode": "cautela",
+                "breadth_pct": 73.0,
+                "earnings_5": ["AAA"],
+                "earnings_10": ["AAA"],
+                "earnings_15": [],
+            },
+            "positions": [
+                {
+                    "ticker": "AAA",
+                    "current_stop": 92.0,
+                    "stop_dist_price_pct": 16.4,
+                    "stop_dist_entry_pct": 8.0,
+                    "risk_pct": 1.2,
+                    "take_profit": 140.0,
+                    "tp_formula": "objetivo medio",
+                    "status": "OK",
+                }
+            ],
+        },
+    )
+    mantener = TradeExitJudgment(
+        trade=_trade("AAA"),
+        evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
+        state_after=_trade("AAA"),
+    )
+    report = build_review_report(_plan(mantener), stats, axes_by_ticker={})
+    informe = render_review_report(report)
+    assert "## 2. Panel de cumplimiento" in informe
+    assert "Riesgo abierto total | 8.90 % | <= 10.00 % | OK" in informe
+    assert "Factor ia_ampliada | 57.00 % | <= 40.00 % | EXCEDE" in informe
+    assert "Modo vigente | cautela" in informe
+    assert "92.00; +16.40 % bajo actual" in informe
+    assert "140.00 (objetivo medio)" in informe
 
 
 def test_informe_de_review_usa_la_narrativa_de_la_ia() -> None:
@@ -429,15 +486,15 @@ def test_informe_v6_agrega_tp_sl_auditoria_registro_y_cambios() -> None:
         position_max_pct=12.0,
     )
     informe = render_review_report(report)
-    # Secciones v6: TP como orden, SL como alerta, auditoria y registro.
-    assert "## 3. Auditoria de ventas" in informe
-    assert "## 4. Tabla de TP y SL" in informe
+    # Secciones v7: panel, tabla de decision, auditoria y registro.
+    assert "## 2. Panel de cumplimiento" in informe
+    assert "## 3. Tabla de decision" in informe
+    assert "## 4. Auditoria de ventas" in informe
     assert "## 9. Registro de decisiones" in informe
     assert "## 10. Que cambio" in informe
-    assert "140.00 (+27.3 % vs actual)" in informe
-    assert "objetivo medio" in informe
-    assert "Alerta 1: 99.00" in informe
-    assert "Riesgo teorico" in informe
+    assert "Stop vigente" in informe
+    assert "TP" in informe
+    assert "Riesgo %" in informe
     # El registro guarda la linea del activo, con TP y alerta SL.
     assert [record.ticker for record in report.records] == ["AAA"]
     assert report.records[0].alarm_level is not None
@@ -459,9 +516,9 @@ def test_sin_politica_el_informe_conserva_las_secciones_deterministas() -> None:
     report = build_review_report(_plan(mantener), _stats(), axes_by_ticker={})
     informe = render_review_report(report)
     assert "## 1. Veredicto" in informe
-    assert "## 4. Tabla de TP y SL" in informe
+    assert "## 2. Panel de cumplimiento" in informe
     assert "## 10. Que cambio" in informe
-    assert "## 11. Oportunidades" not in informe
+    assert "## 12. Oportunidades" not in informe
     assert "PROMPT PORTAFOLIO" not in informe
     assert report.records == ()
 
@@ -492,6 +549,6 @@ def test_seccion_oportunidades_solo_si_la_caja_post_venta_supera_20() -> None:
     )
     informe = render_review_report(report)
     # Caja 10 % + la mitad de 300.000 CLP sobre 1.000.000 = 25 % post-venta.
-    assert "## 11. Oportunidades" in informe
+    assert "## 12. Oportunidades" in informe
     assert "caja post-venta quedaria en 25.0 %" in informe
 

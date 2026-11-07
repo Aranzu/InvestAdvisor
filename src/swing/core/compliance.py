@@ -146,6 +146,7 @@ class ComplianceSummary:
     drawdown_pct: float | None = None
     drawdown_mode: str = MODE_NORMAL
     regime_mode: str = MODE_NORMAL
+    suspicious_benchmarks: str = ""
     next_milestone: str = ""
 
 

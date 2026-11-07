@@ -104,7 +104,7 @@ def risk_distance_with_buffer(
     """Distancia de riesgo que se usa para el tamano (seccion 4.5 y 5.5).
 
     El colchon cubre la primera sesion sin stop: un trade recien ejecutado no
-    tiene stop hasta que el usuario lo coloca de noche, salvo que el broker
+    tiene stop hasta que el usuario lo coloca de corrida, salvo que el broker
     permita adjuntarlo a la entrada (verificacion #3).
     """
     if attach_stop_to_entry:
@@ -186,6 +186,6 @@ def should_raise_stop(
     """Histeresis del trailing (seccion 4.4 y test 16.3).
 
     Solo se pide ``RAISE_STOP`` si el nuevo stop supera al vigente en al menos
-    ``min_raise_atr`` x ATR. Sin esto el usuario edita el stop todas las noches.
+    ``min_raise_atr`` x ATR. Sin esto el usuario edita el stop todas las corridas.
     """
     return (candidate_stop - current_stop) >= min_raise_atr * atr

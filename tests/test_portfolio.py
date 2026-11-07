@@ -261,7 +261,7 @@ def test_vende_al_de_menor_fuerza_relativa() -> None:
     assert "fuerza relativa 40" in trim.detail
 
 
-def test_un_solo_trim_por_tema_y_noche() -> None:
+def test_un_solo_trim_por_tema_y_corrida() -> None:
     cartera = state(
         (
             pos("AMD", 23_000_000.0, theme="semis"),
@@ -285,7 +285,7 @@ def test_sin_fuerza_relativa_no_se_vende_a_ciegas() -> None:
 
 def test_si_el_tramite_no_alcanza_el_resto_queda_para_manana() -> None:
     # El de menor fuerza relativa no cubre el exceso: se vende entero y se dice que
-    # el resto queda para la noche siguiente, en vez de vender tambien al que le va
+    # el resto queda para la corrida siguiente, en vez de vender tambien al que le va
     # mejor.
     cartera = state((pos("AMD", 5_000_000.0, rs=40.0), pos("NVDA", 35_000_000.0, rs=90.0)))
     trim = plan_cap_trims(cartera, LIMITS)[0]

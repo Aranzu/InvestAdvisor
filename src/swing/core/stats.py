@@ -296,7 +296,7 @@ class StatsReport:
     """El informe completo: cabecera de cuenta y una fila por posicion.
 
     Ademas de las filas, lleva el **paquete de mercado** con el que se armo, para
-    que otros reportes (``analyze-positions``, ``review``) lo consuman sin volver a
+    que otros reportes (``review``) lo consuman sin volver a
     consultar Yahoo/Finviz. ``quotes`` y ``fundamentals`` guardan diccionarios JSON
     ya normalizados (no dataclasses) para que el informe se pueda serializar tal cual.
     """

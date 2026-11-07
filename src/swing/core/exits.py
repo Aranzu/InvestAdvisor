@@ -5,7 +5,7 @@ ni broker, ni el reloj, mas alla de un calendario de sesiones que se le pasa
 entero. Las diez reglas se evaluan en una **precedencia fija**: gana la primera
 que se cumple y las demas quedan ``SUPPRESSED`` con el motivo.
 
-Por que una sola accion por posicion y noche (decision D14 de
+Por que una sola accion por posicion y corrida (decision D14 de
 ``docs/DECISIONES.md``): no es solo una lectura literal del spec. El broker
 permite **una sola orden de venta pendiente** por posicion (seccion 2), asi que
 emitir a la vez un ``Sell Stop`` y una venta a mercado en cola sobre las mismas
@@ -35,7 +35,7 @@ from swing.core.stops import breakeven_price, chandelier_stop, protect_gain, sho
 #: Diferencia maxima para considerar que el stop del broker es el que pedimos.
 #: Es 0,01 % del precio: el broker redondea a centavos y en un ticker de 200 USD
 #: eso ya son 0,005. Comparar con igualdad exacta pediria un ``EDIT_STOP`` todas
-#: las noches sin motivo.
+#: las corridas sin motivo.
 STOP_MATCH_EPSILON_PCT = 0.01
 
 #: En modo ``SINGLE`` un cierre a +1 R asegura el trade (seccion 5.6): no hay
@@ -50,7 +50,7 @@ class ExitSignal:
     ``action`` distingue las reglas que **compiten** por precedencia (las que
     piden tocar el broker) de las informativas (``Action.NONE``), que se informan
     pero no desplazan a nadie. Sin esa distincion, un detalle como "el runner
-    esta asegurado" se volveria la accion principal de la noche.
+    esta asegurado" se volveria la accion principal de la corrida.
     """
 
     cause: Reason
@@ -190,7 +190,7 @@ EXIT_PRECEDENCE: tuple[Reason, ...] = (
 
 
 def _next_open(ctx: ExitContext) -> dt.date:
-    """Fecha de ejecucion de una orden colocada esta noche (seccion 4.1)."""
+    """Fecha de ejecucion de una orden colocada esta corrida (seccion 4.1)."""
     return ctx.calendar.next_session(ctx.today)
 
 
@@ -204,7 +204,7 @@ def _sell(
     tranche: str | None = None,
     new_stop: float | None = None,
 ) -> ExitSignal:
-    """Venta colocada de noche para la apertura siguiente.
+    """Venta colocada de corrida para la apertura siguiente.
 
     El precio que lleva la senal es el **cierre** de hoy y no un limite: el spec
     (seccion 4.3) evalua las metas con el cierre y ejecuta a mercado en cola. Poner
@@ -467,7 +467,7 @@ def _max_hold(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
 def _horizon_tighten(trade: TradeState, ctx: ExitContext) -> ExitSignal | None:
     """8. Trail estrecho cerca del horizonte (seccion 5.7 regla 8).
 
-    Solo cuando la accion principal de la noche no fue otra: si el trail normal ya
+    Solo cuando la accion principal de la corrida no fue otra: si el trail normal ya
     sube el stop (regla 6), manda esa, que sube menos pero es la que el spec pone
     primero.
     """
@@ -575,7 +575,7 @@ def evaluate_exits(trade: TradeState, ctx: ExitContext) -> ExitEvaluation:
     """Evalua las diez reglas en orden de precedencia y decide una sola accion.
 
     Todas las que se cumplen se devuelven, no solo la ganadora: el informe tiene
-    que poder decir "tambien se habria vendido por earnings, pero esta noche sale
+    que poder decir "tambien se habria vendido por earnings, pero esta corrida sale
     el stop". La que no gana queda con ``suppressed_by`` apuntando a la que si.
     """
     candidates: list[ExitSignal] = []
@@ -612,7 +612,7 @@ def apply_exits(trade: TradeState, evaluation: ExitEvaluation) -> TradeState:
     Las transiciones que importan (seccion 5.6):
 
     - Al vender el tramo A, el stop del **runner** sube a ``entrada x 1,01`` y el
-      trade queda asegurado. El ticket de esa noche lleva las dos cosas: la venta
+      trade queda asegurado. El ticket de esa corrida lleva las dos cosas: la venta
       en cola y la edicion del stop con el volumen restante (seccion 4.3). No es
       una segunda salida, es reducir la cobertura de lo que ya se vendio.
     - Al subir el stop en modo ``SINGLE``, el trade pasa a asegurado sin venta.

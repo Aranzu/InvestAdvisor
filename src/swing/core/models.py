@@ -604,7 +604,7 @@ class RiskConfig(StrictModel):
         if self.theme_trim_trigger_pp == 0.0:
             raise ValueError(
                 "risk.theme_trim_trigger_pp no puede ser 0: haria que todo tema sobre el tope "
-                "dispare un CAP_TRIM la misma noche en que se supera"
+                "dispare un CAP_TRIM la misma corrida en que se supera"
             )
         return self
 
@@ -732,15 +732,15 @@ class ExitsConfig(StrictModel):
 
 
 class OperationsConfig(StrictModel):
-    max_actions_per_evening: int = Field(ge=1, le=100)
-    max_new_entries_per_evening: int = Field(ge=0, le=50)
+    max_actions_per_run: int = Field(ge=1, le=100)
+    max_new_entries_per_run: int = Field(ge=0, le=50)
 
     @model_validator(mode="after")
     def _check(self) -> OperationsConfig:
-        if self.max_new_entries_per_evening > self.max_actions_per_evening:
+        if self.max_new_entries_per_run > self.max_actions_per_run:
             raise ValueError(
-                f"operations.max_new_entries_per_evening ({self.max_new_entries_per_evening}) no puede "
-                f"superar max_actions_per_evening ({self.max_actions_per_evening})"
+                f"operations.max_new_entries_per_run ({self.max_new_entries_per_run}) no puede "
+                f"superar max_actions_per_run ({self.max_actions_per_run})"
             )
         return self
 

@@ -2,8 +2,9 @@
 
 La clave se resuelve en este orden: ``SWING_LLM_API_KEY``, ``OPENAI_API_KEY`` y,
 como ultimo recurso local, ``.secrets/llm_api_key.txt`` (ignorado por git). El
-``base_url`` y el ``model`` salen de ``SWING_LLM_BASE_URL``/``SWING_LLM_MODEL`` o de
-``.secrets/llm.json`` (asi una key de DeepSeek no obliga a exportar variables).
+``base_url`` y los modelos salen de ``SWING_LLM_BASE_URL``/``SWING_LLM_MODEL`` o de
+``.secrets/llm.json``. Hay dos carriles: ``model_analysis`` (DeepSeek Pro) para el
+analisis y ``model_search`` (DeepSeek Flash) para las tareas rudimentarias de busqueda.
 
 **Busqueda web por function calling.** DeepSeek (y casi cualquier chat compatible)
 no ejecuta busquedas del lado del servidor, pero si soporta *function calling*: en
@@ -95,7 +96,7 @@ SYSTEM_PROMPT = (
 
 #: Instruccion para la opinion de compra sobre candidatos del screener (funcion 2).
 SCREEN_PROMPT = (
-    "Eres un analista de compra para swing trading (semanas a pocos meses). Te dan "
+    "Eres un analista de compra de acciones (semanas a pocos meses). Te dan "
     "candidatos ya filtrados por tecnico y fundamentales; tu trabajo es la tesis de "
     "compra. Respondes SOLO con un objeto JSON que cumple este esquema: "
     '{"ticker":string,"context":"SCREEN_REVIEW","thesis_status":"INTACT|WEAKENED|BROKEN|UNKNOWN",'
@@ -131,13 +132,12 @@ SEARCH_SUFFIX = (
 
 #: Instruccion para la narrativa de cartera del informe de ``review``.
 PORTFOLIO_PROMPT = (
-    "Eres un analista de cartera de un inversionista chileno de perfil arriesgado tactico, "
-    "con horizonte de liquidacion hacia marzo de 2027. Te dan la cartera ya evaluada por el "
-    "motor (posiciones, pesos, retornos, puntajes, decision del motor, tesis y hechos con "
-    "fuente), mas 'tp_sl_v6' (TP como orden real y alertas SL), 'veredicto_v6' (ejes, motivos "
-    "V y disparadores T), 'mapa_liquidez' y 'caja_post_venta_pct'. No recalculas niveles ni "
-    "cambias TP/SL: el motor ya los fijo. Respondes SOLO con un objeto JSON que cumple este "
-    "esquema: "
+    "Eres el analista y guardian de reglas del PROMPT PORTAFOLIO v7: inversionista chileno de "
+    "perfil arriesgado, acciones reales en XTB, aportes mensuales y liquidacion entre el 15-ene-2027 "
+    "y el 1-mar-2027. Te dan la cartera ya evaluada por el motor (posiciones, pesos, retornos, "
+    "puntajes, decision del motor, tesis y hechos con fuente) y el 'panel_cumplimiento' P1-P11 "
+    "(riesgo abierto, caja, factor IA, temas, stops y modo). No recalculas niveles, stops, TP ni "
+    "riesgo: el motor ya los fijo. Respondes SOLO con un objeto JSON que cumple este esquema: "
     '{"ticker":"CARTERA","context":"PORTFOLIO_REVIEW","thesis_status":"UNKNOWN",'
     '"veto":false,"veto_reason":null,"verdict":"","accion":"","fundamento":"","catalizador":"",'
     '"confidence":"LOW|MEDIUM|HIGH","veredicto":string,"cobertura":string,"supuestos":string,'
@@ -156,9 +156,9 @@ PORTFOLIO_PROMPT = (
     "venta manual audita: cifras clave del ultimo reporte, al menos 3 hechos fechados a favor y "
     "3 en contra, senales de deterioro o 'ninguna', y si comprarias hoy solo con fundamentales. "
     "Si falta esa cobertura, MANTENER con vigilancia y dilo. En 'veredicto' un parrafo breve "
-    "(3-4 frases) con el regimen, los mayores riesgos, la caja resultante y los cambios "
-    "prioritarios; debajo, una linea con lo que VENDER (con %) y otra con lo que MANTENER, mas "
-    "el mapa de liquidez. En 'cobertura' un parrafo observando que activos tienen fundamentales "
+    "(3-4 frases) con el regimen y modo, el riesgo abierto, el factor IA, la caja resultante y "
+    "los cambios prioritarios; debajo, una linea con lo que VENDER (con %) y otra con lo que "
+    "MANTENER. En 'cobertura' un parrafo observando que activos tienen fundamentales "
     "y analistas y cuales no, segun la cobertura que se te da; no inventes datos. En 'supuestos' "
     "un parrafo con los supuestos y vacios de la corrida (datos faltantes, stops sin poner, "
     "concentracion, V6 pendiente). Para 'key_facts' reutiliza SOLO los hechos con fuente que se "
@@ -250,8 +250,18 @@ def client_from_env(*, web_search: bool = False, max_searches: int | None = None
     local = _local_config()
     base_url = os.environ.get("SWING_LLM_BASE_URL") or local.get("base_url") or DEFAULT_BASE_URL
     model_default = os.environ.get("SWING_LLM_MODEL") or local.get("model") or DEFAULT_MODEL
-    model_analysis = os.environ.get("SWING_LLM_MODEL_ANALYSIS") or local.get("model_analysis") or model_default
-    model_search = os.environ.get("SWING_LLM_MODEL_SEARCH") or local.get("model_search") or model_default
+    model_analysis = (
+        os.environ.get("SWING_LLM_MODEL_ANALYSIS")
+        or os.environ.get("SWING_LLM_MODEL_PRO")
+        or local.get("model_analysis")
+        or model_default
+    )
+    model_search = (
+        os.environ.get("SWING_LLM_MODEL_SEARCH")
+        or os.environ.get("SWING_LLM_MODEL_FLASH")
+        or local.get("model_search")
+        or model_default
+    )
     search = search_from_env() if web_search else None
     return OpenAICompatibleClient(
         api_key=key,
@@ -297,11 +307,11 @@ class OpenAICompatibleClient:
         """Resumen de tokens de la corrida; ``None`` si no hubo llamadas exitosas."""
         if self._usage["calls"] == 0:
             return None
-        model_last = self.model or self.model_analysis or self.model_search or DEFAULT_MODEL
         return (
             f"uso LLM: {self._usage['calls']} llamada(s), "
             f"{self._usage['prompt_tokens']} tok entrada + {self._usage['completion_tokens']} tok salida "
-            f"= {self._usage['total_tokens']} tok (modelo {model_last})"
+            f"= {self._usage['total_tokens']} tok (analisis {self.model_analysis}; "
+            f"rudimentario {self.model_search}; base {self.model})"
         )
 
     def review(
@@ -377,6 +387,8 @@ class OpenAICompatibleClient:
         for _ in range(self.max_tool_rounds):
             if self.max_searches is not None and searches >= self.max_searches:
                 break  # tope de busquedas: se fuerza el JSON final abajo
+            # Las rondas de busqueda (decidir si buscar y con que consulta) son
+            # rudimentarias: las hace el modelo rapido.
             data = self._post(
                 "/chat/completions",
                 {
@@ -392,8 +404,10 @@ class OpenAICompatibleClient:
             if not isinstance(tool_calls, list) or not tool_calls:
                 content = message.get("content")
                 if isinstance(content, str) and content.strip():
-                    return _as_json_object(content)
-                break  # respuesta vacia: se fuerza el JSON final abajo
+                    # Se conserva como insumo, pero la tesis la redacta el modelo
+                    # de analisis en el cierre.
+                    messages.append({"role": "assistant", "content": content})
+                break
             messages.append(message)
             for call in tool_calls:
                 if not isinstance(call, dict):
@@ -409,7 +423,8 @@ class OpenAICompatibleClient:
                         "content": "[]" if over_budget else self._search_json(_query_of(call)),
                     }
                 )
-        # Cierre forzado: sin herramientas y con formato JSON, para no quedarnos sin tesis.
+        # Cierre forzado: sin herramientas y con formato JSON. El analisis final
+        # siempre lo hace el modelo de analisis (DeepSeek Pro en la config local).
         messages.append(
             {
                 "role": "user",
@@ -418,7 +433,7 @@ class OpenAICompatibleClient:
         )
         data = self._post(
             "/chat/completions",
-            {"model": self.model, **self._sampling(json_mode=True), "messages": messages},
+            {"model": self.model_analysis, **self._sampling(json_mode=True), "messages": messages},
         )
         return _as_json_object(_first_message(data).get("content"))
 

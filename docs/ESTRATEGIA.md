@@ -1,6 +1,6 @@
 ﻿# Linaje de la estrategia
 
-Fuente: `spec_v3_1_operacion_nocturna.md` seccion 3. Este documento existe para que
+Fuente: el spec v3.1 seccion 3. Este documento existe para que
 nadie lea el codigo como si fuera un sistema publicado y validado. Es una **sintesis de metodos
 conocidos**, no un sistema unico derivado de una sola fuente.
 
@@ -62,8 +62,8 @@ Se completan en la fase 3. La puerta se define en `config/strategy.yaml` bajo
 | Percentil en prueba de entrada aleatoria | pendiente | >= 90 |
 | Trades fuera de muestra | pendiente | >= 150 |
 | Salidas por EARNINGS_DERISK | pendiente | <= 15 % |
-| Acciones por noche (prom. / max) | pendiente | <= 3 / <= 8 |
-| Noches sin acciones | pendiente | >= 40 % |
+| Acciones por corrida (prom. / max) | pendiente | <= 3 / <= 8 |
+| Corridas sin acciones | pendiente | >= 40 % |
 
 **Estado: NO VALIDADO.** Ningun numero de la tabla de arriba tiene evidencia a su
 favor todavia. No operar con dinero real hasta que la fase 3 entregue un informe

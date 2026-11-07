@@ -30,11 +30,6 @@ def registry_path(name: str = "decisions.json") -> Path:
     return report_dir().parent / "state" / name
 
 
-def picks_dir() -> Path:
-    """``state/picks/``: una foto por corrida del screener (journal forward)."""
-    return report_dir().parent / "state" / "picks"
-
-
 def ledger_path(name: str = "ledger.json") -> Path:
     """``state/ledger.json``: stops anclados a la entrada entre corridas."""
     return report_dir().parent / "state" / name

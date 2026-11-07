@@ -1,7 +1,7 @@
 """Simulador walk-forward del backtest (spec v3.1 seccion 11.2).
 
 Lleva el estado rueda a rueda con **exactamente** las mismas funciones que la
-produccion: ``decide`` decide la noche, ``apply_exits`` y ``trade_after_fill``
+produccion: ``decide`` decide la corrida, ``apply_exits`` y ``trade_after_fill``
 producen el estado de la manana, y las funciones de relleno de ``core.orders``
 (seccion 11.2) convierten los tickets en ejecuciones. La equivalencia
 simulacion/planificacion se sostiene en eso: si el backtest y el planner
@@ -93,7 +93,7 @@ class EquityPoint:
 
 @dataclass(frozen=True, slots=True)
 class NightStub:
-    """Una noche decidida, para los KPIs de operativa (seccion 11.3)."""
+    """Una corrida decidida, para los KPIs de operativa (seccion 11.3)."""
 
     date: dt.date
     regime: str
@@ -107,7 +107,7 @@ class NightStub:
 
 @dataclass(frozen=True, slots=True)
 class BacktestRun:
-    """Resultado de una corrida: equity, noches de operacion y trades cerrados.
+    """Resultado de una corrida: equity, corridas de operacion y trades cerrados.
 
     ``trades`` solo trae trades **cerrados dentro de la corrida**. Las
     posiciones que quedan abiertas al final se cuentan en ``open_at_end`` y la
@@ -126,7 +126,7 @@ class BacktestRun:
 
 @dataclass(frozen=True, slots=True)
 class _PendBuy:
-    """Un Buy Limit dejado de noche para la apertura de ``target``."""
+    """Un Buy Limit dejado de corrida para la apertura de ``target``."""
 
     target: dt.date
     ticker: str
@@ -140,7 +140,7 @@ class _PendBuy:
 
 @dataclass(frozen=True, slots=True)
 class _PendSell:
-    """Una venta decidida de noche para la apertura de ``target``.
+    """Una venta decidida de corrida para la apertura de ``target``.
 
     ``market`` distingue la cola a mercado del Sell Limit de respaldo
     (seccion 4.3). ``state_after`` es el estado que el motor calculo para
@@ -321,7 +321,7 @@ class _Simulator:
         )
 
     def _ready(self, day: dt.date) -> bool:
-        """True cuando hay barras y sma200 de SPY para decidir la noche de ``day``."""
+        """True cuando hay barras y sma200 de SPY para decidir la corrida de ``day``."""
         if self.spy_frame is None or day not in self.spy_close:
             return False
         if day not in self.spy_sma200:
@@ -335,7 +335,7 @@ class _Simulator:
         if not self._ready(day):
             return
 
-        # --- Apertura: ordenes colocadas la noche anterior ---
+        # --- Apertura: ordenes colocadas la corrida anterior ---
         self._process_open(day)
 
         # --- Intradia: Sell Stop del broker ---
@@ -374,7 +374,7 @@ class _Simulator:
                 continue
             bar = self._bar(pend.ticker, day)
             if bar is None:
-                continue  # sin vela no hay relleno; se reevalua de noche (seccion 4.3)
+                continue  # sin vela no hay relleno; se reevalua de corrida (seccion 4.3)
             day_open, day_high, _low, _close = bar
             fill: float | None
             if pend.market:
@@ -543,7 +543,7 @@ class _Simulator:
         return kill_switch_state(n, expectancy, se, drawdown, safety)
 
     # ------------------------------------------------------------------ #
-    # La noche: decidir
+    # La corrida: decidir
     # ------------------------------------------------------------------ #
 
     def _night(self, day: dt.date) -> None:

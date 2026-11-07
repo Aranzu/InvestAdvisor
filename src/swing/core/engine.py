@@ -1,6 +1,6 @@
 """Motor puro: ``decide()`` (spec v3.1 secciones 5 y 11.3: "la usa el backtest y produccion").
 
-El motor es **una sola funcion** y el backtest y la corrida nocturna la llaman con
+El motor es **una sola funcion** y el backtest y la corrida programada la llaman con
 el mismo estado y la misma configuracion. La equivalencia sim/produccion no es un
 deseo: es la consecuencia de que la semantica de relleno (``core/orders``), el
 estado de posicion (``core/state``) y la traduccion de decisiones a tickets
@@ -271,7 +271,7 @@ def relative_strength_percentiles(
 
 @dataclass(frozen=True, slots=True)
 class MarketSnapshot:
-    """Lo que el motor necesita del mundo para decidir una noche.
+    """Lo que el motor necesita del mundo para decidir una corrida.
 
     ``frames`` son los indicadores ya calculados sobre las series reescaladas de
     cada ticker (el llamador los arma una vez). ``earnings`` es ``{ticker:
@@ -302,7 +302,7 @@ class Alert:
 
 @dataclass(frozen=True, slots=True)
 class EntrySignal:
-    """Una entrada aceptada: el Buy Limit que se deja esta noche.
+    """Una entrada aceptada: el Buy Limit que se deja esta corrida.
 
     ``stop_target`` es el stop que se coloca **despues** de que el relleno
     ocurra (seccion 4.5: el dia del relleno no existe stop).
@@ -325,7 +325,7 @@ class EntrySignal:
 
 @dataclass(frozen=True, slots=True)
 class CandidateOutcome:
-    """Resultado de evaluar un ticker esta noche, entre o no entre."""
+    """Resultado de evaluar un ticker esta corrida, entre o no entre."""
 
     ticker: str
     theme: str
@@ -343,7 +343,7 @@ class CandidateOutcome:
 
 @dataclass(frozen=True, slots=True)
 class TradeExitJudgment:
-    """El juicio de salida de una posicion y el estado al que queda esta noche.
+    """El juicio de salida de una posicion y el estado al que queda esta corrida.
 
     ``state_after`` es el estado **aplicado** (tramos vendidos, stop subido):
     el simulador lo usa como el estado de manana y el informe lo muestra. No es
@@ -366,7 +366,7 @@ class TradeExitJudgment:
 
 @dataclass(frozen=True, slots=True)
 class NightPlan:
-    """Todo lo que decide() concluye para una noche."""
+    """Todo lo que decide() concluye para una corrida."""
 
     date: dt.date
     regime: RegimeState
@@ -409,7 +409,7 @@ def decide(
     llm_sell: Mapping[str, float] | None = None,
     kill: KillState = KillState.OK,
 ) -> NightPlan:
-    """Decide que hacer esta noche, una vez, con datos ya resueltos.
+    """Decide que hacer esta corrida, una vez, con datos ya resueltos.
 
     El orden de trabajo es el del playbook: regime, salidas (con precedencia),
     cartera (heat, trim), y por ultimo entradas con las seis puertas. Un cambio
@@ -609,7 +609,7 @@ def decide(
                     ticker=ticker,
                     theme=_theme_of(ticker, themes),
                     rejections=(
-                        Rejected(reason=_no_entries_reason(regime, kill, horizon), detail="sin entradas esta noche"),
+                        Rejected(reason=_no_entries_reason(regime, kill, horizon), detail="sin entradas esta corrida"),
                     ),
                 )
             )
@@ -734,9 +734,9 @@ def decide(
             )
         )
 
-    # --- Tope de entradas nuevas por noche (seccion 4.4) ---
+    # --- Tope de entradas nuevas por corrida (seccion 4.4) ---
     entries.sort(key=lambda e: (e.rs_percentile is None, -(e.rs_percentile or 0.0), e.ticker))
-    max_new = strategy.operations.max_new_entries_per_evening if allow_entries else 0
+    max_new = strategy.operations.max_new_entries_per_run if allow_entries else 0
     accepted = tuple(entries[:max_new])
     deferrals = entries[max_new:]
 
@@ -900,7 +900,7 @@ def trade_after_fill(
     """Arma el ``TradeState`` de una entrada recien ejecutada (seccion 4.5).
 
     El dia del relleno **no existe stop**: ``broker_stop = None`` y la regla 2
-    (STOP_MISSING) lo va a pedir esa noche. ``risk_per_share`` se deriva del
+    (STOP_MISSING) lo va a pedir esa corrida. ``risk_per_share`` se deriva del
     precio real de relleno, no del limite: una entrada mas barata que el limite
     tiene mas R, y eso hay que medirlo.
     """

@@ -529,7 +529,7 @@ def _actions(
     return actions
 
 
-#: Veredictos posibles de una posicion esta noche. ``VENDER`` gana sobre
+#: Veredictos posibles de una posicion esta corrida. ``VENDER`` gana sobre
 #: ``EDITAR STOP`` (si hay que vender, el stop no es la recomendacion principal),
 #: y ``MANTENER`` es el default honesto: sin accion no se inventa un motivo.
 def _verdicts(views: list[PositionView], actions: list[SuggestedAction]) -> dict[str, tuple[str, str]]:

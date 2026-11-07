@@ -4,7 +4,7 @@
 - **Limite mensual**: equity -6 % desde el inicio del mes -> sin entradas hasta el
   mes siguiente.
 - **Concentracion**: 10 % por ticker y 30 % por tema; sobre el tope + 5 pp, una
-  sola ``CAP_TRIM`` por tema y noche.
+  sola ``CAP_TRIM`` por tema y corrida.
 
 Todo es puro: recibe una foto de la cartera con los topes de ``strategy.yaml`` y
 devuelve rechazos con motivo, espacio disponible en CLP o un plan de venta. La
@@ -330,15 +330,15 @@ def plan_cap_trims(
     limits: PortfolioLimits,
     trimmed_tonight: frozenset[str] = frozenset(),
 ) -> tuple[CapTrim, ...]:
-    """Un ``CAP_TRIM`` por tema sobre el tope + 5 pp, y solo uno por noche.
+    """Un ``CAP_TRIM`` por tema sobre el tope + 5 pp, y solo uno por corrida.
 
     Tres decisiones que el spec no detalaba y que quedan fijadas aqui (D15):
 
-    1. **Un ticket, no varios.** El spec pide "una ``CAP_TRIM`` por tema y noche".
+    1. **Un ticket, no varios.** El spec pide "una ``CAP_TRIM`` por tema y corrida".
        Se elige **un solo trade**, el de menor fuerza relativa, y se vende de el lo
        que alcanza. Si no alcanza para bajar al tope + 2 pp, el resto queda para la
-       noche siguiente y se dice en el detalle. Vender de tres tickers en una noche
-       seria tres tickets, y el tope de acciones por noche es 8.
+       corrida siguiente y se dice en el detalle. Vender de tres tickers en una corrida
+       seria tres tickets, y el tope de acciones por corrida es 8.
     2. **El orden es por fuerza relativa**, no por peso ni por perdida: el spec lo
        pide y es lo correcto, porque el trade mas fuerte es el que menos va a
        sufrir la venta.
@@ -394,7 +394,7 @@ def plan_cap_trims(
                 detail=(
                     f"tema en {pct:.1f} %, se vende hasta {after:.1f} % desde {best.ticker} "
                     f"(fuerza relativa {best.rs_percentile:.0f})"
-                    + (f"; quedan {deferred:,.0f} CLP de exceso para la noche siguiente" if deferred > 1.0 else "")
+                    + (f"; quedan {deferred:,.0f} CLP de exceso para la corrida siguiente" if deferred > 1.0 else "")
                 ),
             )
         )

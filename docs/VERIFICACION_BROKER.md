@@ -53,7 +53,7 @@ Observar: _anotar aqui las opciones_
 | Hasta fecha | | queda viva hasta esa fecha |
 
 **Por que importa.** `order_expiry: unknown` obliga al plan a emitir un `CANCEL` de
-cada entrada no ejecutada, o sea una accion extra por noche. Si existe "solo el
+cada entrada no ejecutada, o sea una accion extra por corrida. Si existe "solo el
 dia", el plan se achica solo.
 
 ## #3 SL adjunto a una entrada pendiente — PENDIENTE
@@ -130,7 +130,7 @@ Observar: _anotar_
 **Por que importa.** Si el stop sigue al **instrumento completo**, no se puede
 gestionar por lote y la opcion `tranche_mode: separate_positions` queda descartada.
 La consecuencia es que cada posicion necesita su propio stop, lo que multiplica los
-tickets y compite con el tope de 8 acciones por noche.
+tickets y compite con el tope de 8 acciones por corrida.
 
 ## #7 ID de posicion tras un cierre parcial — PENDIENTE
 
@@ -191,7 +191,7 @@ la expectativa medida sube ~0,125 R. Hay un test que fija esta relacion
    `VERIFICAR`.
 2. Si un supuesto queda en `unknown`, dejarlo: el planificador ya usa el valor
    conservador.
-3. Correr `swing verify-broker` para ver que el YAML sigue siendo valido y que
+3. Revisar a mano que el YAML sigue siendo valido y que
    `unverified_assumptions()` lista lo que falta.
 4. Anotar abajo la fecha y el resultado.
 

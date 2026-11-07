@@ -1,6 +1,6 @@
 """Journal SQLite (``adapters/journal``, fase 7).
 
-Fija que la memoria entre noches guarda y devuelve lo que tiene que devolver:
+Fija que la memoria entre corridas guarda y devuelve lo que tiene que devolver:
 runs, acciones ``PENDING``/``DONE``, el envejecimiento a ``RECURRING``, los trades
 cerrados y el estado del kill switch.
 """

@@ -332,7 +332,7 @@ def test_histeresis_pide_subir_el_stop() -> None:
 
 
 def test_histeresis_no_pide_editar_el_stop_a_futile() -> None:
-    # Candidato 102,9 (+1,9 < 2,25): ninguna accion, para no editar todas las noches.
+    # Candidato 102,9 (+1,9 < 2,25): ninguna accion, para no editar todas las corridas.
     assert should_raise_stop(101.0, 102.9, 3.0, 0.75) is False
 
 

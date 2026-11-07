@@ -10,7 +10,7 @@
 broker: xtb
 
 # El trailing stop no existe para acciones ni ETFs reales: confirmado por XTB.
-# El trailing es manual, el sistema recalcula el stop cada noche.
+# El trailing es manual, el sistema recalcula el stop cada corrida.
 trailing_stop_stocks: false
 
 # Confirmado por el usuario: SL y TP son ordenes de venta separadas y el volumen
@@ -19,7 +19,7 @@ trailing_stop_stocks: false
 sl_tp_share_same_shares: false
 
 # VERIFICADO (#1): se pueden ingresar ordenes con el mercado cerrado y se
-# ejecutan al abrir. El modelo nocturno es viable.
+# ejecutan al abrir. El modelo programado es viable.
 pending_outside_hours: true
 
 # VERIFICAR (#3): adjuntar el SL a la orden de entrada pendiente.

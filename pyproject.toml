@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "swing-engine"
 version = "0.1.0"
-description = "Motor de swing trading para operar solo de noche (Evening Desk). Recomienda; nunca ejecuta ordenes."
+description = "Analizador y recomendador de acciones: stats, review y recomendador. Recomienda; nunca ejecuta ordenes."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
-keywords = ["trading", "swing", "evening-desk", "yahoo-finance", "screener"]
+keywords = ["trading", "stocks", "analysis", "yahoo-finance", "recommender"]
 classifiers = [
     "Intended Audience :: Financial and Insurance Industry",
     "License :: OSI Approved :: MIT License",

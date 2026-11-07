@@ -1,6 +1,6 @@
 """Journal de la operacion (spec v3.1 seccion 9 y 13): SQLite + CSV append-only.
 
-Es la memoria del sistema entre noches: que se corrio, que acciones quedaron
+Es la memoria del sistema entre corridas: que se corrio, que acciones quedaron
 ``PENDING``, que se confirmo, que trades cerraron y como van las metricas. La
 fuente de verdad de lo **ejecutado** sigue siendo el siguiente reporte del broker
 (``core/reconcile``); el journal registra lo que el motor **recomendo** y lo que
@@ -246,7 +246,7 @@ class Journal:
         return tuple(PendingAction(int(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5])) for r in rows)
 
     def aged_pending(self, run_date: dt.date, nights: int = 2) -> tuple[PendingAction, ...]:
-        """Acciones ``PENDING`` de noches anteriores: se marcan ``RECURRING`` (seccion 9)."""
+        """Acciones ``PENDING`` de corridas anteriores: se marcan ``RECURRING`` (seccion 9)."""
         cutoff = run_date - dt.timedelta(days=nights)
         return tuple(action for action in self.pending_actions() if action.run_date < cutoff.isoformat())
 

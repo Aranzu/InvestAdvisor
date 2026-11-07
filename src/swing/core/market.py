@@ -9,7 +9,7 @@ precio real.
 El modulo es puro y no sabe de donde vienen los datos. ``DataProvider`` es la unica
 puerta: la implementan los adaptadores (``data_yahoo`` y, mas adelante, el importador de
 XTB), y tanto el backtest como la produccion consumen la misma interfaz. Eso es lo que
-permite que el simulador y la corrida de la noche no se separen nunca.
+permite que el simulador y la corrida de la corrida no se separen nunca.
 
 Las validaciones de OHLC viven en el constructor de ``Bar`` y no en la capa de calidad:
 una vela con el maximo mas bajo que el cierre no es una vela dudosa, es una vela

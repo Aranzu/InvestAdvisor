@@ -265,9 +265,9 @@ def test_llm_puede_decidir_si_veto_only_es_false() -> None:
 
 def test_rechaza_entradas_nuevas_sobre_el_tope_de_acciones(tmp_path: Path) -> None:
     def mutate(data: dict[str, Any]) -> None:
-        data["operations"]["max_new_entries_per_evening"] = 20
+        data["operations"]["max_new_entries_per_run"] = 20
 
-    _invalid(tmp_path, mutate, "max_actions_per_evening")
+    _invalid(tmp_path, mutate, "max_actions_per_run")
 
 
 def test_rechaza_riesgo_por_trade_absurdo(tmp_path: Path) -> None:

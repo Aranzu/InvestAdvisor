@@ -45,7 +45,7 @@ CACHE_SCHEMA = 1
 #: Version del cache de insiders (mismo criterio, payload distinto).
 INSIDER_CACHE_SCHEMA = 1
 
-#: Timeout por peticion. Sin esto un socket colgado frena la corrida nocturna.
+#: Timeout por peticion. Sin esto un socket colgado frena la corrida programada.
 HTTP_TIMEOUT_S = 30.0
 
 #: Finviz responde 403 a un cliente sin User-Agent de navegador.

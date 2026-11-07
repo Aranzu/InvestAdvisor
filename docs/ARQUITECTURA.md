@@ -2,23 +2,24 @@
 
 Documento de referencia de **cómo funciona todo** el `swing-engine`. Para el detalle
 de producto y el estado de las fases, ver el `README.md`; para el spec, ver
-`plan/spec_v3_1_operacion_nocturna.md`.
+el spec v3.1.
 
 ## 1. Qué es
 
-Motor de swing trading con **dos funciones** (D25): cada noche **revisa tus posiciones**
-(`review`) y **rastrea compras** (`screen`). **Recomienda, nunca ejecuta órdenes.** El
-núcleo es determinista y auditable; la IA es opcional y **decide** (`BUY/HOLD/SELL/WATCH`,
-D27), pero nunca fija niveles: stop, meta y tamaño los calcula siempre el motor.
+Analizador y recomendador de acciones con **tres funciones**: `stats` (ficha completa de
+cada posición), `review` (usa `stats` y recomienda mantener/recortar/vender) y `screen`
+(el **recomendador de acciones**). **Recomienda, nunca ejecuta órdenes.** El núcleo es
+determinista y auditable; la IA es opcional y **decide** (`BUY/HOLD/SELL/WATCH`, D27),
+pero nunca fija niveles: stop, meta y tamaño los calcula siempre el motor.
 
-El producto original (backtest, plan nocturno, journal) se **archivó** en `legacy/`: su
+El producto original (backtest, plan de tickets, journal) se **archivó** en `legacy/`: su
 código queda como referencia y ya no se instala ni expone comandos.
 
 ## 2. Capas
 
 ```
 core/         nucleo PURO: sin disco, sin red, sin importar adapters/ (un test lo verifica)
-adapters/     I/O: Yahoo, cache, config YAML, parser XTB, fundamentales, LLM, busqueda, universo, notificacion
+adapters/     I/O: Yahoo, cache, config YAML, parser XTB, fundamentales, LLM, busqueda, universo
 services/     orquestacion del CLI: rutas, armado de datos, informes y research (no importa cli)
 cli.py        comandos (Typer); es la capa que toca disco/red y arma los objetos de core
 legacy/       codigo archivado (backtest, journal); fuera del paquete, solo referencia
@@ -34,20 +35,18 @@ informe) para que `cli.py` quede con los comandos y los argumentos; un test fija
 
 ## 3. Flujo de una corrida
 
-### 3.1 (archivado) Plan nocturno — `swing daily`
+### 3.1 `stats` — ficha por posición
 
-El plan nocturno con tickets (fase 4) se **archivó** en `legacy/`; ya no hay comando. El
-motor `decide()` sigue siendo el mismo que consumen `review` y `screen`, y el flujo era:
-config → universo → datos → reporte XTB → reconciliación → adopción → `decide()` → IA
-opcional → tickets e informe (`output/plan_<fecha>.md`).
+Lee el export de XTB, valúa la cartera y escribe `output/stats_<reporte>_<marca>.md` y
+`.json`: panel de cumplimiento P1-P11, campos de mercado/fundamentales, lotes, historial
+cerrado, curva de patrimonio y, con `--contexto`, régimen, factores y materias primas.
 
-### 3.2 Función 1 — revisión de posiciones: `swing review [--web-search --formato informe|detalle|tabla|acciones]`
+### 3.2 `review` — revisión de posiciones: `swing review [--web-search --formato informe|detalle|tabla|acciones]`
 
 Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantiene o se vende:
 1. Reporte → adopción → `decide(universe=())` (solo salidas).
-2. **Stats por posición** (`services/stats`): escribe `output/stats_<reporte>_<marca>.md` y `.json` (con
-   materias primas y el driver de cada posición) y
-   reutiliza sus fundamentales, para no volver a pedir todo a Yahoo.
+2. **Stats por posición** (`services/stats`): escribe `output/stats_<reporte>_<marca>.md` y `.json`
+   y reutiliza sus fundamentales, para no volver a pedir todo a Yahoo.
 3. **Fundamentales y proyecciones** (por posición): `adapters/fundamentals` inyecta
    valoración, ROE/margen, crecimiento y objetivo de analistas del ticker.
 4. La IA (obligatoria cuando hay clave; ya no hay `--llm`) pondera técnico + fundamental +
@@ -60,20 +59,19 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
 6. **Narrativa de cartera** (una sola llamada `PORTFOLIO_REVIEW`, sin búsquedas nuevas) que
    llena el veredicto, la cobertura y los supuestos del informe.
 6. Informe con `--formato`:
-   - `informe` (por defecto): **11 secciones** (la 11 solo si la caja post-venta supera
-     20 %) — Veredicto y liquidez, Tabla de decisión, Auditoría de ventas, Tabla de TP y SL,
-     Cobertura, Alertas, Supuestos y vacíos, Fuentes clave, Registro de decisiones, Qué cambió
-     y Oportunidades. Puntaje por ejes V/C/G/P (`-8..+8`). Con la política `review` agrega el
-     veredicto de `PROMPT PORTAFOLIO v6` (niveles de revisión/alarma, disparadores T1-T6,
-     motivos V1-V8, ejes E1-E4 con F/M y acción implícita) y guarda el registro en `state/`.
-   - `detalle` (el de `nightly`): bloques explicados.
+   - `informe` (por defecto): formato del **`PROMPT PORTAFOLIO v7`** — cobertura,
+     veredicto (régimen/modo, riesgo, factor IA y caja), **panel de cumplimiento P1-P11**,
+     tabla de decisión con stop/TP/riesgo, auditoría, cobertura de datos, alertas, supuestos,
+     fuentes, registro, qué cambió, desvíos OVERRIDE y oportunidades. Puntaje por ejes
+     V/C/G/P (`-8..+8`). Guarda el registro en `state/`.
+   - `detalle`: bloques explicados por posición.
    - `tabla`: `Activo · Retorno % · Acción · Conf. · Fundamento · Stop · TP · Catalizador`.
    - `acciones`: una sola tabla `Activo · Retorno · Peso (actual → post) · Acción ·
      Puntaje · Conf. · Fundamento`, sin secciones ni tickets y sin narrativa de cartera
      (ahorra una consulta). Peso sobre el capital invertido (suma 100 %); `post` renormaliza
      tras aplicar las ventas. El porcentaje/volumen lo fija el motor.
 
-### 3.3 Función 2 — screener de compra: `swing screen`
+### 3.3 `screen` — recomendador de acciones
 
 1. Universo amplio: S&P 500 vivo desde Wikipedia (GICS → tema) o watchlist local.
 2. Prefiltro técnico (`core/discovery`): tendencia SMA200, stack, rango 52 semanas,
@@ -90,24 +88,6 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
    emite su tesis de compra (`BUY/WATCH`) por candidato y se **anexa** al mismo archivo,
    con la fase acotada por `llm.screen_budget_s`.
 
-### 3.4 Corrida nocturna (fase 8) — `swing nightly`
-
-Es el punto de entrada que se agenda: corre `screen` (siempre) y `review` (si hay export
-de XTB) en una pasada, escribe `output/nightly_<fecha>.md` y **combina los códigos de
-salida** con precedencia config/datos > IA > hallazgos. No agrega lógica de decisión:
-cada subcomando falla cerrado como ya lo hacía, así que datos obsoletos terminan en 2.
-La **notificación** (`adapters/notify`) es opcional y **best-effort** (webhook o
-Telegram); un fallo de red se reporta y no tumba la corrida. `swing schedule` calcula
-la hora local `America/Santiago` e imprime el comando `schtasks`. Ver `docs/PROGRAMACION.md`.
-
-### 3.5 Medición del screener — `swing track`
-
-Cada `screen` sin `--out` deja una foto en `state/picks/<sesión>.json` (journal forward,
-`services/picks_log.py`). `swing track` (oculto) junta ese journal con las velas y mide, para
-los picks ya maduros, el retorno a 21/63 sesiones y su exceso contra `regime.index`
-(`core/track.py`, puro). **Sin lookahead**: entrada = sesión del pick, salida = sesión
-posterior. Es la medición honesta que se puede hacer sin snapshot histórico de fundamentales.
-
 ## 4. El motor `decide()` (`core/engine.py`)
 
 Es **una sola función** que comparten `review` y `screen`. Entradas:
@@ -119,7 +99,7 @@ Orden de trabajo (cambiarlo cambia el resultado; hay un test que lo fija):
 2. **Salidas** (`core/exits.evaluate_exits`): las diez reglas por precedencia
    `STOP_BREACH → STOP_MISSING/MISMATCH → TP_HIT → EARNINGS_DERISK → STALL_EXIT →
    RAISE_STOP → MAX_HOLD → HORIZON_TIGHTEN → CAP_TRIM → THESIS_EXIT`. Una sola acción
-   por posición y noche; las demás quedan "tapadas" con su motivo.
+   por posición y corrida; las demás quedan "tapadas" con su motivo.
 3. **Cartera** (`core/portfolio`): heat, tope por ticker/tema, `CAP_TRIM`.
 4. **Entradas** (`core/screening`): las seis puertas (tendencia SMA200, stack,
    rango 52w, fuerza relativa cross-sectional, liquidez, earnings) + setup pullback
@@ -189,25 +169,17 @@ conjunto que la watchlist — hay un test). Los invariantes se validan al cargar
 
 ## 9. Comandos
 
-El CLI expone **tres comandos**: `stats`, `review` y `screen`. El resto está **oculto**
-(sigue operativo para diagnóstico/automatización y aparece con `<cmd> --help` o
-`swing --help`).
+El CLI expone **solo tres comandos**: `stats`, `review` y `screen`.
 
 | Comando | Qué hace |
 |---|---|
-| `check-config` (oculto) | valida `config/` sin red |
-| `verify-broker` (oculto) | campos de `broker.yaml` sin verificar |
-| `data-health` (oculto) | frescura/huecos/earnings por ticker |
-| `analyze-positions` (oculto) | valúa la cartera y hallazgos (sin reglas de salida completas) |
-| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), **panel de cumplimiento P1-P11** (stop inicial anclado a la entrada, stop vigente, R, riesgo, peso máximo y estado), lotes, curva de patrimonio ajustada por aportes, historial cerrado, insiders resumidos (3 recientes), **horario extendido** y materias primas; con `--contexto` agrega **régimen v7 de 6 señales** (VIX/SPY/10Y/DXY/QQQ/VIX 1M, benchmarks sospechosos, amplitud y USD/CLP), factores y diversificación. Emite `stats_<reporte>_<marca>.md` y `.json` (`schema: 9`), que `analyze-positions` y `review` reutilizan |
-| `review` | **funcion 1**: posiciones; el motor decide niveles + la IA el veredicto. `--formato informe` (11 secciones, por defecto), `detalle`, `tabla` o `acciones` |
-| `screen` (alias `discover`) | **funcion 2**: screener de compra (técnico + fundamentales + proyecciones) |
-| `track` (oculto) | mide el journal forward del screener a 21/63 sesiones |
-| `nightly` (oculto) | **fase 8**: `screen` + `review --formato detalle` (si hay export) en una corrida, resumen y notificación opcional |
-| `schedule` (oculto) | **fase 8**: hora local del cierre + margen y comando `schtasks` |
+| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), **panel de cumplimiento P1-P11** (stop inicial anclado a la entrada, stop vigente, R, riesgo, peso máximo y estado), lotes, curva de patrimonio ajustada por aportes, historial cerrado, insiders resumidos (3 recientes), **horario extendido** y materias primas; con `--contexto` agrega **régimen v7 de 6 señales** (VIX/SPY/10Y/DXY/QQQ/VIX 1M, benchmarks sospechosos, amplitud y USD/CLP), factores y diversificación. Emite `stats_<reporte>_<marca>.md` y `.json` (`schema: 9`), que `review` reutiliza |
+| `review` | **función 1**: usa `stats`; el motor decide niveles + la IA el veredicto. `--formato informe` (11 secciones, por defecto), `detalle`, `tabla` o `acciones` |
+| `screen` | **función 2**: recomendador de acciones (técnico + fundamentales + proyecciones) |
 
-Los comandos archivados (`daily`, `scan`, `allocate`, `confirm`, `backtest`)
-ya no existen; su código está en `legacy/`.
+Los comandos retirados (`daily`, `scan`, `allocate`, `confirm`, `backtest`, `nightly`,
+`schedule`, `track`, `discover`, diagnósticos) ya no existen; su código histórico está en
+`legacy/`.
 
 Códigos de salida: `0` limpio, `1` error de config/datos, `2` hallazgos/acciones,
 `3` fallo de IA (el informe determinista igual se escribe).

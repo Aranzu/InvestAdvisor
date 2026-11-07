@@ -57,7 +57,7 @@ DEFAULT_LOOKBACK_DAYS = 400
 NETWORK_RETRIES = 3
 NETWORK_BACKOFF_S = 0.5
 
-#: Timeout por peticion a Yahoo. Sin esto, un socket colgado deja la corrida nocturna
+#: Timeout por peticion a Yahoo. Sin esto, un socket colgado deja la corrida programada
 #: esperando indefinidamente.
 YF_TIMEOUT_S = 20.0
 

@@ -256,7 +256,45 @@ def test_function_calling_ejecuta_la_busqueda(monkeypatch) -> None:
     review = client.review("AMD", ReviewContext.POSITION_REVIEW, {"x": 1}, TODAY)
     assert review.ticker == "AMD"
     assert fake.queries == ["AMD news"]
-    assert calls["n"] == 2
+    # Flash decide y busca; Flash devuelve el borrador; Pro redacta la tesis final.
+    assert calls["n"] == 3
+
+
+def test_busqueda_usa_flash_y_el_cierre_usa_el_modelo_de_analisis(monkeypatch) -> None:
+    import json
+
+    from swing.adapters.llm import OpenAICompatibleClient
+    from swing.adapters.search import SearchResult
+
+    class _FakeSearch:
+        def search(self, query: str) -> list[SearchResult]:
+            return [SearchResult("T", "https://x/news", "contenido", "2026-10-05")]
+
+    sent: list[dict[str, object]] = []
+
+    def fake_post(self: object, path: str, body: dict[str, object]) -> dict[str, object]:
+        sent.append(body)
+        if len(sent) == 1:
+            tool_call = {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": json.dumps({"query": "AMD news"})},
+            }
+            return {"choices": [{"message": {"role": "assistant", "tool_calls": [tool_call]}}]}
+        return {"choices": [{"message": {"content": json.dumps(_payload())}}]}
+
+    monkeypatch.setattr(OpenAICompatibleClient, "_post", fake_post)
+    client = OpenAICompatibleClient(
+        api_key="k",
+        model="deepseek-flash",
+        model_search="deepseek-flash",
+        model_analysis="deepseek-v4-pro",
+        web_search=True,
+        search=_FakeSearch(),
+    )
+    client.review("AMD", ReviewContext.POSITION_REVIEW, {"x": 1}, TODAY)
+    assert sent[0]["model"] == "deepseek-flash"
+    assert sent[-1]["model"] == "deepseek-v4-pro"
 
 
 def test_hecho_con_fecha_futura_se_descarta() -> None:

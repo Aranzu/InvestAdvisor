@@ -30,7 +30,7 @@ def test_todas_las_filas_con_el_mismo_tipo_de_cambio() -> None:
 
 
 def test_una_fila_atipica_no_mueve_la_mediana() -> None:
-    # Con la media, esta fila sola correria el FX de todo el tamano de la noche.
+    # Con la media, esta fila sola correria el FX de todo el tamano de la corrida.
     filas = (row(984_000.0), row(984_000.0), row(984_000.0), row(2_000_000.0))
     estimacion = implicit_usd_clp(filas)
     assert estimacion.usd_clp == pytest.approx(984.0)

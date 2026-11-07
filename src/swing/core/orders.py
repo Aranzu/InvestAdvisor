@@ -80,7 +80,7 @@ class Ticket:
     ``entailed`` agrupa un ticket con lo que trae colgado: una venta parcial de
     tramo A va seguida de la edicion del Sell Stop del remanente (seccion 4.3),
     y un sell-all de la cancelacion del stop huerfano. El tope de acciones por
-    noche cuenta los tickets, y el entailed viaja con el principal sin ocupar
+    corrida cuenta los tickets, y el entailed viaja con el principal sin ocupar
     un numero aparte en el plan (se quita de la numeracion porque es una sola
     orden en la mesa).
     """
@@ -99,7 +99,7 @@ class Ticket:
     """``RIESGO_SIN_COBERTURA`` cuando un Sell Limit deja acciones sin stop."""
     entailed: tuple[Ticket, ...] = ()
     recurring_count: int = 0
-    """Cuantas noches seguidas lleva sin ejecutarse; ``>= 2`` marca ``RECURRING``."""
+    """Cuantas corridas seguidas lleva sin ejecutarse; ``>= 2`` marca ``RECURRING``."""
 
     @property
     def is_sell(self) -> bool:
@@ -151,7 +151,7 @@ def sell_stop_fill(day_open: float, day_low: float, stop: float, stop_slippage_p
 
 
 def sell_market_fill(day_open: float) -> float:
-    """Venta nocturna a mercado: relleno en la apertura de la sesion siguiente."""
+    """Venta programada a mercado: relleno en la apertura de la sesion siguiente."""
     return day_open
 
 

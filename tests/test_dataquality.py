@@ -204,7 +204,7 @@ def test_reescalar_con_un_ratio_invalido_falla() -> None:
 
 
 def test_las_sesiones_hasta_el_reporte_son_sesiones() -> None:
-    # Caso del spec 16.4: la noche del martes 3 hay dos sesiones (4 y 5).
+    # Caso del spec 16.4: la corrida del martes 3 hay dos sesiones (4 y 5).
     assert sessions_to_earnings(CAL, dt.date(2026, 11, 3), THURSDAY) == 2
     assert sessions_to_earnings(CAL, dt.date(2026, 11, 4), THURSDAY) == 1
     assert sessions_to_earnings(CAL, dt.date(2026, 11, 2), THURSDAY) == 3

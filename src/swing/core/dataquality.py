@@ -76,7 +76,7 @@ def check_freshness(
 
     Devuelve ``None`` cuando hay margen, y el rechazo con la hora exacta a la que se
     puede reintentar cuando no. Programar el reintento a una hora fija en vez de al
-    cumplirse el margen es lo que hace que un motor nocturno con datos viejos parezca
+    cumplirse el margen es lo que hace que un motor programado con datos viejos parezca
     sano.
     """
     if min_minutes_after_close < 0:

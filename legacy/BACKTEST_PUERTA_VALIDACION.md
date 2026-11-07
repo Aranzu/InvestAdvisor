@@ -1,7 +1,7 @@
 # Backtest walk-forward y puerta de validacion (fase 3 de la v3.1)
 
 Lo que quedo implementado, verificado y documentado como decision de la fase 3
-del spec (`plan/spec_v3_1_operacion_nocturna.md`, seccion 11). Este documento
+del spec v3.1 (seccion 11). Este documento
 registra **que existe, que se probo y que condiciones de contorno hubo que
 resolver** para que el ciclo corriera con datos sinteticos; no es una promesa de
 resultados sobre datos reales.
@@ -10,22 +10,22 @@ resultados sobre datos reales.
 
 | Archivo | Que es |
 |---|---|
-| `legacy/backtest/simulator.py` | `run_backtest`, `_Simulator`, `BacktestRun`, `NightStub`, `EquityPoint`, `SimOptions`. Simulador diario noche por noche. |
+| `legacy/backtest/simulator.py` | `run_backtest`, `_Simulator`, `BacktestRun`, `NightStub`, `EquityPoint`, `SimOptions`. Simulador diario corrida por corrida. |
 | `legacy/backtest/validation.py` | `validate_run`, `random_entrance_percentile`, `ValidationReport.render_markdown`. Puerta de la seccion 11.3. |
 | `legacy/backtest/__init__.py` | Exports publicos: `run_backtest`, `validate_run`, `BacktestRun`, `SimOptions`, `NightStub`, `ValidationReport`. |
 | `legacy/tests/test_backtest.py` | Harness de datos sinteticos deterministas + 5 tests del ciclo completo. |
 
 Punto central: el backtest **no decide por su cuenta**. `_Simulator` construye
-el snapshot de cada noche y llama `decide` de `swing.core.engine`, el mismo
+el snapshot de cada corrida y llama `decide` de `swing.core.engine`, el mismo
 punto de decision que usa la corrida real; solo traduce el plan en el estado del
 dia siguiente (rellenos, stops, parciales, runners). Por eso una entrada que el
-backtest fabrica prueba el mismo camino que una noche real.
+backtest fabrica prueba el mismo camino que una corrida real.
 
 ## Ciclo corrige su propia equity
 
-El simulador empieza con `SimOptions(initial_equity_clp=...)` y cada noche
+El simulador empieza con `SimOptions(initial_equity_clp=...)` y cada corrida
 inyecta lo que cerro (deposito/retiro) como capital nuevo. La curva resultante
-(`run.equity`, un `EquityPoint` por noche) tiene que **cuadrar con caja +
+(`run.equity`, un `EquityPoint` por corrida) tiene que **cuadrar con caja +
 posiciones**: si no, la causa es un defasaje del patrimonio de cierre, no un
 trade; es el primer assert que atrapo en el harness (ver "descartes" abajo).
 
@@ -83,7 +83,7 @@ Dimensiones que tuvieron que ser "asi" (registradas porque son fragiles):
   y perdedores en el mismo ciclo.
 - Equity 1 000 000 -> 1 045 399 CLP, coherente con caja + posiciones.
 - El fill de entrada ocurre al limite (whipsaw bajo el limite), no al open; el
-  stop y el TP1 se administran en las noches siguientes.
+  stop y el TP1 se administran en las corridas siguientes.
 
 ## Descarte de un bug real previo
 

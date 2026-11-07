@@ -2,7 +2,7 @@
 
 Fija que el prefiltro descarta lo que no esta en tendencia (bajo la SMA200, stack
 invertido) y que el ranking ordena por fuerza relativa. Tambien que la fuente
-``--universe candidates`` lee la lista que deja ``swing discover``.
+``--universe candidates`` lee la lista que deja ``swing screen``.
 """
 
 from __future__ import annotations

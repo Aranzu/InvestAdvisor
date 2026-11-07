@@ -141,7 +141,7 @@ class SessionCalendar:
     def next_session(self, day: dt.date) -> dt.date:
         """Primer dia habil **estrictamente posterior** a ``day``.
 
-        Es la fecha de ejecucion de una orden colocada de noche: la orden de hoy
+        Es la fecha de ejecucion de una orden colocada de corrida: la orden de hoy
         se ejecuta en la apertura de manana.
         """
         out = day + dt.timedelta(days=1)
@@ -184,8 +184,8 @@ class SessionCalendar:
 
         Excluir el inicio es lo que hace que la cuenta sea la que espera el
         informe. Con earnings el jueves 2026-11-05 y ``lead_sessions = 2``,
-        contando desde la noche del martes 2026-11-03 las sesiones son el miercoles
-        4 y el jueves 5: dos. La orden sale esa noche y se ejecuta el miercoles.
+        contando desde la corrida del martes 2026-11-03 las sesiones son el miercoles
+        4 y el jueves 5: dos. La orden sale esa corrida y se ejecuta el miercoles.
         """
         if end < start:
             return 0

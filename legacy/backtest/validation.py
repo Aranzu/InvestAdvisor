@@ -3,13 +3,13 @@
 El esqueleto de las reglas vive en ``core.metrics.check_validation_metrics``;
 aqui se monta el resto: el calculo del veredicto completo, la prueba aleatoria
 de entradas (que necesita la serie de precios, no los trades), y el informe que
-la CLI y el nightly-report van a imprimir.
+la CLI y el reporte de la corrida van a imprimir.
 
 La seccion 11.3 exige, en orden:
 
 1. ``n >= min_oos_trades`` trades **fuera de muestra**. En este pipeline todo
    el walk-forward es fuera de muestra por construccion: cada decision usa solo
-   la informacion disponible hasta esa noche (nada se ajusta con datos
+   la informacion disponible hasta esa corrida (nada se ajusta con datos
    posteriores), asi que los trades cerrados de la corrida son la muestra OOS.
 2. Expectativa > +0,25 R (sesgo de supervivencia del universo **no corregido**,
    seccion 11.1: el umbral sube de +0,15 R).
@@ -61,7 +61,7 @@ class YearStats:
 
 @dataclass(frozen=True, slots=True)
 class OperationalStats:
-    """KPIs de la operativa (seccion 11.3.6): cuantas acciones por noche, etc."""
+    """KPIs de la operativa (seccion 11.3.6): cuantas acciones por corrida, etc."""
 
     nights: int
     nights_with_actions: int
@@ -97,7 +97,7 @@ class ValidationReport:
     """``(tasa, expectativa neta de impuestos)`` para ``validation.tax_sensitivity_pct``."""
 
     def render_markdown(self) -> str:
-        """Informe del veredicto. Es lo que imprime la CLI y entra al nightly."""
+        """Informe del veredicto. Es lo que imprime la CLI y entra al reporte."""
         m = self.metrics
         lineas = [
             f"# Validacion del backtest: {self.gate.label}",
@@ -131,10 +131,10 @@ class ValidationReport:
             "",
             "## Operativa",
             "",
-            f"- Noches evaluadas: {self.operational.nights} ({self.operational.nights_with_actions} con acciones)",
-            f"- Noches vacias: {self.operational.empty_nights_pct:.1f} %",
-            f"- Acciones por noche (promedio): {self.operational.avg_actions:.2f} (max {self.operational.max_actions})",
-            f"- Entradas por noche: {self.operational.avg_entries_per_night:.2f} (max {self.operational.max_entries_in_one_night})",
+            f"- Corridas evaluadas: {self.operational.nights} ({self.operational.nights_with_actions} con acciones)",
+            f"- Corridas vacias: {self.operational.empty_nights_pct:.1f} %",
+            f"- Acciones por corrida (promedio): {self.operational.avg_actions:.2f} (max {self.operational.max_actions})",
+            f"- Entradas por corrida: {self.operational.avg_entries_per_night:.2f} (max {self.operational.max_entries_in_one_night})",
         ]
         if m.single_n:
             lineas += [

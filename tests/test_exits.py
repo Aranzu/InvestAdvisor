@@ -42,7 +42,7 @@ BREAKEVEN = 101.0  # entrada x 1,01
 ATR = 3.0
 VOLUME = 20.0
 
-#: Jueves. Con ``lead_sessions = 2`` la noche del martes ya esta a dos sesiones.
+#: Jueves. Con ``lead_sessions = 2`` la corrida del martes ya esta a dos sesiones.
 EARNINGS = dt.date(2026, 11, 5)
 TUESDAY = dt.date(2026, 11, 3)
 WEDNESDAY = dt.date(2026, 11, 4)
@@ -111,7 +111,7 @@ def test_stop_breach_y_earnings_a_la_vez_solo_manda_el_stop() -> None:
 
 def test_sin_stop_gana_al_alcance_de_la_meta() -> None:
     # STOP_MISSING es regla 2 y TP_HIT es 3: una posicion sin stop y con el cierre
-    # en la meta coloca el stop primero y reevalua la meta la noche siguiente.
+    # en la meta coloca el stop primero y reevalua la meta la corrida siguiente.
     out = evaluate_exits(trade(close=108.0, broker_stop=None), ctx())
     assert out.primary_cause is Reason.STOP_MISSING
     assert out.should_exit is False
@@ -230,7 +230,7 @@ def test_la_venta_del_tramo_a_deja_el_remanente_en_breakeven() -> None:
     assert despues.locked is True
 
 
-def test_la_noche_siguiente_el_trail_sigue_subiendo_desde_ahi() -> None:
+def test_la_corrida_siguiente_el_trail_sigue_subiendo_desde_ahi() -> None:
     antes = trade(close=108.0)
     vendido = apply_exits(antes, evaluate_exits(antes, ctx()))
     siguiente = replace(vendido, broker_stop=vendido.stop, highest_n=115.0, close=110.0)
@@ -253,7 +253,7 @@ def test_el_runner_nunca_puede_bajar_su_stop() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_earnings_a_dos_sesiones_sale_esa_noche() -> None:
+def test_earnings_a_dos_sesiones_sale_esa_corrida() -> None:
     # Caso 16.4: la orden se genera el martes 2026-11-03 y se ejecuta el miercoles.
     out = evaluate_exits(trade(close=101.0), ctx(earnings_date=EARNINGS))
     assert out.primary_cause is Reason.EARNINGS_DERISK
@@ -330,7 +330,7 @@ def test_trail_sube_el_stop_del_runner() -> None:
     assert out.stop_target == pytest.approx(106.0)
 
 
-def test_la_histeresis_evita_editar_el_stop_todas_las_noches() -> None:
+def test_la_histeresis_evita_editar_el_stop_todas_las_corridas() -> None:
     state = replace(
         trade(close=103.0, highest_n=110.0, stop=BREAKEVEN, broker_stop=BREAKEVEN),
         locked=True,

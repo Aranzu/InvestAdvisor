@@ -1,6 +1,6 @@
-"""El planificador nocturno por CLI (``cli.daily``, fase 4 del spec).
+"""El planificador programado por CLI (``cli.daily``, fase 4 del spec).
 
-Se corre con un export sintetico (``conftest``) y un provider falso: la noche
+Se corre con un export sintetico (``conftest``) y un provider falso: la corrida
 tiene que reconciliar, adoptar la posicion, decidir y emitir tickets sin tocar la
 red. Con una posicion sin Sell Stop el resultado trae ``STOP_MISSING`` y sale con
 codigo 2, que es el hallazgo que el plan tiene que reparar.
@@ -71,11 +71,11 @@ def test_daily_emite_plan_y_detecta_stop_missing(monkeypatch, tmp_path: Path) ->
         ],
     )
     assert result.exit_code == 2, result.output
-    assert "Plan nocturno" in result.output
-    assert "Tickets de esta noche" in result.output
+    assert "Plan programado" in result.output
+    assert "Tickets de esta corrida" in result.output
     assert out.is_file()
     informe = out.read_text(encoding="utf-8")
-    assert "Plan nocturno" in informe
+    assert "Plan programado" in informe
     assert "STOP_MISSING" in informe
 
 
@@ -102,5 +102,5 @@ def test_daily_dry_run_no_escribe(monkeypatch, tmp_path: Path) -> None:
     )
     assert result.exit_code == 2
     assert "Plan escrito" not in result.output
-    assert "Plan nocturno" in result.output
+    assert "Plan programado" in result.output
     assert not journal.is_file()

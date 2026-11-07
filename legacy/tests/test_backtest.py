@@ -2,7 +2,7 @@
 
 Se cubre el ciclo completo sobre datos sinteticos deterministas:
 
-1. El simulador genera entradas solo con la informacion de esa noche (las
+1. El simulador genera entradas solo con la informacion de esa corrida (las
    series son causales y no se reconstruyen por dia), llena los limites,
    administra stops, parciales y runners, y produce una curva de equity que
    cuadra con caja + posiciones.
@@ -38,8 +38,8 @@ CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 SERIES_START = dt.date(2018, 1, 1)
 
 #: Secuencias de los seis tickers del harness: el mismo ciclo, desfasado pocas
-#: sesiones, para que las entradas no caigan todas la misma noche (max 2 por
-#: noche) pero todas alcancen la ventana en la que el stack 200/50 esta armado.
+#: sesiones, para que las entradas no caigan todas la misma corrida (max 2 por
+#: corrida) pero todas alcancen la ventana en la que el stack 200/50 esta armado.
 PHASES = [0, 3, 6, 9, 12, 15]
 #: Barra (relativa) donde cada ticker confirma el pullback.
 CONFIRM_BAR = 350

@@ -2,7 +2,7 @@
 
 Lo que se fija: la venta sale a mercado cuando ``queued_market_orders`` esta
 confirmado, o como Sell Limit de respaldo marcado ``RIESGO_SIN_COBERTURA`` si no;
-y el tope ``max_actions_per_evening`` nunca difiere una accion de seguridad.
+y el tope ``max_actions_per_run`` nunca difiere una accion de seguridad.
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ def test_venta_es_sell_limit_de_respaldo_y_avisa_sin_cobertura() -> None:
 
 
 def test_el_tope_de_acciones_difiere_lo_que_sobra() -> None:
-    limit = STRATEGY.operations.max_actions_per_evening
+    limit = STRATEGY.operations.max_actions_per_run
     exits = tuple(_judgment(f"T{i:02d}", _sell(Reason.MAX_HOLD)) for i in range(limit + 2))
     result = plan_tickets(_plan(exits), BROKER, STRATEGY)
     assert len(result.tickets) == limit
@@ -110,19 +110,19 @@ def test_el_tope_de_acciones_difiere_lo_que_sobra() -> None:
 def test_las_acciones_de_seguridad_nunca_se_difieren() -> None:
     safety = tuple(
         _judgment(f"S{i:02d}", _sell(Reason.STOP_BREACH))
-        for i in range(STRATEGY.operations.max_actions_per_evening + 1)
+        for i in range(STRATEGY.operations.max_actions_per_run + 1)
     )
     extra = (_judgment("ZZZ", _sell(Reason.MAX_HOLD)),)
     result = plan_tickets(_plan(safety + extra), BROKER, STRATEGY)
     tickers = {ticket.ticker for ticket in result.tickets}
-    assert all(f"S{i:02d}" in tickers for i in range(STRATEGY.operations.max_actions_per_evening + 1))
+    assert all(f"S{i:02d}" in tickers for i in range(STRATEGY.operations.max_actions_per_run + 1))
     assert [ticket.ticker for ticket in result.deferred] == ["ZZZ"]
 
 
 def test_stop_ausente_es_seguridad_y_no_se_difiere() -> None:
     signal = ExitSignal(cause=Reason.STOP_MISSING, action=Action.EDIT_STOP, execute=True, volume=10.0, new_stop=90.0)
     exits = tuple(
-        _judgment(f"T{i:02d}", _sell(Reason.MAX_HOLD)) for i in range(STRATEGY.operations.max_actions_per_evening)
+        _judgment(f"T{i:02d}", _sell(Reason.MAX_HOLD)) for i in range(STRATEGY.operations.max_actions_per_run)
     )
     result = plan_tickets(_plan((*exits, _judgment("AAA", signal))), BROKER, STRATEGY)
     assert "AAA" in {ticket.ticker for ticket in result.tickets}

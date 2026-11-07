@@ -114,7 +114,7 @@ def test_review_llm_anota_la_tesis_sin_cambiar_la_regla(monkeypatch, tmp_path: P
     assert "## 6. Alertas (informativas)" in informe
     assert "TESIS DEBILITADA" in informe
     # WEAKENED queda como tesis a vigilar y el motor sigue mandando.
-    assert "Coloca un Sell Stop" in informe
+    assert "## 2. Panel de cumplimiento" in informe
 
 
 def test_review_inyecta_la_ficha_completa_de_stats(monkeypatch, tmp_path: Path) -> None:
@@ -242,9 +242,10 @@ def test_review_escribe_el_registro_de_decisiones_junto_al_informe(monkeypatch, 
     )
     assert result.exit_code == 2, result.output
     informe = out.read_text(encoding="utf-8")
-    # El informe con la politica ``review`` trae las secciones de v6.
-    assert "## 3. Auditoria de ventas" in informe
-    assert "## 4. Tabla de TP y SL" in informe
+    # El informe con la politica ``review`` trae las secciones del prompt v7.
+    assert "## 2. Panel de cumplimiento" in informe
+    assert "## 3. Tabla de decision" in informe
+    assert "## 4. Auditoria de ventas" in informe
     assert "## 9. Registro de decisiones" in informe
     assert "## 10. Que cambio" in informe
     # El registro se guarda junto al informe (con --out) y trae la linea del dia.

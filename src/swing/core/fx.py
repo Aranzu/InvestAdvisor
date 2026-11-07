@@ -10,7 +10,7 @@ CLP/USD = Value (CLP) / (Volume x Current price (USD))
 Se usa la **mediana** de las filas y se descartan las que se apartan mas de 1 % de esa
 mediana. Con la media, una sola fila con el volumen equivocado (un lote de fracciones
 o una fila mal leida) desplaza el numero, y el error se propaga a todo el tamano de
-posicion de la noche: el riesgo se calcula en CLP, asi que un FX mal puede abrir una
+posicion de la corrida: el riesgo se calcula en CLP, asi que un FX mal puede abrir una
 posicion con el doble de riesgo sin que ningun gate lo note.
 
 El limite de 1 % no es arbitrario: el mismo broker usa el mismo tipo de cambio para
