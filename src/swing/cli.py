@@ -77,6 +77,7 @@ from swing.core.reasons import Reason
 from swing.core.reconcile import reconcile_positions
 from swing.core.report import PositionReport
 from swing.core.report import group_open as _group_open
+from swing.core.screen_report import ScreenReport, render_screen_report
 from swing.core.stats import StatsReport
 from swing.core.stats import render_stats as _render_stats
 from swing.core.verdict import DecisionRecord
@@ -97,6 +98,7 @@ from swing.services.paths import prune_outputs as _prune_outputs
 from swing.services.paths import registry_path as _registry_path
 from swing.services.paths import report_dir as _report_dir
 from swing.services.paths import review_path as _review_path
+from swing.services.paths import screen_path as _screen_path
 from swing.services.paths import stats_paths as _stats_paths
 from swing.services.registry import append_records as _append_records
 from swing.services.registry import latest_by_ticker as _latest_by_ticker
@@ -805,6 +807,10 @@ def screen(
         Path | None,
         typer.Option("--out", help="Archivo de candidatos. Por defecto state/candidates.json."),
     ] = None,
+    md_out: Annotated[
+        Path | None,
+        typer.Option("--md-out", help="Markdown del informe. Por defecto output/screen_<fecha>_<hora>.md."),
+    ] = None,
     portfolio: Annotated[
         Path | None,
         typer.Option("--portfolio", help="Export de XTB para no proponer lo que ya tenes. Por defecto el mas nuevo de posiciones/."),
@@ -830,10 +836,14 @@ def screen(
     fase de tesis esta acotada por `llm.screen_budget_s` (los que falten quedan sin
     veredicto en vez de alargar la corrida). Con el export de XTB (``--portfolio`` o el
     mas nuevo de ``posiciones/``) no propone lo que ya tenes y avisa si un candidato cae
-    en un tema ya sobre ``risk.max_theme_pct``.
+    en un tema ya sobre ``risk.max_theme_pct``. Escribe el informe legible en
+    ``output/screen_<fecha>_<hora>.md`` (o ``--md-out``) y los candidatos en
+    ``state/candidates.json`` (o ``--out``).
     """
     # La tesis de compra de la IA es obligatoria en este comando (ya no hay --llm).
-    _run_screener(config_dir, cache_dir, offline, top, breadth, out, min_score, True, web_search, portfolio)
+    _run_screener(
+        config_dir, cache_dir, offline, top, breadth, out, min_score, True, web_search, portfolio, md_out
+    )
 
 
 def _held_and_theme_pct(
@@ -880,6 +890,7 @@ def _run_screener(
     llm: bool,
     web_search: bool,
     portfolio: Path | None = None,
+    md_out: Path | None = None,
 ) -> None:
     """Implementacion del recomendador de acciones (``screen``)."""
     try:
@@ -1021,6 +1032,17 @@ def _run_screener(
         typer.secho(f"  aviso: {len(missing)} ticker(s) sin velas", fg=typer.colors.YELLOW)
 
     path = out if out is not None else _candidate_path()
+    generated_at = dt.datetime.now(dt.UTC)
+    settings = {
+        "top": limit,
+        "min_composite_score": threshold,
+        "momentum_weight": strategy.screener.momentum_weight,
+        "min_rs_percentile": strategy.screener.min_rs_percentile,
+        "min_coverage": strategy.screener.min_coverage,
+        "max_pct_above_sma50": strategy.screener.max_pct_above_sma50,
+        "max_per_theme": strategy.screener.max_per_theme,
+        "earnings_blackout_sessions": blackout,
+    }
     previous_rows = _candidate_rows(path)
     # El ranking determinista se escribe ANTES de la IA. La tesis puede tardar o
     # fallar, y no debe llevarse por delante el trabajo ya hecho: una corrida real
@@ -1029,19 +1051,15 @@ def _run_screener(
     initial_payload = _candidate_payload(candidates, earnings, to_earnings, {}, pending)
     diff = _diff_candidates(previous_rows, initial_payload)
     meta = _candidate_meta(
+        generated_at=generated_at,
         today=today,
         origin=origin,
         universe_size=len(tickers),
-        limit=limit,
-        threshold=threshold,
-        strategy=strategy,
+        settings=settings,
         config_dir=config_dir,
-        blackout=blackout,
         diff=diff,
     )
     _write_candidates(path, initial_payload, {**meta, "thesis": _thesis_summary(pending)})
-    if out is None:
-        _prune_outputs(_output_dir())
     typer.echo(f"Candidatos escritos en {path}")
     _echo_diff(diff)
 
@@ -1107,6 +1125,40 @@ def _run_screener(
             + ", ".join(f"{count} {status}" for status, count in sorted(summary.items()))
             + "."
         )
+
+    config_hash = meta.get("config_hash")
+    screen_report = ScreenReport(
+        today=today,
+        generated_at=generated_at,
+        universe_source=origin,
+        universe_count=len(tickers),
+        settings=settings,
+        config_hash=str(config_hash) if config_hash else None,
+        threshold=threshold,
+        limit=limit,
+        evaluated=result.evaluated,
+        kept=result.kept,
+        scored=result.scored,
+        candidates=candidates,
+        earnings=earnings,
+        sessions_to_earnings=to_earnings,
+        reviews=reviews,
+        thesis_status=thesis_status,
+        rejected=result.rejected,
+        in_blackout=in_blackout,
+        no_date=no_date,
+        held_out=held_out,
+        theme_capped=theme_capped,
+        missing=missing,
+        diff=diff,
+        candidates_path=str(path),
+    )
+    screen_md = md_out if md_out is not None else _screen_path(generated_at)
+    screen_md.parent.mkdir(parents=True, exist_ok=True)
+    screen_md.write_text(render_screen_report(screen_report), encoding="utf-8")
+    typer.echo(f"Informe escrito en {screen_md}")
+    if md_out is None:
+        _prune_outputs(_output_dir(), keep=(screen_md,))
 
 
 def _candidate_payload(
@@ -1229,31 +1281,20 @@ def _config_hash(config_dir: Path) -> str | None:
 
 def _candidate_meta(
     *,
+    generated_at: dt.datetime,
     today: dt.date,
     origin: str,
     universe_size: int,
-    limit: int,
-    threshold: float,
-    strategy: StrategyConfig,
+    settings: Mapping[str, object],
     config_dir: Path,
-    blackout: int,
     diff: Mapping[str, object],
 ) -> dict[str, object]:
     """Metadatos para reproducir y comparar una corrida del screener."""
     return {
-        "generated_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+        "generated_at": generated_at.isoformat(timespec="seconds"),
         "data_date": today.isoformat(),
         "universe": {"source": origin, "count": universe_size},
-        "settings": {
-            "top": limit,
-            "min_composite_score": threshold,
-            "momentum_weight": strategy.screener.momentum_weight,
-            "min_rs_percentile": strategy.screener.min_rs_percentile,
-            "min_coverage": strategy.screener.min_coverage,
-            "max_pct_above_sma50": strategy.screener.max_pct_above_sma50,
-            "max_per_theme": strategy.screener.max_per_theme,
-            "earnings_blackout_sessions": blackout,
-        },
+        "settings": dict(settings),
         "config_hash": _config_hash(config_dir),
         "diff": dict(diff),
     }

@@ -93,6 +93,8 @@ Mira lo abierto (sin universo ni entradas) y decide si cada posición se mantien
    Después la IA (obligatoria cuando hay clave) emite su tesis de compra (`BUY/WATCH`)
    por candidato y se **anexa** al mismo archivo, con la fase acotada por
    `llm.screen_budget_s` y `thesis_status` (`ok`/`skipped`/`failed`/`no_key`/`disabled`).
+   El informe legible se escribe en `output/screen_<marca>.md` (o `--md-out`) con resumen,
+   tabla, tesis, exclusiones, diff y metodología.
 
 ## 4. El motor `decide()` (`core/engine.py`)
 

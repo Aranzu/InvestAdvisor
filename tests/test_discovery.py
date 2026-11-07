@@ -447,15 +447,23 @@ def test_candidates_json_guarda_metadatos_y_diff(tmp_path: Path) -> None:
     payload = cli._candidate_payload([candidate], {}, {}, {}, {"GOOD": "ok"})
     previous = [{"ticker": "OLD"}]
     diff = cli._diff_candidates(previous, payload)
+    settings = {
+        "top": 25,
+        "min_composite_score": 50.0,
+        "momentum_weight": STRATEGY.screener.momentum_weight,
+        "min_rs_percentile": STRATEGY.screener.min_rs_percentile,
+        "min_coverage": STRATEGY.screener.min_coverage,
+        "max_pct_above_sma50": STRATEGY.screener.max_pct_above_sma50,
+        "max_per_theme": STRATEGY.screener.max_per_theme,
+        "earnings_blackout_sessions": 20,
+    }
     meta = cli._candidate_meta(
+        generated_at=dt.datetime(2026, 11, 7, 13, 45, tzinfo=dt.UTC),
         today=dt.date(2026, 11, 7),
         origin="sp500",
         universe_size=500,
-        limit=25,
-        threshold=50.0,
-        strategy=STRATEGY,
+        settings=settings,
         config_dir=CONFIG_DIR,
-        blackout=20,
         diff=diff,
     )
     path = tmp_path / "candidates.json"

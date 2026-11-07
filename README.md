@@ -211,7 +211,9 @@ tesis para que después se conviertan en una entrada real.
 7. **Salida.** Imprime una tabla con score, score fundamental, valor/calidad/crecimiento/
    proyecciones, upside %, cobertura %, calidad de datos, RS %, earnings en sesiones,
    ADV, ticker y tema. Escribe `state/candidates.json` (o `--out`) con el ranking
-   **antes** de la IA y anexa la tesis después.
+   **antes** de la IA y anexa la tesis después. Además genera
+   `output/screen_<fecha>_<hora>.md` (o `--md-out`) con resumen, tabla, tesis,
+   exclusiones, diff y metodología.
    El JSON es un documento estable con `schema`, `generated_at`, `data_date`,
    `universe`, `settings`, `config_hash`, `diff` contra la corrida anterior,
    `thesis` y la lista `candidates`. Cada candidato lleva `data_quality`,
@@ -224,6 +226,7 @@ swing screen --top 10 --min-score 60          # recorte mas exigente
 swing screen --breadth watchlist              # universo local
 swing screen --portfolio posiciones/CLP_....xlsx
 swing screen --web-search                     # tesis con busqueda web
+swing screen --md-out output/mi_screen.md     # Markdown en otra ruta
 swing screen --offline                        # solo cache
 ```
 

@@ -58,18 +58,24 @@ def review_path(report: Path, when: dt.datetime, out_dir: Path | None = None) ->
     return base / f"review_{report.stem}_{_stamp(when)}.md"
 
 
+def screen_path(when: dt.datetime, out_dir: Path | None = None) -> Path:
+    """Markdown del recomendador, unico por corrida."""
+    base = out_dir if out_dir is not None else output_dir()
+    return base / f"screen_{_stamp(when)}.md"
+
+
 def prune_outputs(directory: Path, *, keep: Iterable[Path] = ()) -> list[Path]:
     """Borra informes generados antiguos y deja solo los vigentes.
 
-    ``stats_*`` y ``review_*`` conservan el/los archivo(s) en ``keep`` o, si no se
-    indica, el mas reciente de cada familia (con su ``.json`` companero). Los
-    ``contexto_*`` conservan solo el ultimo dia generado. Devuelve lo eliminado.
+    ``stats_*``, ``review_*`` y ``screen_*`` conservan el/los archivo(s) en ``keep``
+    o, si no se indica, el mas reciente de cada familia (con su ``.json`` companero).
+    Los ``contexto_*`` conservan solo el ultimo dia generado. Devuelve lo eliminado.
     """
     if not directory.is_dir():
         return []
     keep_paths = {path.resolve() for path in keep if path is not None}
     removed: list[Path] = []
-    for prefix in ("stats_", "review_"):
+    for prefix in ("stats_", "review_", "screen_"):
         files = [path for path in directory.glob(f"{prefix}*") if path.is_file()]
         if not files:
             continue

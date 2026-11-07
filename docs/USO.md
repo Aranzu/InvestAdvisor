@@ -27,7 +27,7 @@ swing review                          # informe v8 (con --web-search agrega la b
 swing review --formato detalle        # bloque por posicion
 
 # 3) Recomendador de acciones (tecnico + fundamentales + proyecciones):
-swing screen --top 20                 # deja state/candidates.json con score y veredicto
+swing screen --top 20                 # deja output/screen_<fecha>_<hora>.md y state/candidates.json
 swing screen --portfolio posiciones/CLP_...xlsx   # ademas no propone lo que ya tenes
 ```
 
@@ -42,8 +42,13 @@ swing screen --portfolio posiciones/CLP_...xlsx   # ademas no propone lo que ya 
 `schema: 10`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
 sello de la corrida (`AAAAMMDD-HHMMSS`), para que dos corridas del mismo día o de cuentas
 distintas no se pisen. `review` trabaja con el informe en memoria y no necesita el JSON.
+
+`screen` escribe el Markdown en `output/screen_<marca>.md` (o `--md-out`) y los
+candidatos en `state/candidates.json` (o `--out`). El Markdown incluye resumen, tabla,
+tesis de la IA, exclusiones, diff contra la corrida anterior y metodología; el JSON es
+el documento versionado que consume `--breadth candidates`.
 Cada corrida de `stats`, `review` o `screen` borra los informes anteriores de `output/`
-(`stats_*`, `review_*` y `contexto_*`): solo queda el vigente.
+(`stats_*`, `review_*`, `screen_*` y `contexto_*`): solo queda el vigente.
 
 ## Diagnostico
 
