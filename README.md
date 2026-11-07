@@ -98,8 +98,10 @@ campos que el prompt manda ignorar (empresa y clasificación, quick, P/Cash,
 objetivo mín/máx, SHA, volatilidad realizada y peso eq de XTB).
 
 Las cantidades usan 4 decimales (acciones fraccionarias). Escribe `output/stats_<reporte>_<marca>.md`
-(o `--out`), con una tabla por sección y una sección final de **cobertura** que declara qué
-quedó sin dato (`-` nunca es un cero). Por defecto el informe **oculta el contexto informativo**
+(o `--out`) y, solo con `--json`, un `.json` estructurado; el Markdown trae una tabla por sección y una sección final de **cobertura** que declara qué
+quedó sin dato (`-` nunca es un cero). Cada corrida borra los `stats_*`, `review_*` y
+`contexto_*` anteriores: en `output/` queda solo lo vigente. Por defecto el informe
+**oculta el contexto informativo**
 (dividendos, desempeño, liquidez/propiedad, insiders, mercado y materias primas) y deja
 solo lo que decide (panel, decisión, niveles y puntaje); con `--contexto` sale la ficha
 completa. La IA de `review` recibe igual el contexto (solo se oculta en el informe, a la

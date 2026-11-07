@@ -37,13 +37,13 @@ swing screen --portfolio posiciones/CLP_...xlsx   # ademas no propone lo que ya 
 - `review_<reporte>_<marca>.md` — recomendacion por posicion (o `--out`).
 - `contexto_<fecha>.md` / `.json` — resumen macro (se reutiliza; `--refresh-contexto` lo regenera).
 
-`stats` escribe `output/stats_<reporte>_<marca>.md` (o `--out`) y, junto a él, un
+`stats` escribe `output/stats_<reporte>_<marca>.md` (o `--out`). Con `--json` agrega
 `stats_<reporte>_<marca>.json` con el mismo contenido en forma estructurada (contrato
 `schema: 9`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
 sello de la corrida (`AAAAMMDD-HHMMSS`), para que dos corridas del mismo día o de cuentas
-distintas no se pisen. `review` **consume** ese JSON si es de hoy y de la misma cuenta,
-para no volver a pedir a Yahoo los fundamentales y las cotizaciones ya capturados; lo que
-falte se completa con el proveedor.
+distintas no se pisen. `review` trabaja con el informe en memoria y no necesita el JSON.
+Cada corrida de `stats`, `review` o `screen` borra los informes anteriores de `output/`
+(`stats_*`, `review_*` y `contexto_*`): solo queda el vigente.
 
 ## Diagnostico
 

@@ -617,7 +617,7 @@ posicion abierta (tipo Finviz) para analisis posterior, sin inventar datos.
   / `after_market`, de Yahoo). Sin dato la seccion no existe: no se inventa un precio de
   pre-market ni se rellena con el cierre. Va al JSON del ticker, asi que `review` tambien
   lo ve.
-- **Contrato JSON y consumo.** Junto al `.md`, `stats` escribe `stats_<reporte>_<marca>.json`
+- **Contrato JSON opcional.** Con `--json`, `stats` escribe `stats_<reporte>_<marca>.json`
   (`schema: 9`) con el mismo contenido (posiciones, cotizaciones, fundamentales, temas,
   sectores, insiders, régimen, briefing, panel de cumplimiento). `review` lo **reutiliza** si es de hoy y de la
   misma cuenta, para no repetir las consultas a Yahoo ya hechas; lo que falte se completa con

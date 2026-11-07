@@ -39,6 +39,8 @@ informe) para que `cli.py` quede con los comandos y los argumentos; un test fija
 Lee el export de XTB, valúa la cartera y escribe `output/stats_<reporte>_<marca>.md` y
 `.json`: panel de cumplimiento P1-P11, campos de mercado/fundamentales, lotes, historial
 cerrado, curva de patrimonio y, con `--contexto`, régimen, factores y materias primas.
+Al terminar, `stats`, `review` y `screen` podan los informes viejos de `output/` y dejan
+solo el vigente (más el último `contexto_*`).
 
 ### 3.2 `review` — revisión de posiciones: `swing review [--web-search --formato informe|detalle|tabla|acciones]`
 
@@ -167,7 +169,7 @@ El CLI expone **solo tres comandos**: `stats`, `review` y `screen`.
 
 | Comando | Qué hace |
 |---|---|
-| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), **panel de cumplimiento P1-P11** (stop inicial anclado a la entrada, stop vigente, R, riesgo, peso máximo y estado), lotes, curva de patrimonio ajustada por aportes, historial cerrado, insiders resumidos (3 recientes), **horario extendido** y materias primas; con `--contexto` agrega **régimen v7 de 6 señales** (VIX/SPY/10Y/DXY/QQQ/VIX 1M, benchmarks sospechosos, amplitud y USD/CLP), factores y diversificación. Emite `stats_<reporte>_<marca>.md` y `.json` (`schema: 9`), que `review` reutiliza |
+| `stats` | ficha por posición con todos los campos posibles (tipo Finviz), **panel de cumplimiento P1-P11** (stop inicial anclado a la entrada, stop vigente, R, riesgo, peso máximo y estado), lotes, curva de patrimonio ajustada por aportes, historial cerrado, insiders resumidos (3 recientes), **horario extendido** y materias primas; con `--contexto` agrega **régimen v7 de 6 señales** (VIX/SPY/10Y/DXY/QQQ/VIX 1M, benchmarks sospechosos, amplitud y USD/CLP), factores y diversificación. Emite `stats_<reporte>_<marca>.md` y, con `--json`, el `.json` (`schema: 9`) |
 | `review` | **función 1**: usa `stats`; el motor decide niveles + la IA el veredicto. `--formato informe` (11 secciones, por defecto), `detalle`, `tabla` o `acciones` |
 | `screen` | **función 2**: recomendador de acciones (técnico + fundamentales + proyecciones) |
 

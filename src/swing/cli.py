@@ -91,6 +91,7 @@ from swing.services.paths import ledger_path as _ledger_path
 from swing.services.paths import newest_report as _newest_report
 from swing.services.paths import newest_report_or_none as _newest_report_or_none
 from swing.services.paths import output_dir as _output_dir
+from swing.services.paths import prune_outputs as _prune_outputs
 from swing.services.paths import registry_path as _registry_path
 from swing.services.paths import report_dir as _report_dir
 from swing.services.paths import review_path as _review_path
@@ -164,12 +165,14 @@ def _collect_and_save_stats(
     out_dir: Path | None = None,
     show_context: bool = False,
     config_dir: Path = DEFAULT_CONFIG_DIR,
-) -> tuple[StatsReport, Path, Path]:
-    """Arma, escribe (Markdown + JSON) y devuelve el informe de stats.
+    write_json: bool = False,
+) -> tuple[StatsReport, Path, Path | None]:
+    """Arma, escribe el Markdown y, si se pide, el JSON; devuelve el informe.
 
-    El nombre por defecto es ``stats_<export>_<timestamp>.md``/``.json`` para que dos
-    corridas (o dos cuentas) no se pisen; ``out`` fuerza la ruta del Markdown y
-    ``out_dir`` cambia el directorio cuando no se fija ``out``.
+    El nombre por defecto es ``stats_<export>_<timestamp>.md`` para que dos corridas
+    (o dos cuentas) no se pisen; ``out`` fuerza la ruta del Markdown y ``out_dir``
+    cambia el directorio cuando no se fija ``out``. El JSON es opcional (``--json``)
+    porque el usuario y ``review`` trabajan con el Markdown y el objeto en memoria.
 
     Es la unica via por la que ``stats`` y ``review`` construyen el informe, para
     que la funcion 1 (``review``) lo genere antes de decidir y reuse sus
@@ -220,12 +223,18 @@ def _collect_and_save_stats(
     )
     informe = _render_stats(stats_report, show_context=show_context)
     if out is not None:
-        path, json_path = out, out.with_suffix(".json")
+        path = out
+        json_path = out.with_suffix(".json") if write_json else None
     else:
-        path, json_path = _stats_paths(report_path, dt.datetime.now(), out_dir)
+        path, json_default = _stats_paths(report_path, dt.datetime.now(), out_dir)
+        json_path = json_default if write_json else None
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(informe, encoding="utf-8")
-    _save_stats_report(stats_report, json_path)
+    if json_path is not None:
+        _save_stats_report(stats_report, json_path)
+    if out is None and out_dir is None:
+        keep = (path, json_path) if json_path is not None else (path,)
+        _prune_outputs(path.parent, keep=keep)
     return stats_report, path, json_path
 
 
@@ -258,6 +267,10 @@ def stats(
             help="Incluye el contexto informativo (dividendos, desempeno, liquidez, insiders, mercado, materias primas). Por defecto se oculta.",
         ),
     ] = False,
+    write_json: Annotated[
+        bool,
+        typer.Option("--json", help="Escribe tambien el JSON estructurado. Por defecto solo el Markdown."),
+    ] = False,
 ) -> None:
     """Ficha por posicion abierta con la mayor cantidad de campos posible (tipo Finviz).
 
@@ -267,7 +280,8 @@ def stats(
     insiders, mercado y materias primas); ``--contexto`` muestra la ficha
     completa. Yahoo es la base, Finviz aporta lo que Yahoo no publica y los tecnicos
     se calculan localmente desde las velas. Escribe el informe en Markdown
-    (``output/stats_<reporte>_<marca>.md`` salvo ``--out``).
+    (``output/stats_<reporte>_<marca>.md`` salvo ``--out``); el JSON queda detras de
+    ``--json``.
     """
     try:
         strategy = load_strategy(config_dir / "strategy.yaml")
@@ -298,11 +312,13 @@ def stats(
         out,
         show_context=incluir_contexto,
         config_dir=config_dir,
+        write_json=write_json,
     )
     typer.echo(path.read_text(encoding="utf-8").rstrip())
     typer.echo("")
     typer.echo(f"Informe escrito en {path}")
-    typer.echo(f"Datos estructurados en {json_path}")
+    if json_path is not None:
+        typer.echo(f"Datos estructurados en {json_path}")
 
 
 #: Simbolo del indice de volatilidad en Yahoo.
@@ -554,7 +570,7 @@ def review(
     )
     # Funcion 1 = stats -> review: se genera el informe de stats primero y se
     # reutilizan sus fundamentales; lo que falte se completa con el proveedor.
-    stats_report, stats_md, stats_json = _collect_and_save_stats(
+    stats_report, stats_md, _ = _collect_and_save_stats(
         model,
         report_path,
         market.strategy,
@@ -566,7 +582,7 @@ def review(
         show_context=incluir_contexto,
         config_dir=config_dir,
     )
-    typer.echo(f"  stats escrito en {stats_md} y {stats_json}")
+    typer.echo(f"  stats escrito en {stats_md}")
     fundamentals: dict[str, Fundamentals] = {}
     if held:
         stored = _stats_fundamentals(stats_report)
@@ -740,6 +756,8 @@ def review(
     target = out if out is not None else _review_path(report_path, dt.datetime.now())
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(informe, encoding="utf-8")
+    if out is None:
+        _prune_outputs(target.parent, keep=(target,))
     typer.echo(f"Recomendacion escrita en {target}")
     typer.echo(informe.rstrip())
     if llm_failed:
@@ -980,6 +998,8 @@ def _run_screener(
     # fallar, y no debe llevarse por delante el trabajo ya hecho: una corrida real
     # de 10 minutos se perdio porque el archivo se escribia al final del bloque de IA.
     _write_candidates(path, _candidate_payload(candidates, earnings, to_earnings, {}))
+    if out is None:
+        _prune_outputs(_output_dir())
     typer.echo(f"Candidatos escritos en {path}")
 
     reviews: dict[str, LLMReview] = {}

@@ -49,6 +49,29 @@ def test_stats_offline_escribe_el_informe(tmp_path: Path) -> None:
     assert "## Limites de esta evaluacion" in text
     assert "TEST" in text
     assert "NVDA" not in text  # la fabrica default del export solo trae TEST
+    assert not out.with_suffix(".json").exists()  # el JSON es opt-in
+
+
+def test_stats_con_json_escribe_el_estructurado(tmp_path: Path) -> None:
+    report = build_positions_workbook(tmp_path / "posiciones.xlsx")
+    out = tmp_path / "stats.md"
+    result = RUNNER.invoke(
+        app,
+        [
+            "stats",
+            "--report",
+            str(report),
+            "--config-dir",
+            str(CONFIG_DIR),
+            "--offline",
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--out",
+            str(out),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
     assert out.with_suffix(".json").is_file()
 
 
