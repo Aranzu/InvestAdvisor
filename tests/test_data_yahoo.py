@@ -327,6 +327,20 @@ def test_una_tabla_solo_con_reportes_pasados_tambien_es_dato_faltante() -> None:
     assert info.source.startswith("yfinance")
 
 
+def test_calendar_marca_la_fecha_como_estimada() -> None:
+    near = dt.date.today() + dt.timedelta(days=20)
+    tabla = pd.DataFrame(
+        {"Earnings Date": [dt.datetime.combine(near, dt.time())]},
+        index=pd.to_datetime([near.isoformat()]),
+    )
+    tabla.attrs["estimated"] = True
+    info = provider(Path("."), earnings=lambda s, n: tabla).earnings("AMD")
+    assert info.date == near
+    # No es una fecha confirmada: el informe debe rotularla "estimada".
+    assert info.confirmed is False
+    assert info.source == "yfinance:calendar"
+
+
 # --------------------------------------------------------------------------- #
 # FX
 # --------------------------------------------------------------------------- #

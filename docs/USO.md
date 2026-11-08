@@ -23,7 +23,7 @@ Las tres funciones del producto:
 swing stats
 
 # 2) Que hacer con lo que ya tenes (usa stats; el motor fija el stop):
-swing review                          # informe v8 (con --web-search agrega la busqueda)
+swing review                          # informe v9 (con --web-search agrega la busqueda)
 swing review --formato detalle        # bloque por posicion
 
 # 3) Recomendador de acciones (tecnico + fundamentales + proyecciones):
@@ -39,7 +39,7 @@ swing screen --portfolio posiciones/CLP_...xlsx   # ademas no propone lo que ya 
 
 `stats` escribe `output/stats_<reporte>_<marca>.md` (o `--out`). Con `--json` agrega
 `stats_<reporte>_<marca>.json` con el mismo contenido en forma estructurada (contrato
-`schema: 10`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
+`schema: 11`). `<reporte>` es el nombre del export de XTB (sin extensión) y `<marca>` el
 sello de la corrida (`AAAAMMDD-HHMMSS`), para que dos corridas del mismo día o de cuentas
 distintas no se pisen. `review` trabaja con el informe en memoria y no necesita el JSON.
 
@@ -67,34 +67,44 @@ publica; escribe `output/stats_<reporte>_<marca>.md` (o `--out`). Un `-` es "sin
 Además, cuando Yahoo publica **pre-market y after-market** aparece la sección
 **Horario extendido (Pre/Post Market)** con el precio (variación contra el cierre regular y
 hora ET) y el volumen de cada lado; sin dato la sección no se muestra.
-El informe abre con el **Panel de cumplimiento** (P1-P13): stop inicial anclado a la
+El informe abre con el **Panel de cumplimiento** (P1-P16): stop inicial anclado a la
 entrada, stop vigente, distancias, R, riesgo % del patrimonio, **Peso pat** y **Peso
 max abrir** sobre el patrimonio (P12), entrada nueva en CLP/acciones, TP, tipo de
-heredada (0/A/B), stop viable P13 y estado (`OK`, `SOBRE_PESO`, `SOBRE_RIESGO`,
-`STOP_TOCADO`, `HEREDADA_TIPO_0/A/B`, `SIN_STOP`). Es la única fuente de verdad para
-stops y riesgo; el ledger (`state/ledger.json`) guarda stops, decisiones, stop de
-transición y tramos ejecutados, y hace que el stop vigente solo suba.
+heredada (0/A/B), stop viable P13, tipo de stop P11 y estado (`OK`, `SOBRE_PESO`,
+`SOBRE_RIESGO`, `STOP_TOCADO`, `HEREDADA_TIPO_0/A/B`, `SIN_STOP`). Arriba aparece
+**Datos requeridos por el prompt (sección 7)** con el checklist de mercado, entrada,
+patrimonio máximo ajustado, mapas y P11, y el panel resume P15/P16. Es la única fuente
+de verdad para stops y riesgo; el ledger (`state/ledger.json`) guarda stops, decisiones,
+stop de transición, tramos ejecutados y tipo de stop, y hace que el stop vigente solo suba.
 
 Por defecto el informe **muestra** el contexto informativo (dividendos, desempeño,
 liquidez/propiedad, insiders y materias primas); `--sin-contexto` lo oculta. El
 mercado, los mapas, los lotes, el ledger, la factibilidad y el estado de datos se
-muestran siempre. El **régimen v8 de 6 señales** (VIX, SPY, 10Y, DXY, QQQ y VIX a 1
+muestran siempre. El **régimen v9 de 6 señales** (VIX, SPY, 10Y, DXY, QQQ y VIX a 1
 mes; los benchmarks sospechosos no cuentan; más USD/CLP y amplitud de la cartera) y
 los mapas de factor/tema ya vienen en el informe. La IA de `review` recibe el contexto
 igual. Con `--offline` solo lee cache.
 
 ## Como leer el informe
 
-`review --formato informe` (por defecto) sigue el **`PROMPT PORTAFOLIO v8`**:
-0. cobertura y modo del stats, 1. veredicto (régimen/modo, riesgo abierto, factor IA
-base P12 y caja resultante), **Paso 0b: factibilidad**, 2. **órdenes de la próxima
-sesión** (ticker, acciones, acción y stop), 3. panel de cumplimiento P1-P13 (base P12),
-4. tabla de decisión (SALIR, RECORTAR, luego MANTENER), 5. calendario de reducción,
-6. auditoría y **decisión de adopción de heredadas 0/A/B**, 7. cobertura de datos,
-8. alertas, 9. supuestos, 10. fuentes, 11. registro de decisiones, 12. qué cambió,
-13. desvíos OVERRIDE y 14. oportunidades (solo si la caja post-venta supera 20 %). La
-IA aporta una narrativa en una sola llamada (sin búsquedas nuevas) que llena el
-veredicto, la cobertura y los supuestos.
+`review --formato informe` (por defecto) sigue el **`PROMPT PORTAFOLIO v9`**:
+0. cobertura, datos requeridos ausentes, verificación de una fila a mano y modo del
+stats; 1. veredicto (próximo lunes real, total a vender en CLP y % del patrimonio,
+régimen/modo, riesgo abierto, factor IA base P12 y caja resultante); 1b. **mis
+decisiones de interpretación**; **Paso 0b: factibilidad**; 2. **órdenes de la próxima
+sesión** (ticker, acciones, acción, tipo de orden y stop, con tope P15); 3. panel de
+cumplimiento P1-P16 (base P12); 4. tabla de decisión solo de las posiciones que
+cambian; 5. calendario de reducción P16 con fechas reales; 6. auditoría y **decisión
+de adopción de heredadas 0/A/B**; 7. cobertura de datos; 8. alertas; 9. supuestos;
+10. fuentes; 11. registro de decisiones; 12. qué cambió; 13. desvíos OVERRIDE y
+14. oportunidades (solo si la caja post-venta supera 20 %). La IA aporta una narrativa
+en una sola llamada (sin búsquedas nuevas) que llena el veredicto, la cobertura y los
+supuestos.
+
+La **venta por sesión** respeta P15 (10 % del patrimonio; no aplica a stop tocado,
+modo defensivo ni exceso de peso/riesgo) y el excedente pasa a la sesión siguiente.
+Los recortes por factor/tema y adopción se reparten en P16 (4 semanas). El tipo de
+stop P11 se toma del ledger o de `--stop-tipo orden|alerta`.
 
 La **auditoría de ventas** (sección 6) exige motivo admitido y hechos con fuente antes de
 vender; el **registro de decisiones** (sección 11) se guarda en `state/decisions.json` con una

@@ -72,7 +72,7 @@ def _plan(**overrides: object):
         "patrimonio_clp": 10_000_000.0,
         "weight_invested_pct": 10.0,
         "weight_equity_pct": 10.0,
-        "high_20": 115.0,
+        "min_20": 115.0,
         "previous": None,
         "stop_xtb": None,
         "tp_xtb": None,
@@ -105,14 +105,15 @@ def test_primera_corrida_usa_el_stop_inicial_y_marca_heredada() -> None:
 def test_posicion_con_stop_vigente_sube_pero_nunca_baja() -> None:
     cfg = _cfg()
     previous = LedgerEntry("AMD", 100.0, TODAY, 92.0, 92.0)
-    row = _plan(previous=previous, price=130.0, atr=2.0, high_20=135.0, cfg=cfg)
-    # +3R -> entrada + 1R (110); el Chandelier (135 - 6 = 129) gana.
+    row = _plan(previous=previous, price=130.0, atr=2.0, min_20=135.0, cfg=cfg)
+    # +3R -> entrada + 1R (110); el Chandelier con el minimo de 20 ses (135 - 6 = 129) gana.
     assert row.current_stop == pytest.approx(129.0)
+    assert row.stop_source == "trailing"
     higher = _plan(
         previous=LedgerEntry("AMD", 100.0, TODAY, 92.0, row.current_stop or 0.0),
         price=131.0,
         atr=2.0,
-        high_20=140.0,
+        min_20=140.0,
         cfg=cfg,
     )
     assert higher.current_stop is not None and higher.current_stop >= 129.0
@@ -120,7 +121,7 @@ def test_posicion_con_stop_vigente_sube_pero_nunca_baja() -> None:
         previous=LedgerEntry("AMD", 100.0, TODAY, 92.0, row.current_stop or 0.0),
         price=120.0,
         atr=2.0,
-        high_20=125.0,
+        min_20=125.0,
         cfg=cfg,
     )
     assert lower.current_stop == pytest.approx(129.0)
@@ -137,12 +138,15 @@ def test_take_profit_topa_en_30_y_solo_sube() -> None:
 
 def test_estado_sobrepeso_y_sobreriesgo() -> None:
     previous = LedgerEntry("AMD", 100.0, TODAY, 92.0, 92.0)
-    assert _plan(weight_invested_pct=13.0, weight_equity_pct=13.0, previous=previous).status == STATUS_OVERWEIGHT
+    assert (
+        _plan(price=100.0, weight_invested_pct=13.0, weight_equity_pct=13.0, previous=previous).status
+        == STATUS_OVERWEIGHT
+    )
     over = _plan(
         price=100.0,
         entry=100.0,
         atr=1.0,
-        high_20=100.0,
+        min_20=100.0,
         value_clp=8_000_000.0,
         patrimonio_clp=10_000_000.0,
         previous=previous,
@@ -168,8 +172,14 @@ def test_resumen_calcula_factor_tema_y_modo() -> None:
         themes={"AMD": "semiconductors", "NVDA": "semiconductors", "V": "Financial Services"},
     )
     rows = [
-        _plan(ticker="AMD", value_clp=8_000_000.0, weight_invested_pct=80.0),
-        _plan(ticker="V", value_clp=2_000_000.0, weight_invested_pct=20.0),
+        _plan(
+            ticker="AMD",
+            value_clp=8_000_000.0,
+            weight_invested_pct=80.0,
+            weight_equity_pct=80.0,
+            previous=LedgerEntry("AMD", 100.0, TODAY, 92.0, 92.0),
+        ),
+        _plan(ticker="V", value_clp=2_000_000.0, weight_invested_pct=20.0, previous=LedgerEntry("V", 100.0, TODAY, 92.0, 92.0)),
     ]
     summary = summarize(
         rows,
@@ -184,6 +194,29 @@ def test_resumen_calcula_factor_tema_y_modo() -> None:
     assert summary.biggest_theme == "semiconductors"
     assert summary.mode == "cautela"
     assert summary.infractions >= 1
+
+
+def test_infracciones_no_cuentan_heredadas_pendientes_ni_tipo_0() -> None:
+    cfg = _cfg()
+    healthy = _plan(ticker="AAA", entry=108.0, price=110.0, atr=1.0, atr_pct=1.0, min_20=None)
+    pending = _plan(ticker="BBB", entry=100.0, price=80.0, atr=4.0)
+    assert healthy.inherited_type == "0"
+    assert healthy.stop_registered is True
+    assert pending.inherited_type == "A"
+    assert pending.stop_registered is False
+    summary = summarize([healthy, pending], cash_pct=18.0, cfg=cfg)
+    # La tipo 0 es sana y la A/B sin decision es una decision pendiente, no una
+    # infraccion: las infracciones cuentan solo stop tocado, P3 o P4.
+    assert summary.infractions == 0
+    assert summary.decision_pending == ("BBB",)
+
+
+def test_infraccion_por_stop_tocado_si_cuenta() -> None:
+    previous = LedgerEntry("AMD", 100.0, TODAY, 92.0, 92.0)
+    row = _plan(previous=previous, price=80.0, atr=2.0)
+    summary = summarize([row], cash_pct=18.0, cfg=_cfg())
+    assert row.status == STATUS_STOPPED
+    assert summary.infractions == 1
 
 
 def test_p13_stop_de_transicion_viable_y_tope_15() -> None:
@@ -240,3 +273,63 @@ def test_amplitud_cuenta_bajo_sma200() -> None:
     ]
     assert breadth_pct(rows) == pytest.approx(50.0)
     assert breadth_pct([{"price_vs_sma200_pct": None}]) is None
+
+
+def test_break_even_se_aplica_al_llegar_a_1_5r() -> None:
+    cfg = _cfg()
+    previous = LedgerEntry("AMD", 100.0, TODAY, 92.0, 92.0, inherited_type="0")
+    # 1,4R: aun no.
+    below = _plan(previous=previous, price=111.2, atr=2.0, min_20=110.0, cfg=cfg)
+    assert below.current_stop == pytest.approx(92.0)
+    assert below.stop_source == "inicial"
+    # 1,5R: el stop sube a la entrada.
+    row = _plan(previous=previous, price=112.0, atr=2.0, min_20=110.0, cfg=cfg)
+    assert row.current_stop == pytest.approx(100.0)
+    assert row.stop_source == "break-even"
+
+
+def test_trailing_solo_desde_3r_y_usa_el_minimo_de_20_sesiones() -> None:
+    cfg = _cfg()
+    previous = LedgerEntry("AMD", 100.0, TODAY, 92.0, 92.0, inherited_type="0")
+    # 1,5R: el trailing (114) se muestra pero no entra; gana el break-even.
+    before = _plan(previous=previous, price=112.0, atr=2.0, min_20=120.0, cfg=cfg)
+    assert before.trailing_stop == pytest.approx(114.0)
+    assert before.current_stop == pytest.approx(100.0)
+    assert before.stop_source == "break-even"
+    # +3R: entra el trailing y gana sobre entrada +1R (108).
+    after = _plan(previous=previous, price=124.0, atr=2.0, min_20=121.0, cfg=cfg)
+    assert after.current_stop == pytest.approx(115.0)
+    assert after.stop_source == "trailing"
+
+
+def test_p4_de_heredada_usa_el_stop_de_transicion() -> None:
+    cfg = _cfg()
+    row = _plan(price=90.0, entry=100.0, atr=2.0, previous=None, cfg=cfg)
+    # Tipo A: el P8 teorico esta sobre el precio (distancia negativa).
+    assert row.inherited_type == "A"
+    assert row.current_stop == pytest.approx(92.0)
+    assert row.risk_pct_theoretical == pytest.approx(0.0)
+    # P4 usa el stop de transicion propuesto: 90 - max(3, 8 %) = 82,8.
+    assert row.risk_stop == pytest.approx(82.8)
+    assert row.risk_source == "transicion"
+    assert row.risk_pct == pytest.approx(0.8)
+
+
+def test_heredada_adoptada_reancla_en_el_stop_de_transicion() -> None:
+    cfg = _cfg()
+    previous = LedgerEntry(
+        "AMD",
+        100.0,
+        TODAY,
+        92.0,
+        92.0,
+        transition_stop=85.0,
+        inherited_type="A",
+        decision="Si",
+        stop_source="inicial",
+    )
+    row = _plan(previous=previous, price=88.0, atr=2.0, cfg=cfg)
+    # El P8 teorico (92) queda sobre el precio; manda el stop fijado (85).
+    assert row.current_stop == pytest.approx(85.0)
+    assert row.stop_source == "transicion"
+    assert row.risk_stop == pytest.approx(85.0)

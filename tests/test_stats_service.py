@@ -28,6 +28,7 @@ from swing.services.stats import (
     _change_pct,
     _commodities,
     _context,
+    _deceleration,
     _enrich_extended_hours,
     _enrich_panel,
     _ext_from_quote,
@@ -38,6 +39,7 @@ from swing.services.stats import (
     _market_regime,
     _portfolio_panel,
     _series,
+    _target_reliability,
     _technical_fields,
     _ytd_pct,
     fundamentals_from_report,
@@ -223,38 +225,20 @@ def test_limitations_declara_la_serie_congelada() -> None:
 
 
 
-def test_enrich_panel_calcula_peso_stop_y_riesgo() -> None:
+def test_enrich_panel_solo_calcula_pesos() -> None:
     row = PositionStats(
         ticker="AAA",
         context={"value_clp": 800_000.0, "entry_usd": 100.0, "price_usd": 110.0},
         fields={},
     )
-    enriched, invested = _enrich_panel([row], equity_clp=1_000_000.0, cash_clp=0.0, strategy=STRATEGY)
+    enriched, invested = _enrich_panel([row], equity_clp=1_000_000.0)
     assert invested == pytest.approx(800_000.0)
     context = enriched[0].context
     assert context["weight_invested_pct"] == pytest.approx(100.0)
     assert context["weight_pct"] == pytest.approx(80.0)
-    max_loss = STRATEGY.legacy.max_loss_from_cost_pct
-    stop = 100.0 * (1.0 - max_loss / 100.0)
-    assert context["stop_rule"] == pytest.approx(stop)
-    assert context["stop_dist_pct"] == pytest.approx((110.0 - stop) / 110.0 * 100.0)
-    assert context["stop_perforated"] is False
-
-
-def test_enrich_panel_marca_el_stop_perforado_sin_tocar_los_numeros() -> None:
-    row = PositionStats(
-        ticker="MU",
-        context={"value_clp": 800_000.0, "entry_usd": 100.0, "price_usd": 80.0},
-        fields={},
-    )
-    enriched, _ = _enrich_panel([row], equity_clp=1_000_000.0, cash_clp=0.0, strategy=STRATEGY)
-    context = enriched[0].context
-    stop = 100.0 * (1.0 - STRATEGY.legacy.max_loss_from_cost_pct / 100.0)
-    assert context["stop_rule"] == pytest.approx(stop)
-    assert context["stop_perforated"] is True
-    # El dato crudo se conserva: el render decide como mostrarlo.
-    assert context["stop_dist_pct"] == pytest.approx((80.0 - stop) / 80.0 * 100.0)
-    assert context["risk_patrimonio_pct"] < 0.0
+    # Campos legados que creaban una segunda regla de stop: no se escriben.
+    for legacy in ("stop_rule", "stop_perforated", "risk_patrimonio_pct", "stop_dist_pct"):
+        assert legacy not in context
 
 
 def test_portfolio_panel_patrimonio_caja_y_temas() -> None:
@@ -271,40 +255,24 @@ def test_portfolio_panel_patrimonio_caja_y_temas() -> None:
     assert isinstance(themes, dict)
     assert themes["semiconductors"] == pytest.approx(50.0)
     assert panel["max_theme_pct"] == STRATEGY.risk.max_theme_pct
-    clusters = panel["clusters"]
-    assert isinstance(clusters, dict)
-    assert clusters["semis"]["pct"] == pytest.approx(50.0)
-    assert clusters["semis"]["max_pct"] == 35.0
-    assert clusters["ia_ampliada"]["pct"] == pytest.approx(50.0)
+    # El panel viejo publicaba clusters; ahora el peso vive en los mapas de tema.
+    assert "clusters" not in panel
+    aggregate = panel["aggregate_theme_pcts"]
+    assert isinstance(aggregate, dict)
+    assert aggregate["semiconductores y equipos"] == pytest.approx(50.0)
 
 
-def test_portfolio_panel_cluster_ticker_sin_tema_incluye_sndk() -> None:
-    """El cluster se arma por ticker ademas de por tema: SNDK entra aunque su tema no sea 'semiconductors'."""
+def test_portfolio_panel_agrega_tema_semiconductores_sin_duplicar() -> None:
+    """El tema agregado suma por tema, sin depender de una lista de tickers."""
     rows = [
         PositionStats(ticker="SNDK", context={"theme": "Technology", "value_clp": 100_000.0}, fields={}),
         PositionStats(ticker="UBER", context={"theme": "Technology", "value_clp": 100_000.0}, fields={}),
     ]
     analysis = SimpleNamespace(equity_clp=200_000.0, cash_clp=0.0)
     panel = _portfolio_panel(rows, analysis=analysis, invested_clp=200_000.0, strategy=STRATEGY)  # type: ignore[arg-type]
-    clusters = panel["clusters"]
-    assert isinstance(clusters, dict)
-    # SNDK entra por ticker; UBER no esta en ninguna lista y su tema no cuenta para semis.
-    assert clusters["semis"]["pct"] == pytest.approx(50.0)
-    # IA ampliada suma por tema 'Technology' a ambos, sin duplicar a SNDK.
-    assert clusters["ia_ampliada"]["pct"] == pytest.approx(100.0)
-
-
-def test_portfolio_panel_declara_los_miembros_de_cada_cluster() -> None:
-    rows = [
-        PositionStats(ticker="NVDA", context={"theme": "semiconductors", "value_clp": 300_000.0}, fields={}),
-        PositionStats(ticker="B", context={"theme": "Technology", "value_clp": 200_000.0}, fields={}),
-    ]
-    analysis = SimpleNamespace(equity_clp=600_000.0, cash_clp=100_000.0)
-    panel = _portfolio_panel(rows, analysis=analysis, invested_clp=500_000.0, strategy=STRATEGY)  # type: ignore[arg-type]
-    clusters = panel["clusters"]
-    assert isinstance(clusters, dict)
-    assert clusters["semis"]["members"] == ["NVDA"]
-    assert clusters["ia_ampliada"]["members"] == ["NVDA", "B"]
+    aggregate = panel["aggregate_theme_pcts"]
+    assert isinstance(aggregate, dict)
+    assert aggregate["semiconductores y equipos"] == pytest.approx(100.0)
 
 
 def test_context_agrega_cobertura_porcentual() -> None:
@@ -540,3 +508,20 @@ def test_save_load_report_conserva_el_horario_extendido(tmp_path: Path) -> None:
     assert ext is not None
     assert ext.price == pytest.approx(100.0)
     assert ext.volume == 5
+
+
+def test_desacelera_usa_la_serie_de_tres_a_cuatro_trimestres() -> None:
+    # Dos trimestres alcanzaban para "cae", pero no para hablar de tendencia.
+    assert _deceleration([0.30, 0.35, 0.28]) == "si"
+    assert _deceleration([0.30, 0.25, 0.28]) == "no"
+    assert _deceleration([0.30, 0.35]) is None
+
+
+def test_objetivo_poco_fiable_por_potencial_o_antiguedad() -> None:
+    today = dt.date(2026, 11, 7)
+    fields = {"target_price": 220.0, "target_as_of": "2026-10-01"}
+    assert _target_reliability(fields, today, 100.0) == "poco fiable: potencial > 100 %"
+    stale = {"target_price": 120.0, "target_as_of": "2026-07-01"}
+    assert _target_reliability(stale, today, 100.0) == "poco fiable: desactualizado > 90 dias"
+    fresh = {"target_price": 120.0, "target_as_of": "2026-10-01"}
+    assert _target_reliability(fresh, today, 100.0) == "ok"

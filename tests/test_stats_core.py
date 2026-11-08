@@ -102,6 +102,31 @@ def _report(
     )
 
 
+def test_render_declara_datos_requeridos_p11_y_p15_p16() -> None:
+    row = PositionStats(
+        ticker="AAA",
+        context={"price_usd": 10.0, "entry_usd": 9.0, "value_clp": 300_000.0},
+        fields={},
+    )
+    report = replace(
+        _report((row,)),
+        compliance={
+            "summary": {
+                "max_sale_per_session_pct": 10.0,
+                "reduction_max_weeks": 4,
+            },
+            "positions": [{"ticker": "AAA", "stop_kind": "orden"}],
+        },
+        maps={"factor_configured": False},
+    )
+    text = render_stats(report)
+    assert "## Datos requeridos por el prompt (seccion 7)" in text
+    assert "| Tipo de stop P11 | orden |" in text
+    assert "P15 venta maxima por sesion: 10.00 %" in text
+    assert "P16 plazo de los recortes: 4 semanas" in text
+    assert "Factor IA: mapa no configurado" in text
+
+
 def test_render_incluye_secciones_formato_y_cobertura() -> None:
     row = PositionStats(
         ticker="AAA",
@@ -363,6 +388,9 @@ def test_render_panel_de_cumplimiento_y_resumen() -> None:
                     "new_entry_clp": 500_000.0,
                     "new_entry_shares": 5.0,
                     "take_profit": 130.0,
+                    "inherited_type": "0",
+                    "stop_registered": True,
+                    "stop_viable": True,
                     "status": "OK",
                 }
             ],
@@ -371,11 +399,11 @@ def test_render_panel_de_cumplimiento_y_resumen() -> None:
     text = render_stats(report)
     assert "## Panel de cumplimiento (base P12 = equity XTB)" in text
     assert "| AAA | - | 100.00 % | 4.00 % | 90.00 | 92.00 |" in text
-    assert "| 0.80 | 1.20 % | 6.00 % | 500,000 CLP | 5.0000 | 130.00 | - | no | OK |" in text
+    assert "| 0.80 | 1.20 % | 6.00 % | 500,000 CLP | 5.0000 | 130.00 | 0 (sana) | si | si | OK |" in text
     assert "- Riesgo abierto total: 1.20 % (P5 10.00 %)." in text
     assert "- Factor ia_ampliada: 44.00 % (tope 40.00 %, base P12)." in text
     assert "- Modo vigente: **cautela**" in text
-    assert "- Infracciones: 1." in text
+    assert "- Infracciones (stop tocado, P3 o P4): 1." in text
     assert "- Amplitud de la cartera: 40.00 % bajo su SMA200." in text
     assert "- Diversificacion: correlacion media por pares 0.71" in text
     assert "- Earnings <= 5 sesiones: AAA." in text
@@ -501,7 +529,7 @@ def test_render_v8_mapas_ledger_lotes_factibilidad_y_json() -> None:
     ):
         assert heading in text
     assert "Patrimonio maximo: 1,200,000 CLP el 2026-10-01" in text
-    assert '"schema": 10' in text
+    assert '"schema": 11' in text
     assert "Datos incompletos: AAA: PEG." in text
 
 
@@ -693,3 +721,36 @@ def test_stats_report_json_round_trip_con_horario_extendido() -> None:
     )
     restored = StatsReport.from_dict(json.loads(json.dumps(report.to_dict())))
     assert restored == report
+
+
+def test_render_marca_encabezado_de_cierre_y_fila_provisional() -> None:
+    row = PositionStats(
+        ticker="AAA",
+        context={"price_source": "reporte", "coverage_pct": 50.0},
+        fields={},
+    )
+    text = render_stats(_report((row,)))
+    assert "Ultimo cierre regular (2026-10-07)" in text
+    assert "base unica de pesos y curva" in text
+    assert "AAA (provisional: precio de reporte, cobertura < 80 %)" in text
+
+
+def test_render_regimen_con_escenario_alterno() -> None:
+    row = PositionStats(ticker="AAA", context={}, fields={})
+    regime = MarketRegime(
+        level="medio",
+        count=3,
+        bucket="2-3",
+        signals=("VIX", "SPY<SMA200", "10Y>SMA200+10%"),
+        near_threshold=("QQQ 1M<=-8% (-7.20 vs -8)",),
+        suspicious=("QQQ",),
+        mode="cautela",
+        alt_count=4,
+        alt_level="alto",
+        alt_bucket=">=4",
+        alt_mode="defensivo",
+    )
+    text = render_stats(replace(_report((row,)), regime=regime), show_context=True)
+    assert "Escenario sin el sospechoso: **3** senales" in text
+    assert "Con el dato valido: **4** senales (tramo >=4)" in text
+    assert "(defensivo)" in text

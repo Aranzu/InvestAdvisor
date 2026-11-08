@@ -135,8 +135,8 @@ def build(
         review=review,
         semis_tickers=semis_tickers,
     )
-    semis = _cluster(panel, "semis")
-    ia = _cluster(panel, "ia_ampliada")
+    semis = _panel_theme(panel, "semiconductores y equipos")
+    ia = _panel_factor(panel, "ia_ampliada")
     liquidity_pct, liquidity_cash = _liquidity(rows, positions, policy)
     return Briefing(
         positions=positions,
@@ -183,14 +183,27 @@ def _liquidity(
     return pct, (cash if cash > 0.0 else None)
 
 
-def _cluster(panel: Mapping[str, object], name: str) -> dict[str, float | None]:
-    clusters = panel.get("clusters")
-    if not isinstance(clusters, Mapping):
+def _panel_factor(panel: Mapping[str, object], name: str) -> dict[str, float | None]:
+    """Peso y tope de un factor desde el panel nuevo.
+
+    El panel viejo publicaba ``clusters`` (una definicion paralela de semis e IA);
+    v10 usa los mapas de factor y tema como fuente unica. ``ia_ampliada`` vive en
+    ``factor_pcts`` y su tope en ``factor_max_pct``.
+    """
+    pcts = panel.get("factor_pcts")
+    if not isinstance(pcts, Mapping):
         return {}
-    raw = clusters.get(name)
-    if not isinstance(raw, Mapping):
+    maxes = panel.get("factor_max_pct")
+    max_pct = _num(maxes.get(name)) if isinstance(maxes, Mapping) else None
+    return {"pct": _num(pcts.get(name)), "max_pct": max_pct}
+
+
+def _panel_theme(panel: Mapping[str, object], name: str) -> dict[str, float | None]:
+    """Peso y tope de un tema agregado (``aggregate_theme_pcts``)."""
+    pcts = panel.get("aggregate_theme_pcts")
+    if not isinstance(pcts, Mapping):
         return {}
-    return {"pct": _num(raw.get("pct")), "max_pct": _num(raw.get("max_pct"))}
+    return {"pct": _num(pcts.get(name)), "max_pct": _num(panel.get("max_theme_pct"))}
 
 
 def _brief(
@@ -653,7 +666,7 @@ def _alerts(
             pct = _num(raw)
             if pct is not None and pct > policy.theme_max_pct:
                 alerts.append(f"tema {theme}: {pct:.2f} % sobre el tope {policy.theme_max_pct:g} %")
-    ia = _cluster(panel, "ia_ampliada")
+    ia = _panel_factor(panel, "ia_ampliada")
     ia_pct = ia.get("pct")
     if ia_pct is not None and ia_pct > policy.ia_ampliada_max_pct:
         alerts.append(f"IA ampliada: {ia_pct:.2f} % sobre el tope {policy.ia_ampliada_max_pct:g} %")

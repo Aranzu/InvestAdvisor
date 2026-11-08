@@ -133,3 +133,26 @@ def test_benchmark_sospechoso_no_cuenta() -> None:
     assert "QQQ" in result.suspicious
     assert result.signals == ()
     assert result.count == 0
+
+
+def test_soxx_sospechoso_y_escenario_con_dato_valido() -> None:
+    instruments = (
+        MarketInstrument(symbol="^VIX", label="VIX", price=25.0),
+        MarketInstrument(symbol="SPY", label="SPY", vs_sma200_pct=-2.0),
+        MarketInstrument(symbol="^TNX", label="10Y", vs_sma200_pct=12.0),
+        MarketInstrument(symbol="DX-Y.NYB", label="DXY", vs_sma200_pct=1.0),
+        MarketInstrument(
+            symbol="QQQ", label="QQQ", price=136.5, chg_1m_pct=-75.8, sma200=476.0
+        ),
+        MarketInstrument(
+            symbol="SOXX", label="Semis (SOXX)", price=200.0, chg_1m_pct=-70.0, sma200=500.0
+        ),
+    )
+    result = _regime(instruments)
+    assert "Semis (SOXX)" in result.suspicious
+    assert "QQQ" in result.suspicious
+    # Sin QQQ: VIX, SPY y 10Y = 3 senales (cautela).
+    assert result.count == 3
+    # Con el dato valido, QQQ agrega su senal: 4 -> defensivo.
+    assert result.alt_count == 4
+    assert result.alt_mode == "defensivo"

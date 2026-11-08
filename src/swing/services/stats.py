@@ -55,7 +55,7 @@ from swing.core.fundamentals import Fundamentals
 from swing.core.indicators import atr, heikin_ashi_state, rsi, sma, smoothed_heikin_ashi
 from swing.core.market import PriceSeries
 from swing.core.market_context import MARKET, MarketInstrument, MarketRegime, instrument, regime
-from swing.core.models import Cluster, ComplianceConfig, FactorsConfig, StrategyConfig
+from swing.core.models import ComplianceConfig, FactorsConfig, StrategyConfig
 from swing.core.report import OpenLot, PositionReport
 from swing.core.stats import (
     INSIDER_WINDOW_DAYS,
@@ -110,6 +110,7 @@ def collect_stats(
     factors: FactorsConfig | None = None,
     ledger: Mapping[str, LedgerEntry] | None = None,
     ledger_path: Path | None = None,
+    stop_kind: str = "",
 ) -> StatsReport:
     """Arma el informe por posición abierta. Nunca levanta por un ticker sin datos."""
     analysis = analyze(model, market, strategy, themes, sectors=sectors)
@@ -154,6 +155,7 @@ def collect_stats(
             snapshot.values,
         )
         merged.update(derive_fields(merged, view.price_usd))
+        merged["target_reliable"] = _target_reliability(merged, market.today, view.price_usd)
         rows.append(
             PositionStats(
                 ticker=view.ticker,
@@ -163,8 +165,15 @@ def collect_stats(
             )
         )
 
-    enriched, invested_clp = _enrich_panel(rows, equity_clp=analysis.equity_clp, cash_clp=analysis.cash_clp, strategy=strategy)
+    enriched, invested_clp = _enrich_panel(rows, equity_clp=analysis.equity_clp)
     theme_map = {**themes, **(factors.themes if factors is not None else {})}
+    map_rows = _maps(
+        enriched,
+        factors=factors,
+        themes=theme_map,
+        equity_clp=analysis.equity_clp,
+        max_theme_pct=compliance.max_theme_pct,
+    )
     market_rows = _market_context(bars, market.today, window_days)
     market_regime = _market_regime(market_rows, strategy)
     if market_regime is not None:
@@ -179,6 +188,11 @@ def collect_stats(
         strategy=strategy,
         theme_map=theme_map,
     )
+    factor_name = str(map_rows.get("factor_name") or "")
+    factor_pct = _as_number(map_rows.get("factor_pct"))
+    factor_max = _as_number(map_rows.get("factor_max_pct"))
+    panel["factor_pcts"] = {factor_name: factor_pct} if factor_name and factor_pct is not None else {}
+    panel["factor_max_pct"] = {factor_name: factor_max} if factor_name and factor_max is not None else {}
     panel.update(_cash_history(model, analysis))
     compliance_rows, new_ledger = _compliance_rows(
         enriched,
@@ -189,6 +203,7 @@ def collect_stats(
         today=market.today,
         equity_clp=analysis.equity_clp,
         fx=analysis.fx,
+        stop_kind=stop_kind,
     )
     if ledger_path is not None:
         save_ledger(ledger_path, new_ledger.values())
@@ -223,7 +238,6 @@ def collect_stats(
     )
     closed = _closed_history(analysis, SessionCalendar.us())
     generated_at = dt.datetime.now(dt.UTC).replace(tzinfo=None)
-    map_rows = _maps(enriched, factors=factors, themes=theme_map, equity_clp=analysis.equity_clp)
     feasibility = build_feasibility(
         compliance_rows,
         summary,
@@ -497,6 +511,7 @@ def _compliance_rows(
     today: dt.date,
     equity_clp: float | None = None,
     fx: float | None = None,
+    stop_kind: str = "",
 ) -> tuple[list[ComplianceRow], dict[str, LedgerEntry]]:
     """Calcula el panel de cumplimiento y el ledger actualizado (stops que no bajan)."""
     today = today if today is not None else dt.date.today()
@@ -529,7 +544,7 @@ def _compliance_rows(
             patrimonio_clp=patrimonio,
             weight_invested_pct=_as_number(context.get("weight_invested_pct")),
             weight_equity_pct=weight_equity,
-            high_20=_as_number(fields.get("high_20")),
+            min_20=_as_number(fields.get("low_20")),
             previous=previous,
             stop_xtb=_ticker_stop(own),
             tp_xtb=_ticker_tp(own),
@@ -538,7 +553,7 @@ def _compliance_rows(
             earnings_sessions=_as_number(context.get("earnings_sessions")),
             equity_clp=equity,
             fx=fx,
-            stop_kind="alerta",
+            stop_kind=stop_kind,
             cfg=compliance,
         )
         decision_date = plan.decision_date
@@ -576,6 +591,7 @@ def _compliance_rows(
                 decision_date=decision_date,
                 reduction_tranches_done=plan.reduction_tranches_done,
                 stop_kind=plan.stop_kind,
+                stop_source=plan.stop_source,
             )
     return out, entries
 
@@ -815,6 +831,8 @@ def _compliance_to_dict(
             "max_weight_hold_pct": summary.max_weight_hold_pct,
             "max_weight_trim_pct": summary.max_weight_trim_pct,
             "max_risk_position_pct": summary.max_risk_position_pct,
+            "max_sale_per_session_pct": summary.max_sale_per_session_pct,
+            "reduction_max_weeks": summary.reduction_max_weeks,
             "sessions_to_purchases": sessions_purchase,
             "sessions_to_liquidation": sessions_liquidate,
             "purchases_until": compliance.purchases_until.isoformat(),
@@ -858,6 +876,7 @@ def _compliance_to_dict(
                 "status": row.status,
                 "inherited": row.inherited,
                 "inherited_type": row.inherited_type,
+                "stop_registered": row.stop_registered,
                 "stop_viable": row.stop_viable,
                 "adoption_date": row.adoption_date.isoformat() if row.adoption_date else None,
                 "decision": row.decision,
@@ -869,6 +888,10 @@ def _compliance_to_dict(
                 "new_entry_pct": row.new_entry_pct,
                 "break_even": row.break_even,
                 "trailing_stop": row.trailing_stop,
+                "stop_source": row.stop_source,
+                "risk_stop": row.risk_stop,
+                "risk_source": row.risk_source,
+                "risk_pct_theoretical": row.risk_pct_theoretical,
                 "stop_xtb": row.stop_xtb,
                 "tp_xtb": row.tp_xtb,
                 "stop_xtb_differs": row.stop_xtb_differs,
@@ -890,17 +913,16 @@ def _enrich_panel(
     rows: Sequence[PositionStats],
     *,
     equity_clp: float,
-    cash_clp: float,
-    strategy: StrategyConfig,
 ) -> tuple[list[PositionStats], float]:
-    """Agrega el panel derivado al ``context`` de cada fila y devuelve el invertido.
+    """Agrega los pesos al ``context`` de cada fila y devuelve el invertido.
 
-    El motor fija los numeros: peso sobre el invertido, stop de la regla
-    (``legacy.max_loss_from_cost_pct`` desde la entrada) y distancia al stop.
+    Solo se calculan pesos. ``stop_rule``, ``stop_perforated``, ``risk_patrimonio_pct``
+    y ``stop_dist_pct`` eran campos legados del contexto de stats: el stop real y su
+    distancia salen del panel de cumplimiento y de los hechos del motor, no de una
+    regla paralela anclada a la entrada. Escribirlos aqui creaba una segunda fuente
+    de verdad que el prompt v10 pide ignorar.
     """
     invested = sum(value for row in rows if (value := _as_number(row.context.get("value_clp"))) is not None)
-    max_loss = strategy.legacy.max_loss_from_cost_pct
-    patrimonio = cash_clp + invested if (cash_clp + invested) > 0.0 else equity_clp
     out: list[PositionStats] = []
     for row in rows:
         context = dict(row.context)
@@ -910,20 +932,6 @@ def _enrich_panel(
             context["weight_equity_pct"] = context["weight_pct"]
         if value is not None and invested > 0.0:
             context["weight_invested_pct"] = value / invested * 100.0
-        entry = _as_number(context.get("entry_usd"))
-        price = _as_number(context.get("price_usd"))
-        stop: float | None = None
-        if entry is not None and entry > 0.0:
-            stop = entry * (1.0 - max_loss / 100.0)
-            context["stop_rule"] = stop
-            if price is not None and price > 0.0:
-                context["stop_dist_pct"] = (price - stop) / price * 100.0
-                # El stop es un nivel de referencia a la entrada, no una orden viva:
-                # si el precio ya lo perdio, el informe lo marca en vez de mostrar
-                # una distancia y un riesgo negativos.
-                context["stop_perforated"] = price < stop
-        if value is not None and price is not None and stop is not None and patrimonio > 0.0:
-            context["risk_patrimonio_pct"] = (value * (price - stop) / price) / patrimonio * 100.0
         out.append(replace(row, context=context))
     return out, invested
 
@@ -940,7 +948,7 @@ def _portfolio_panel(
 
     El patrimonio incluye la caja y las posiciones valuadas, de modo que los pesos
     suman 100 % sobre el capital realmente expuesto. ``theme_map`` (``factors.yaml``)
-    manda sobre el tema del export: es el archivo editable que pide el prompt v8.
+    manda sobre el tema del export: es el archivo editable que pide el prompt v9.
     """
     equity_clp = analysis.equity_clp
     cash_clp = analysis.cash_clp
@@ -957,11 +965,6 @@ def _portfolio_panel(
             themes[theme] = themes.get(theme, 0.0) + pct
             if theme.strip().lower() in {"semiconductors", "semiconductors_ai", "technology", "semis"}:
                 aggregate["semiconductores y equipos"] = aggregate.get("semiconductores y equipos", 0.0) + pct
-    cluster_cfg = strategy.risk.clusters
-    clusters: dict[str, object] = {}
-    if cluster_cfg is not None:
-        clusters["semis"] = _cluster_panel(cluster_cfg.semis, rows, base, overrides)
-        clusters["ia_ampliada"] = _cluster_panel(cluster_cfg.ia_ampliada, rows, base, overrides)
     return {
         "equity_clp": equity_clp,
         "patrimonio_clp": patrimonio,
@@ -973,37 +976,7 @@ def _portfolio_panel(
         "themes": themes,
         "aggregate_theme_pcts": aggregate,
         "max_theme_pct": strategy.risk.max_theme_pct,
-        "clusters": clusters,
     }
-
-
-def _cluster_panel(
-    cluster: Cluster,
-    rows: Sequence[PositionStats],
-    invested_clp: float,
-    theme_map: Mapping[str, str] | None = None,
-) -> dict[str, object]:
-    """Peso del cluster sobre la base P12: por ticker y por tema, sin repetir fila.
-
-    Los ``tickers`` son la lista curada (incluye a SNDK, que el antiguo filtro por
-    nombre de tema ``semicon*`` dejaba afuera); los ``themes`` son la red de arrastre.
-    ``members`` declara que posiciones abiertas componen el cluster.
-    """
-    pct: float | None = None
-    members: list[str] = []
-    if invested_clp > 0.0:
-        total = 0.0
-        tickers = set(cluster.tickers)
-        themes = set(cluster.themes)
-        overrides = theme_map or {}
-        for row in rows:
-            theme = overrides.get(row.ticker) or str(row.context.get("theme") or "")
-            if row.ticker not in tickers and theme not in themes:
-                continue
-            members.append(row.ticker)
-            total += _as_number(row.context.get("value_clp")) or 0.0
-        pct = total / invested_clp * 100.0
-    return {"pct": pct, "max_pct": cluster.max_pct, "members": members}
 
 
 def _maps(
@@ -1012,6 +985,7 @@ def _maps(
     factors: FactorsConfig | None,
     themes: Mapping[str, str],
     equity_clp: float,
+    max_theme_pct: float | None = None,
 ) -> dict[str, object]:
     """Mapas editables de factor y tema, con el agregado de semiconductores.
 
@@ -1061,11 +1035,15 @@ def _maps(
         if factors is not None and factor_name
         else None
     )
-    max_theme = (
-        min(factors.max_theme_pct, factors.max_theme_pct) if factors is not None else None
-    )
+    theme_limits = [
+        value
+        for value in (factors.max_theme_pct if factors is not None else None, max_theme_pct)
+        if value is not None
+    ]
+    max_theme = min(theme_limits) if theme_limits else None
     return {
         "base": "equity XTB (P12)",
+        "factor_configured": factors is not None and bool(factor_name),
         "factor_name": factor_name,
         "factor_tickers": list(factor_tickers),
         "factor_theme_names": list(factor_theme_names),
@@ -1251,18 +1229,33 @@ def _yahoo_fields(f: Fundamentals) -> dict[str, object]:
             "net_debt": f.net_debt,
             "net_debt_change": f.net_debt_change,
             "oper_margin_yoy_bps": f.oper_margin_yoy_bps,
+            "oper_margin_last_q": _pct(f.oper_margin_last_q),
+            "profit_margin_last_q": _pct(f.profit_margin_last_q),
+            "margin_basis": f.margin_basis,
+            "margin_period": f.margin_period.isoformat() if f.margin_period else None,
+            "extraordinary_item": f.extraordinary_item,
             "revenue_last_q": f.revenue_last_q,
             "revenue_prior_q": f.revenue_prior_q,
-            "revenue_deceleration": _deceleration(f.revenue_growth_last_q, f.revenue_growth_prior_q),
+            "revenue_deceleration": _deceleration(f.revenue_growth_quarters),
             "guidance_vs_consensus_pct": _pct(f.guidance_vs_consensus),
             "eps_consensus_60d_ago": f.eps_consensus_60d_ago,
             "eps_revision_60d_pct": _pct(f.eps_revision_60d),
+            "eps_revision_cy_pct": _pct(f.eps_revision_current_year),
+            "eps_revision_ny_pct": _pct(f.eps_revision_next_year),
+            "eps_revision_cy_suppressed": f.eps_revision_current_year_suppressed,
+            "eps_revision_ny_suppressed": f.eps_revision_next_year_suppressed,
             "analyst_up_60d": f.analyst_up_60d,
             "analyst_down_60d": f.analyst_down_60d,
             "analyst_up_30d": f.analyst_up_30d,
             "analyst_down_30d": f.analyst_down_30d,
+            "last_analyst_revision_date": (
+                f.last_analyst_revision_date.isoformat() if f.last_analyst_revision_date else None
+            ),
             "target_change_60d_pct": _pct(f.target_change_60d),
+            "target_as_of": f.target_as_of.isoformat() if f.target_as_of else None,
             "earnings_timing": f.earnings_timing,
+            "earnings_date": f.earnings_date.isoformat() if f.earnings_date else None,
+            "earnings_date_estimated": f.earnings_date_estimated,
             "earnings_implied_move_pct": _pct(f.earnings_implied_move),
             "earnings_avg_move_pct": _pct(f.earnings_avg_move),
             "last_report_date": f.last_report_date.isoformat() if f.last_report_date else None,
@@ -1272,11 +1265,39 @@ def _yahoo_fields(f: Fundamentals) -> dict[str, object]:
     )
 
 
-def _deceleration(last: float | None, prior: float | None) -> str | None:
-    """``si`` si el crecimiento Y/Y del ultimo trimestre es menor que el del anterior."""
-    if last is None or prior is None:
+def _target_reliability(fields: Mapping[str, object], today: dt.date, price: float | None) -> str | None:
+    """Marca el objetivo de analistas poco fiable por potencial > 100 % o > 90 dias."""
+    target = _as_number(fields.get("target_price"))
+    price = _as_number(price)
+    if target is None or target <= 0.0 or price is None or price <= 0.0:
         return None
-    return "si" if last < prior else "no"
+    reasons: list[str] = []
+    if target / price - 1.0 > 1.0:
+        reasons.append("potencial > 100 %")
+    raw = fields.get("target_as_of")
+    if isinstance(raw, str) and raw:
+        try:
+            as_of = dt.date.fromisoformat(raw)
+        except ValueError:
+            as_of = None
+        if as_of is not None and (today - as_of).days > 90:
+            reasons.append("desactualizado > 90 dias")
+    return "poco fiable: " + ", ".join(reasons) if reasons else "ok"
+
+
+def _deceleration(growth: Sequence[float]) -> str | None:
+    """``si`` si el Y/Y del ultimo trimestre cae frente al anterior y su promedio.
+
+    Se usan hasta cuatro trimestres (tres comparaciones), no solo los dos ultimos:
+    un solo trimestre flojo tras un salto no es una tendencia. Con menos de tres
+    valores no se afirma nada (``None``).
+    """
+    values = [value for value in growth[-4:] if value is not None]
+    if len(values) < 3:
+        return None
+    previous = values[-2]
+    baseline = sum(values[:-1]) / len(values[:-1])
+    return "si" if values[-1] < previous and values[-1] < baseline else "no"
 
 
 def _flat_tail_sessions(series: PriceSeries) -> int:
@@ -1432,13 +1453,21 @@ def _clean(mapping: Mapping[str, object]) -> dict[str, object]:
 
 #: Nombres de campo de ``Fundamentals``, en orden de declaracion (contrato del JSON).
 _FUNDAMENTALS_FIELDS = tuple(spec.name for spec in dataclass_fields(Fundamentals))
+_FUNDAMENTALS_DATE_FIELDS = frozenset(
+    {"as_of", "margin_period", "earnings_date", "last_report_date", "last_analyst_revision_date", "target_as_of"}
+)
+_FUNDAMENTALS_TUPLE_FIELDS = frozenset({"revenue_growth_quarters"})
 
 
 def _fundamentals_to_dict(f: Fundamentals) -> dict[str, object]:
     out: dict[str, object] = {}
     for name in _FUNDAMENTALS_FIELDS:
         value = getattr(f, name)
-        out[name] = value.isoformat() if isinstance(value, dt.date) else value
+        if isinstance(value, dt.date):
+            value = value.isoformat()
+        elif isinstance(value, tuple):
+            value = list(value)
+        out[name] = value
     return out
 
 
@@ -1446,8 +1475,10 @@ def _fundamentals_from_dict(data: Mapping[str, object]) -> Fundamentals:
     kwargs: dict[str, object] = {}
     for name in _FUNDAMENTALS_FIELDS:
         value = data.get(name)
-        if name == "as_of":
+        if name in _FUNDAMENTALS_DATE_FIELDS:
             kwargs[name] = dt.date.fromisoformat(str(value)) if value else None
+        elif name in _FUNDAMENTALS_TUPLE_FIELDS:
+            kwargs[name] = tuple(value) if isinstance(value, list) else ()
         else:
             kwargs[name] = value
     return Fundamentals(**kwargs)  # type: ignore[arg-type]

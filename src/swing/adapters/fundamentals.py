@@ -38,7 +38,7 @@ SUMMARY_CHARS = 600
 
 #: Version del formato cacheado. Se sube cuando cambia la normalizacion de un
 #: campo, para que lo guardado con la regla vieja no se lea como vigente.
-CACHE_SCHEMA = 3
+CACHE_SCHEMA = 4
 
 
 def yfinance_info(symbol: str) -> Mapping[str, object] | None:
@@ -82,6 +82,7 @@ def yfinance_info(symbol: str) -> Mapping[str, object] | None:
         merged["_revenue_growth_next_year"] = rev_est
     _merge_eps_trend(ticker, merged)
     _merge_eps_revisions(ticker, merged)
+    _merge_analyst_revisions(ticker, merged)
     _merge_quarterly(ticker, merged)
     _merge_earnings(ticker, merged)
     _merge_primary_document(ticker, merged)
@@ -119,20 +120,46 @@ def _series_value(row: Any, *names: str) -> float | None:
     return None
 
 
+#: Base minima de EPS (USD) para publicar una revision: debajo de esto el porcentaje
+#: es ruido (una base de 0,05 USD convierte un centavo en +20 %).
+EPS_REVISION_MIN_BASE = 0.25
+
+
 def _merge_eps_trend(ticker: object, merged: dict[str, object]) -> None:
-    """Consenso de EPS actual y de hace 60 dias (``Ticker.eps_trend``)."""
+    """Consenso de EPS actual y de hace 60 dias, separado por ano.
+
+    ``eps_trend`` trae ``0q``/``+1q`` (trimestre) y ``0y``/``+1y`` (ano en curso y
+    proximo). Se publican los dos anos porque la revision del trimestre y la del
+    ano siguiente pueden apuntar en direcciones distintas. Si la base (consenso de
+    hace 60 dias) es menor a ``EPS_REVISION_MIN_BASE``, la cifra se suprime.
+    """
     try:
-        row = _period_row(ticker.eps_trend)  # type: ignore[attr-defined]
+        frame = ticker.eps_trend  # type: ignore[attr-defined]
     except Exception:
         return
-    current = _series_value(row, "current")
-    old = _series_value(row, "60daysAgo", "60daysAgoConsensus")
+    old_row = _period_row(frame)
+    current = _series_value(old_row, "current")
+    old = _series_value(old_row, "60daysAgo", "60daysAgoConsensus")
     if current is not None:
         merged["_eps_current"] = current
     if old is not None:
         merged["_eps_consensus_60d_ago"] = old
         if current is not None and old != 0.0:
             merged["_eps_revision_60d"] = (current - old) / abs(old)
+
+    for period, key, flag in (
+        ("0y", "_eps_revision_cy", "_eps_revision_cy_suppressed"),
+        ("+1y", "_eps_revision_ny", "_eps_revision_ny_suppressed"),
+    ):
+        row = _period_row(frame, period)
+        current_year = _series_value(row, "current")
+        base_year = _series_value(row, "60daysAgo", "60daysAgoConsensus")
+        if current_year is None or base_year is None:
+            continue
+        if abs(base_year) < EPS_REVISION_MIN_BASE:
+            merged[flag] = True
+            continue
+        merged[key] = (current_year - base_year) / abs(base_year)
 
 
 def _merge_eps_revisions(ticker: object, merged: dict[str, object]) -> None:
@@ -155,14 +182,48 @@ def _merge_eps_revisions(ticker: object, merged: dict[str, object]) -> None:
         merged["_analyst_down_30d"] = int(down_30)
 
 
+def _merge_analyst_revisions(ticker: object, merged: dict[str, object]) -> None:
+    """Fecha del ultimo cambio de recomendacion/objetivo (``upgrades_downgrades``).
+
+    Sin esta fecha el objetivo medio no tiene antiguedad: el informe no puede
+    marcarlo como desactualizado (> 90 dias) y el prompt pide hacerlo.
+    """
+    try:
+        frame = ticker.upgrades_downgrades  # type: ignore[attr-defined]
+    except Exception:
+        return
+    if frame is None or not hasattr(frame, "index"):
+        return
+    days: list[dt.date] = []
+    try:
+        for value in frame.index:
+            day = _column_date(value)
+            if day is not None:
+                days.append(day)
+    except Exception:
+        return
+    if days:
+        merged["_last_analyst_revision_date"] = max(days).isoformat()
+
+
 def _merge_quarterly(ticker: object, merged: dict[str, object]) -> None:
-    """Ultimos dos trimestres: FCF, deuda neta, ingresos y margen operativo Y/Y."""
+    """Ultimos trimestres alineados por fecha: FCF, deuda neta, margenes y Y/Y.
+
+    Antes se tomaban las filas como listas posicionales y se comparaba ``[-1]``
+    con ``[-5]``. Al descartar NaN, una columna faltante corria la serie y el Y/Y
+    terminaba comparando trimestres distintos. Ahora cada valor se ancla a la
+    fecha de su columna y el año anterior se busca por fecha, no por posicion.
+    """
     financials = _frame(ticker, "quarterly_financials")
     cashflow = _frame(ticker, "quarterly_cashflow")
     balance = _frame(ticker, "quarterly_balance_sheet")
 
-    revenue = _chronological(financials, ("Total Revenue", "Operating Revenue"))
-    operating = _chronological(financials, ("Operating Income", "Operating Income Or Loss", "EBIT"))
+    revenue = _dated_series(financials, ("Total Revenue", "Operating Revenue"))
+    operating = _dated_series(financials, ("Operating Income", "Operating Income Or Loss", "EBIT"))
+    net_income = _dated_series(
+        financials,
+        ("Net Income", "Net Income Common Stockholders", "Net Income Including Noncontrolling Interests"),
+    )
     fcf = _chronological(cashflow, ("Free Cash Flow",))
     if len(fcf) < 2:
         ocf = _chronological(cashflow, ("Operating Cash Flow", "Cash Flow From Continuing Operating Activities"))
@@ -193,21 +254,45 @@ def _merge_quarterly(ticker: object, merged: dict[str, object]) -> None:
         merged["_net_debt"] = net_debt[-1]
     if len(net_debt) >= 2:
         merged["_net_debt_change"] = net_debt[-1] - net_debt[-2]
-    if len(revenue) >= 1:
-        merged["_revenue_last_q"] = revenue[-1]
-    if len(revenue) >= 2:
-        merged["_revenue_prior_q"] = revenue[-2]
-    if len(revenue) >= 5 and revenue[-5] != 0.0:
-        merged["_revenue_growth_last_q"] = revenue[-1] / revenue[-5] - 1.0
-    if len(revenue) >= 6 and revenue[-6] != 0.0:
-        merged["_revenue_growth_prior_q"] = revenue[-2] / revenue[-6] - 1.0
-    if len(operating) >= 1 and len(revenue) >= 1 and revenue[-1] != 0.0:
-        margin_last = operating[-1] / revenue[-1]
-        margin_year = None
-        if len(operating) >= 5 and len(revenue) >= 5 and revenue[-5] != 0.0:
-            margin_year = operating[-5] / revenue[-5]
-        if margin_year is not None:
-            merged["_oper_margin_yoy_bps"] = (margin_last - margin_year) * 10_000.0
+    revenue_dates = sorted(revenue)
+    if revenue_dates:
+        merged["_revenue_last_q"] = revenue[revenue_dates[-1]]
+    if len(revenue_dates) >= 2:
+        merged["_revenue_prior_q"] = revenue[revenue_dates[-2]]
+    if revenue_dates:
+        growth_last = _growth_yoy(revenue, revenue_dates[-1])
+        if growth_last is not None:
+            merged["_revenue_growth_last_q"] = growth_last
+    if len(revenue_dates) >= 2:
+        growth_prior = _growth_yoy(revenue, revenue_dates[-2])
+        if growth_prior is not None:
+            merged["_revenue_growth_prior_q"] = growth_prior
+    quarter_growth = [
+        growth for day in revenue_dates[-4:] if (growth := _growth_yoy(revenue, day)) is not None
+    ]
+    if quarter_growth:
+        merged["_revenue_growth_quarters"] = tuple(quarter_growth)
+
+    common_dates = sorted(set(revenue) & set(operating))
+    if not common_dates:
+        return
+    last = common_dates[-1]
+    if revenue[last] == 0.0:
+        return
+    margin_last = operating[last] / revenue[last]
+    merged["_oper_margin_last_q"] = margin_last
+    merged["_margin_period"] = last.isoformat()
+    merged["_margin_basis"] = "GAAP trimestral"
+    if last in net_income:
+        profit_last = net_income[last] / revenue[last]
+        merged["_profit_margin_last_q"] = profit_last
+        # Margen neto por encima del operativo = ganancias no operativas: la
+        # cifra es real, pero no sirve como senal de deterioro sin separarlas.
+        merged["_extraordinary_item"] = profit_last > margin_last + 1e-3
+    year = _year_ago(common_dates, last)
+    if year is not None and revenue[year] != 0.0:
+        margin_year = operating[year] / revenue[year]
+        merged["_oper_margin_yoy_bps"] = (margin_last - margin_year) * 10_000.0
 
 
 def _frame(ticker: object, attribute: str) -> Any:
@@ -258,6 +343,94 @@ def _chronological(frame: Any, aliases: Sequence[str]) -> list[float]:
     return out
 
 
+def _dated_series(frame: Any, aliases: Sequence[str]) -> dict[dt.date, float]:
+    """Fila pedida con la fecha de cada columna, sin huecos ni corrimientos.
+
+    Las columnas de yfinance son cierres trimestrales (``Timestamp``). La fecha
+    es lo unico que permite comparar el mismo trimestre año contra año cuando
+    falta una columna intermedia.
+    """
+    if frame is None or not hasattr(frame, "loc"):
+        return {}
+    wanted = {alias.strip().lower() for alias in aliases}
+    try:
+        columns = list(frame.columns)
+    except Exception:
+        return {}
+    row_label = None
+    try:
+        for label in frame.index:
+            if str(label).strip().lower() in wanted:
+                row_label = label
+                break
+    except Exception:
+        return {}
+    if row_label is None:
+        return {}
+    out: dict[dt.date, float] = {}
+    try:
+        series = frame.loc[row_label]
+        for column in columns:
+            day = _column_date(column)
+            if day is None:
+                continue
+            value = series[column]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            number = float(value)
+            if number != number:  # descarta NaN
+                continue
+            out[day] = number
+    except Exception:
+        return {}
+    return out
+
+
+def _column_date(value: object) -> dt.date | None:
+    """Fecha de una columna trimestral, sea ``date``, ``datetime`` o ``Timestamp``."""
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    converter = getattr(value, "to_pydatetime", None)
+    if callable(converter):
+        try:
+            converted = converter()
+        except Exception:
+            converted = None
+        if isinstance(converted, dt.datetime):
+            return converted.date()
+        if isinstance(converted, dt.date):
+            return converted
+    try:
+        return dt.date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _year_ago(dates: Sequence[dt.date], key: dt.date) -> dt.date | None:
+    """Cierre trimestral mas cercano a un año antes de ``key`` (tolerancia 60 dias)."""
+    if not dates:
+        return None
+    try:
+        target = key.replace(year=key.year - 1)
+    except ValueError:  # 29 de febrero
+        target = key.replace(year=key.year - 1, day=28)
+    candidates = [day for day in dates if day != key]
+    if not candidates:
+        return None
+    best = min(candidates, key=lambda day: abs((day - target).days))
+    return best if abs((best - target).days) <= 60 else None
+
+
+def _growth_yoy(series: Mapping[dt.date, float], key: dt.date) -> float | None:
+    """Crecimiento Y/Y de una serie fechada, comparando el mismo trimestre."""
+    base = _year_ago(list(series), key)
+    if base is None or series.get(base, 0.0) == 0.0:
+        return None
+    return series[key] / series[base] - 1.0
+
+
 def _sum_series(left: Sequence[float], right: Sequence[float]) -> list[float]:
     if not left or not right:
         return []
@@ -270,6 +443,32 @@ def _subtract_series(left: Sequence[float], right: Sequence[float]) -> list[floa
     return [a - b for a, b in zip(left, right, strict=False)]
 
 
+def _calendar_earnings_date(ticker: object, today: dt.date) -> dt.date | None:
+    """Fecha estimada del proximo reporte segun ``Ticker.calendar``."""
+    try:
+        calendar = ticker.calendar  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    values: object = None
+    if isinstance(calendar, Mapping):
+        values = calendar.get("Earnings Date")
+    elif hasattr(calendar, "columns"):
+        for key in ("Earnings Date", "EarningsDate"):
+            if key in calendar.columns:
+                values = calendar[key].tolist()
+                break
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    days = []
+    for value in values:
+        moment = _as_datetime(value)
+        if moment is not None and moment.date() >= today:
+            days.append(moment.date())
+    return min(days) if days else None
+
+
 def _merge_earnings(ticker: object, merged: dict[str, object]) -> None:
     """Timing, movimiento implicito, movimiento historico y ultimo reporte."""
     dates: Any = None
@@ -280,6 +479,7 @@ def _merge_earnings(ticker: object, merged: dict[str, object]) -> None:
     past: list[dt.datetime] = []
     upcoming: dt.date | None = None
     upcoming_time: int | None = None
+    estimated = False
     if dates is not None and hasattr(dates, "index"):
         today = dt.date.today()
         try:
@@ -296,8 +496,13 @@ def _merge_earnings(ticker: object, merged: dict[str, object]) -> None:
                     past.append(moment)
         except Exception:
             pass
+    today = dt.date.today()
+    if upcoming is None:
+        upcoming = _calendar_earnings_date(ticker, today)
+        estimated = upcoming is not None
     if upcoming is not None:
         merged["_earnings_date"] = upcoming.isoformat()
+        merged["_earnings_date_estimated"] = estimated
         merged["_earnings_timing"] = _timing(upcoming_time)
     if past:
         merged["_last_report_date"] = max(moment.date() for moment in past).isoformat()
@@ -513,6 +718,22 @@ def _int(info: Mapping[str, object], key: str) -> int | None:
     return int(value) if value is not None else None
 
 
+def _flag(info: Mapping[str, object], key: str) -> bool | None:
+    value = info.get(key)
+    return value if isinstance(value, bool) else None
+
+
+def _floats(value: object) -> tuple[float, ...]:
+    """Lista de numeros (sin NaN ni booleanos) -> tupla; cualquier otra forma, vacia."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    out: list[float] = []
+    for item in value:
+        if isinstance(item, (int, float)) and not isinstance(item, bool) and item == item:
+            out.append(float(item))
+    return tuple(out)
+
+
 def _text(info: Mapping[str, object], key: str) -> str | None:
     value = info.get(key)
     if isinstance(value, str) and value.strip():
@@ -572,6 +793,16 @@ def fundamentals_from_info(
     summary = _text(info, "longBusinessSummary")
     if summary is not None and len(summary) > SUMMARY_CHARS:
         summary = summary[:SUMMARY_CHARS].rstrip() + "..."
+    profit_margin = _num(info, "profitMargins")
+    operating_margin = _num(info, "operatingMargins")
+    margin_basis = _text(info, "_margin_basis")
+    extraordinary = _flag(info, "_extraordinary_item")
+    # Sin estado trimestral se usa el margen TTM de ``info``: se declara la base
+    # y se conserva el aviso de partidas no operativas.
+    if margin_basis is None and operating_margin is not None:
+        margin_basis = "TTM (info)"
+    if extraordinary is None and profit_margin is not None and operating_margin is not None:
+        extraordinary = profit_margin > operating_margin + 1e-3
     return Fundamentals(
         ticker=ticker.strip().upper(),
         as_of=today,
@@ -585,8 +816,8 @@ def fundamentals_from_info(
         price_to_book=_num(info, "priceToBook"),
         peg_ratio=_num(info, "pegRatio"),
         return_on_equity=_num(info, "returnOnEquity"),
-        profit_margin=_num(info, "profitMargins"),
-        operating_margin=_num(info, "operatingMargins"),
+        profit_margin=profit_margin,
+        operating_margin=operating_margin,
         revenue_growth=_num(info, "revenueGrowth"),
         earnings_growth=_num(info, "earningsGrowth"),
         debt_to_equity=_debt_to_equity(info),
@@ -608,19 +839,33 @@ def fundamentals_from_info(
         net_debt=_num(info, "_net_debt"),
         net_debt_change=_num(info, "_net_debt_change"),
         oper_margin_yoy_bps=_num(info, "_oper_margin_yoy_bps"),
+        oper_margin_last_q=_num(info, "_oper_margin_last_q"),
+        profit_margin_last_q=_num(info, "_profit_margin_last_q"),
+        margin_basis=margin_basis,
+        margin_period=_date(info, "_margin_period"),
+        extraordinary_item=extraordinary,
         revenue_last_q=_num(info, "_revenue_last_q"),
         revenue_prior_q=_num(info, "_revenue_prior_q"),
         revenue_growth_last_q=_num(info, "_revenue_growth_last_q"),
         revenue_growth_prior_q=_num(info, "_revenue_growth_prior_q"),
+        revenue_growth_quarters=_floats(info.get("_revenue_growth_quarters")),
         guidance_vs_consensus=_num(info, "_guidance_vs_consensus"),
         eps_consensus_60d_ago=_num(info, "_eps_consensus_60d_ago"),
         eps_revision_60d=_num(info, "_eps_revision_60d"),
+        eps_revision_current_year=_num(info, "_eps_revision_cy"),
+        eps_revision_next_year=_num(info, "_eps_revision_ny"),
+        eps_revision_current_year_suppressed=_flag(info, "_eps_revision_cy_suppressed") is True,
+        eps_revision_next_year_suppressed=_flag(info, "_eps_revision_ny_suppressed") is True,
         analyst_up_60d=_int(info, "_analyst_up_60d"),
         analyst_down_60d=_int(info, "_analyst_down_60d"),
         analyst_up_30d=_int(info, "_analyst_up_30d"),
         analyst_down_30d=_int(info, "_analyst_down_30d"),
+        last_analyst_revision_date=_date(info, "_last_analyst_revision_date"),
         target_change_60d=_num(info, "_target_change_60d"),
+        target_as_of=_date(info, "_last_analyst_revision_date") or today,
         earnings_timing=_text(info, "_earnings_timing"),
+        earnings_date=_date(info, "_earnings_date"),
+        earnings_date_estimated=_flag(info, "_earnings_date_estimated") is True,
         earnings_implied_move=_num(info, "_earnings_implied_move"),
         earnings_avg_move=_num(info, "_earnings_avg_move"),
         last_report_date=_date(info, "_last_report_date"),
@@ -668,19 +913,35 @@ def _payload(f: Fundamentals, history: Sequence[Mapping[str, object]] = ()) -> d
         "net_debt": f.net_debt,
         "net_debt_change": f.net_debt_change,
         "oper_margin_yoy_bps": f.oper_margin_yoy_bps,
+        "oper_margin_last_q": f.oper_margin_last_q,
+        "profit_margin_last_q": f.profit_margin_last_q,
+        "margin_basis": f.margin_basis,
+        "margin_period": f.margin_period.isoformat() if f.margin_period else None,
+        "extraordinary_item": f.extraordinary_item,
         "revenue_last_q": f.revenue_last_q,
         "revenue_prior_q": f.revenue_prior_q,
         "revenue_growth_last_q": f.revenue_growth_last_q,
         "revenue_growth_prior_q": f.revenue_growth_prior_q,
+        "revenue_growth_quarters": list(f.revenue_growth_quarters),
         "guidance_vs_consensus": f.guidance_vs_consensus,
         "eps_consensus_60d_ago": f.eps_consensus_60d_ago,
         "eps_revision_60d": f.eps_revision_60d,
+        "eps_revision_current_year": f.eps_revision_current_year,
+        "eps_revision_next_year": f.eps_revision_next_year,
+        "eps_revision_current_year_suppressed": f.eps_revision_current_year_suppressed,
+        "eps_revision_next_year_suppressed": f.eps_revision_next_year_suppressed,
         "analyst_up_60d": f.analyst_up_60d,
         "analyst_down_60d": f.analyst_down_60d,
         "analyst_up_30d": f.analyst_up_30d,
         "analyst_down_30d": f.analyst_down_30d,
+        "last_analyst_revision_date": (
+            f.last_analyst_revision_date.isoformat() if f.last_analyst_revision_date else None
+        ),
         "target_change_60d": f.target_change_60d,
+        "target_as_of": f.target_as_of.isoformat() if f.target_as_of else None,
         "earnings_timing": f.earnings_timing,
+        "earnings_date": f.earnings_date.isoformat() if f.earnings_date else None,
+        "earnings_date_estimated": f.earnings_date_estimated,
         "earnings_implied_move": f.earnings_implied_move,
         "earnings_avg_move": f.earnings_avg_move,
         "last_report_date": f.last_report_date.isoformat() if f.last_report_date else None,
@@ -751,19 +1012,33 @@ def _from_payload(data: Mapping[str, object]) -> Fundamentals:
         net_debt=num("net_debt"),
         net_debt_change=num("net_debt_change"),
         oper_margin_yoy_bps=num("oper_margin_yoy_bps"),
+        oper_margin_last_q=num("oper_margin_last_q"),
+        profit_margin_last_q=num("profit_margin_last_q"),
+        margin_basis=text("margin_basis"),
+        margin_period=day("margin_period"),
+        extraordinary_item=_flag(data, "extraordinary_item"),
         revenue_last_q=num("revenue_last_q"),
         revenue_prior_q=num("revenue_prior_q"),
         revenue_growth_last_q=num("revenue_growth_last_q"),
         revenue_growth_prior_q=num("revenue_growth_prior_q"),
+        revenue_growth_quarters=_floats(data.get("revenue_growth_quarters")),
         guidance_vs_consensus=num("guidance_vs_consensus"),
         eps_consensus_60d_ago=num("eps_consensus_60d_ago"),
         eps_revision_60d=num("eps_revision_60d"),
+        eps_revision_current_year=num("eps_revision_current_year"),
+        eps_revision_next_year=num("eps_revision_next_year"),
+        eps_revision_current_year_suppressed=_flag(data, "eps_revision_current_year_suppressed") is True,
+        eps_revision_next_year_suppressed=_flag(data, "eps_revision_next_year_suppressed") is True,
         analyst_up_60d=integer("analyst_up_60d"),
         analyst_down_60d=integer("analyst_down_60d"),
         analyst_up_30d=integer("analyst_up_30d"),
         analyst_down_30d=integer("analyst_down_30d"),
+        last_analyst_revision_date=day("last_analyst_revision_date"),
         target_change_60d=num("target_change_60d"),
+        target_as_of=day("target_as_of"),
         earnings_timing=text("earnings_timing"),
+        earnings_date=day("earnings_date"),
+        earnings_date_estimated=_flag(data, "earnings_date_estimated") is True,
         earnings_implied_move=num("earnings_implied_move"),
         earnings_avg_move=num("earnings_avg_move"),
         last_report_date=day("last_report_date"),

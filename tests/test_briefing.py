@@ -177,7 +177,8 @@ def test_alertas_de_caja_peso_tema_e_ia() -> None:
     panel = {
         "cash_pct": 10.0,
         "themes": {"IA": 40.0},
-        "clusters": {"ia_ampliada": {"pct": 50.0, "max_pct": 45.0}},
+        "factor_pcts": {"ia_ampliada": 50.0},
+        "factor_max_pct": {"ia_ampliada": 45.0},
     }
     briefing = build(rows, panel=panel, patrimonio_clp=1_000_000.0, policy=POLICY)
     joined = " | ".join(briefing.alerts)
@@ -188,20 +189,20 @@ def test_alertas_de_caja_peso_tema_e_ia() -> None:
 
 
 def test_alerta_de_tema_no_cuenta_el_cajon_sin_tema() -> None:
-    panel = {"cash_pct": 18.0, "themes": {"sin_tema": 50.0, "IA": 40.0}, "clusters": {}}
+    panel = {"cash_pct": 18.0, "themes": {"sin_tema": 50.0, "IA": 40.0}}
     briefing = build([], panel=panel, patrimonio_clp=1.0, policy=POLICY)
     joined = " | ".join(briefing.alerts)
     assert "sin_tema" not in joined
     assert "tema IA: 40.00 % sobre el tope 35 %" in joined
 
 
-def test_build_expone_agregados_de_cluster() -> None:
+def test_build_expone_agregados_de_factor_y_tema() -> None:
     panel = {
         "cash_pct": 18.0,
-        "clusters": {
-            "semis": {"pct": 30.0, "max_pct": 35.0},
-            "ia_ampliada": {"pct": 44.0, "max_pct": 45.0},
-        },
+        "aggregate_theme_pcts": {"semiconductores y equipos": 30.0},
+        "max_theme_pct": 35.0,
+        "factor_pcts": {"ia_ampliada": 44.0},
+        "factor_max_pct": {"ia_ampliada": 45.0},
     }
     briefing = build([], panel=panel, patrimonio_clp=1.0, policy=POLICY)
     assert briefing.cash_pct == pytest.approx(18.0)
@@ -376,7 +377,7 @@ def test_mapa_de_liquidez_y_ventanas_de_earnings() -> None:
             fields={"target_price": 140.0},
         ),
     ]
-    panel = {"cash_pct": 18.0, "themes": {}, "clusters": {}}
+    panel = {"cash_pct": 18.0, "themes": {}}
     briefing = build(rows, panel=panel, patrimonio_clp=1_000_000.0, policy=POLICY)
     assert briefing.liquidity_tp_pct == pytest.approx(50.0)
     # AAA conserva su objetivo de 110; el de BBB (140) se acota al tope del Tipo A (130).
@@ -394,7 +395,7 @@ def test_alerta_de_riesgo_teorico_sobre_2_por_ciento() -> None:
         context={"price_usd": 100.0, "value_clp": 500_000.0},
         fields={"atr": 5.0, "high_20": 105.0},
     )
-    panel = {"cash_pct": 18.0, "themes": {}, "clusters": {}}
+    panel = {"cash_pct": 18.0, "themes": {}}
     briefing = build([row], panel=panel, patrimonio_clp=1_000_000.0, policy=POLICY, review=STRATEGY.review)
     joined = " | ".join(briefing.alerts)
     # Alarma en 87.5 (piso 2.5xATR): 500.000 * 12.5 % / 1.000.000 = 6.25 %.

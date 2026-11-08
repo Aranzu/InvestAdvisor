@@ -11,6 +11,7 @@ con busqueda web): aqui solo hay numeros reproducibles.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import pandas as pd
@@ -80,6 +81,11 @@ class MarketRegime:
     """% de posiciones abiertas bajo su SMA200 (amplitud de la propia cartera)."""
     mode: str = ""
     """``normal``/``cautela``/``defensivo`` segun el conteo (P9 y regla 7)."""
+    alt_count: int | None = None
+    """Conteo alternativo si el benchmark sospechoso resultara valido."""
+    alt_level: str = ""
+    alt_bucket: str = ""
+    alt_mode: str = ""
 
 
 #: Benchmarks del contexto, en el orden en que se muestran. ``USDCLP=X`` pide solo
@@ -153,51 +159,65 @@ def regime(
     banda de su SMA200 se marca ``sospechoso`` y **no cuenta** como senal.
     """
     by_symbol = {item.symbol: item for item in instruments}
-    vix = by_symbol.get("^VIX")
-    spy = by_symbol.get("SPY")
-    tnx = by_symbol.get("^TNX")
-    dxy = by_symbol.get("DX-Y.NYB")
-    qqq = by_symbol.get("QQQ")
-    usdclp = by_symbol.get("USDCLP=X")
+    soxx = by_symbol.get("SOXX")
+    signal_items = [
+        by_symbol.get("^VIX"),
+        by_symbol.get("SPY"),
+        by_symbol.get("^TNX"),
+        by_symbol.get("DX-Y.NYB"),
+        by_symbol.get("QQQ"),
+    ]
 
     suspicious: list[str] = []
-    usable: dict[str, MarketInstrument] = {}
-    for item in (vix, spy, tnx, dxy, qqq):
+    for item in (*signal_items, soxx):
         if item is None:
             continue
         if _suspicious(item, abs_pct=suspicious_1m_abs_pct, band=suspicious_sma_band):
             suspicious.append(item.label)
-        else:
-            usable[item.symbol] = item
+    usable = {
+        symbol: item
+        for symbol, item in by_symbol.items()
+        if symbol in {"^VIX", "SPY", "^TNX", "DX-Y.NYB", "QQQ"} and item.label not in suspicious
+    }
     vix = usable.get("^VIX")
     spy = usable.get("SPY")
     tnx = usable.get("^TNX")
     dxy = usable.get("DX-Y.NYB")
     qqq = usable.get("QQQ")
+    usdclp = by_symbol.get("USDCLP=X")
 
     # (etiqueta, valor, umbral, direccion) donde ``above=True`` dispara con ``>``.
-    checks: list[tuple[str, float | None, float, bool]] = [
-        ("VIX", vix.price if vix is not None else None, vix_max, True),
-        ("SPY<SMA200", spy.vs_sma200_pct if spy is not None else None, 0.0, False),
-        (
-            "10Y>SMA200+10%",
-            tnx.vs_sma200_pct if tnx is not None else None,
-            tnx_above_sma200_pct,
-            True,
-        ),
-        (
-            "DXY>SMA200+5%",
-            dxy.vs_sma200_pct if dxy is not None else None,
-            dxy_above_sma200_pct,
-            True,
-        ),
-        ("QQQ 1M<=-8%", qqq.chg_1m_pct if qqq is not None else None, qqq_1m_max_pct, False),
-        ("VIX 1M>=+40%", vix.chg_1m_pct if vix is not None else None, vix_1m_min_pct, True),
-    ]
+    def checks(
+        items: Mapping[str, MarketInstrument],
+    ) -> list[tuple[str, float | None, float, bool]]:
+        vix_item = items.get("^VIX")
+        spy_item = items.get("SPY")
+        tnx_item = items.get("^TNX")
+        dxy_item = items.get("DX-Y.NYB")
+        qqq_item = items.get("QQQ")
+        return [
+            ("VIX", vix_item.price if vix_item is not None else None, vix_max, True),
+            ("SPY<SMA200", spy_item.vs_sma200_pct if spy_item is not None else None, 0.0, False),
+            (
+                "10Y>SMA200+10%",
+                tnx_item.vs_sma200_pct if tnx_item is not None else None,
+                tnx_above_sma200_pct,
+                True,
+            ),
+            (
+                "DXY>SMA200+5%",
+                dxy_item.vs_sma200_pct if dxy_item is not None else None,
+                dxy_above_sma200_pct,
+                True,
+            ),
+            ("QQQ 1M<=-8%", qqq_item.chg_1m_pct if qqq_item is not None else None, qqq_1m_max_pct, False),
+            ("VIX 1M>=+40%", vix_item.chg_1m_pct if vix_item is not None else None, vix_1m_min_pct, True),
+        ]
+
     signals: list[str] = []
     near: list[str] = []
     available = 0
-    for label, value, threshold, above in checks:
+    for label, value, threshold, above in checks(usable):
         if value is None:
             continue
         available += 1
@@ -209,22 +229,27 @@ def regime(
             near.append(f"{label} ({value:+.2f} vs {threshold:g})")
 
     count = len(signals) if available else None
-    if count is None:
-        level = "sin dato"
-        bucket = "sin dato"
-        mode = ""
-    elif count <= 1:
-        level = "bajo"
-        bucket = "0-1"
-        mode = "normal"
-    elif count <= 3:
-        level = "medio"
-        bucket = "2-3"
-        mode = "cautela"
-    else:
-        level = "alto"
-        bucket = ">=4"
-        mode = "defensivo"
+    level, bucket, mode = _bucket(count)
+
+    # Escenario alterno: solo si hay un benchmark sospechoso, con su dato valido.
+    all_items = {
+        symbol: item
+        for symbol, item in by_symbol.items()
+        if symbol in {"^VIX", "SPY", "^TNX", "DX-Y.NYB", "QQQ"}
+    }
+    alt_count = alt_level = alt_bucket = alt_mode = None
+    if suspicious:
+        alt_signals: list[str] = []
+        alt_available = 0
+        for label, value, threshold, above in checks(all_items):
+            if value is None:
+                continue
+            alt_available += 1
+            if (above and value > threshold) or (not above and value < threshold):
+                alt_signals.append(label)
+        alt_count = len(alt_signals) if alt_available else None
+        alt_level, alt_bucket, alt_mode = _bucket(alt_count)
+
     return MarketRegime(
         level=level,
         count=count,
@@ -240,7 +265,22 @@ def regime(
         qqq_1m_pct=qqq.chg_1m_pct if qqq is not None else None,
         vix_1m_pct=vix.chg_1m_pct if vix is not None else None,
         mode=mode,
+        alt_count=alt_count,
+        alt_level=alt_level or "",
+        alt_bucket=alt_bucket or "",
+        alt_mode=alt_mode or "",
     )
+
+
+def _bucket(count: int | None) -> tuple[str, str, str]:
+    """Conteo de senales -> ``(nivel, tramo, modo)`` segun P9."""
+    if count is None:
+        return "sin dato", "sin dato", ""
+    if count <= 1:
+        return "bajo", "0-1", "normal"
+    if count <= 3:
+        return "medio", "2-3", "cautela"
+    return "alto", ">=4", "defensivo"
 
 
 def _suspicious(item: MarketInstrument, *, abs_pct: float, band: tuple[float, float]) -> bool:

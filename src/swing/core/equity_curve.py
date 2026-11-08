@@ -1,4 +1,4 @@
-"""Curva de patrimonio ajustada por aportes (P9 del prompt v8).
+"""Curva de patrimonio ajustada por aportes (P9 del prompt v9).
 
 Modulo **puro**: recibe las operaciones de caja, los lotes abiertos y cerrados y
 las series de precios ya resueltas. Reconstruye el valor de la cuenta dia a dia y

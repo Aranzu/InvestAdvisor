@@ -14,6 +14,8 @@ from swing.core.fundamentals import AxisRatings
 from swing.core.llm import Confidence, KeyFact, LLMReview, ReviewContext, ThesisStatus
 from swing.core.models import HorizonState, RegimeState
 from swing.core.planner import (
+    _deferred_orders,
+    _next_session_orders,
     build_review_report,
     render_action_table,
     render_review,
@@ -271,7 +273,7 @@ def test_informe_de_review_tiene_las_secciones_v6() -> None:
         "## 13. Desvios del periodo",
     ):
         assert seccion in informe
-    assert "| AAA |" in informe
+    assert "**MANTENER:** AAA" in informe
     assert "caja 10.0 %" in informe
     assert "mineria 30.0 %" in informe
     assert "Peso sobre el patrimonio (P12" in informe
@@ -525,7 +527,7 @@ def test_sin_politica_el_informe_conserva_las_secciones_deterministas() -> None:
     assert report.records == ()
 
 
-def test_seccion_oportunidades_solo_si_la_caja_post_venta_supera_20() -> None:
+def test_p15_limita_la_venta_y_la_caja_post_venta() -> None:
     vender = TradeExitJudgment(
         trade=_trade("AAA", close=120.0),
         evaluation=ExitEvaluation(
@@ -550,7 +552,78 @@ def test_seccion_oportunidades_solo_si_la_caja_post_venta_supera_20() -> None:
         axes_by_ticker={"AAA": AxisRatings(value=2, quality=1, growth=1, projections=0)},
     )
     informe = render_review_report(report)
-    # Caja 10 % + la mitad de 300.000 CLP sobre 1.000.000 = 25 % post-venta.
-    assert "## 14. Oportunidades" in informe
-    assert "caja post-venta quedaria en 25.0 %" in informe
+    # P15: la venta de la proxima sesion se corta en 10 % del patrimonio, asi que
+    # la caja post-venta queda en 20 % y no hay aviso de oportunidades.
+    assert "P15" in informe
+    assert "## 14. Oportunidades" not in informe
+
+
+def _sell_judgment(ticker: str, *, volume: float = 10.0, close: float = 110.0) -> TradeExitJudgment:
+    return TradeExitJudgment(
+        trade=_trade(ticker, close=close),
+        evaluation=ExitEvaluation(
+            signals=(ExitSignal(cause=Reason.TP_HIT, action=Action.SELL, execute=True, volume=volume),),
+            primary_cause=Reason.TP_HIT,
+            should_exit=True,
+        ),
+        state_after=_trade(ticker, close=close),
+    )
+
+
+def test_p15_reparte_el_excedente_entre_sesiones() -> None:
+    row = PositionStats(ticker="AAA", context={"value_clp": 300_000.0, "weight_pct": 30.0}, fields={})
+    report = build_review_report(_plan(_sell_judgment("AAA")), _stats(row), axes_by_ticker={})
+    first = _next_session_orders(report)
+    deferred = _deferred_orders(report)
+    assert first and deferred
+    # 10 % de 1.000.000 CLP = 100.000 CLP en la primera sesion; el resto espera.
+    assert sum(float(item["value_clp"] or 0.0) for item in first) <= 100_000.0 + 1e-6
+    assert sum(float(item["value_clp"] or 0.0) for item in deferred) > 0.0
+
+
+def test_p15_no_limita_el_stop_tocado() -> None:
+    row = PositionStats(ticker="AAA", context={"value_clp": 300_000.0, "weight_pct": 30.0}, fields={})
+    maintain = TradeExitJudgment(
+        trade=_trade("AAA"),
+        evaluation=ExitEvaluation(signals=(), primary_cause=None, should_exit=False),
+        state_after=_trade("AAA"),
+    )
+    stats = replace(
+        _stats(row),
+        compliance={
+            "summary": {"max_sale_per_session_pct": 10.0},
+            "positions": [{"ticker": "AAA", "status": "STOP_TOCADO", "current_stop": 82.0}],
+        },
+    )
+    report = build_review_report(_plan(maintain), stats, axes_by_ticker={})
+    first = _next_session_orders(report)
+    assert first and first[0]["ticker"] == "AAA"
+    assert first[0]["fraction"] == 1.0
+    assert float(first[0]["value_clp"] or 0.0) == 300_000.0
+
+
+def test_review_v9_declara_interpretacion_y_tipo_de_orden() -> None:
+    rows = (
+        PositionStats(
+            ticker="AAA",
+            context={"value_clp": 300_000.0, "weight_pct": 30.0},
+            fields={"rsi_percentile": 5.0, "high_20": 115.0, "atr": 3.0},
+        ),
+        PositionStats(
+            ticker="BBB",
+            context={"value_clp": 200_000.0, "weight_pct": 20.0},
+            fields={"rsi_percentile": 8.0},
+        ),
+    )
+    report = build_review_report(
+        _plan(_sell_judgment("AAA"), _sell_judgment("BBB")),
+        _stats(*rows),
+        axes_by_ticker={},
+    )
+    informe = render_review_report(report)
+    assert "Mis decisiones de interpretacion" in informe
+    assert "P15/P16" in informe
+    assert "Trailing" in informe
+    assert "limite +3 %" in informe
+    assert "sobreventa mayoritaria" in informe
 

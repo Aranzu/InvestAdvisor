@@ -72,7 +72,7 @@ def load_themes(path: Path | None = None) -> ThemesConfig:
 
 
 def load_compliance(path: Path | None = None) -> ComplianceConfig:
-    """Parametros P1-P13 del prompt v8 (``config/config.yaml``)."""
+    """Parametros P1-P16 del prompt v9 (``config/config.yaml``)."""
     target = path if path is not None else _default_dir() / "config.yaml"
     return _load(target, ComplianceConfig)  # type: ignore[no-any-return]
 

@@ -36,7 +36,7 @@ from swing.core.verdict import Levels
 FORMATS = frozenset({"text", "int", "qty", "num", "pct", "pct_signed", "ratio", "money", "clp"})
 
 #: Version del contrato JSON de ``StatsReport``. Sube cuando cambia la forma.
-STATS_SCHEMA = 10
+STATS_SCHEMA = 11
 
 #: Ventana (dias de calendario) de las transacciones de insiders que entran al informe.
 #: Vive aca porque el render la cita y ``services`` la usa para filtrar: una sola
@@ -216,6 +216,9 @@ SECTIONS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             FieldSpec("recommendation_key", "Consenso", "text", role="score"),
             FieldSpec("target_price", "Objetivo", "num", role="decision"),
             FieldSpec("target_upside_pct", "Potencial", "pct_signed", role="score"),
+            FieldSpec("target_as_of", "Fecha objetivo", "text", role="score"),
+            FieldSpec("target_reliable", "Fiabilidad objetivo", "text", role="decision"),
+            FieldSpec("last_analyst_revision_date", "Ultima revision", "text", role="score"),
             FieldSpec("analyst_count", "N analistas", "int", role="score"),
         ),
     ),
@@ -326,7 +329,7 @@ class StatsReport:
     """Resumen de cartera derivado (patrimonio, caja %, pesos por tema, concentracion)."""
 
     compliance: Mapping[str, object] = field(default_factory=dict)
-    """Panel de cumplimiento v8: resumen P1-P13 y una fila por posicion."""
+    """Panel de cumplimiento v9: resumen P1-P16 y una fila por posicion."""
 
     maps: Mapping[str, object] = field(default_factory=dict)
     """Mapas editables: factor IA por ticker, tema por ticker y agregado sectorial."""
@@ -533,6 +536,10 @@ def _regime_to_dict(item: MarketRegime | None) -> dict[str, object] | None:
         "vix_1m_pct": item.vix_1m_pct,
         "portfolio_breadth_pct": item.portfolio_breadth_pct,
         "mode": item.mode,
+        "alt_count": item.alt_count,
+        "alt_level": item.alt_level,
+        "alt_bucket": item.alt_bucket,
+        "alt_mode": item.alt_mode,
     }
 
 
@@ -540,6 +547,7 @@ def _regime_from_dict(data: object) -> MarketRegime | None:
     if not isinstance(data, Mapping):
         return None
     raw_count = _number(data.get("count"))
+    raw_alt = _number(data.get("alt_count"))
     return MarketRegime(
         level=_text(data.get("level")) or "sin dato",
         count=int(raw_count) if raw_count is not None else None,
@@ -556,6 +564,10 @@ def _regime_from_dict(data: object) -> MarketRegime | None:
         vix_1m_pct=_number(data.get("vix_1m_pct")),
         portfolio_breadth_pct=_number(data.get("portfolio_breadth_pct")),
         mode=_text(data.get("mode")),
+        alt_count=int(raw_alt) if raw_alt is not None else None,
+        alt_level=_text(data.get("alt_level")),
+        alt_bucket=_text(data.get("alt_bucket")),
+        alt_mode=_text(data.get("alt_mode")),
     )
 
 
@@ -850,6 +862,19 @@ def _money(value: float) -> str:
     return f"{value:,.2f}"
 
 
+def _row_label(row: PositionStats) -> str:
+    """Ticker con marca ``(provisional)`` si el precio o los tecnicos no son firmes."""
+    reasons: list[str] = []
+    if str(row.context.get("price_source") or "") == "reporte":
+        reasons.append("precio de reporte")
+    if row.fields.get("flat_tail_sessions") is not None:
+        reasons.append("serie plana")
+    coverage = _num(row.context.get("coverage_pct"))
+    if coverage is not None and coverage < 80.0:
+        reasons.append("cobertura < 80 %")
+    return f"{row.ticker} (provisional: {', '.join(reasons)})" if reasons else row.ticker
+
+
 def _section(
     title: str,
     specs: Sequence[FieldSpec],
@@ -867,7 +892,7 @@ def _section(
             cell_format(row, spec) if cell_format is not None else _format(spec.kind, values.get(spec.key))
             for spec in specs
         )
-        lines.append(f"| {row.ticker} | {cells} |")
+        lines.append(f"| {_row_label(row)} | {cells} |")
     lines.append("")
     return lines
 
@@ -897,8 +922,10 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
     else:
         hora_str = gen.astimezone(dt.UTC).strftime("%H:%M:%S UTC")
     lines.append(
-        f"Datos al {report.today} {hora_str} - modalidad {report.mode} - FX {fx} ({report.fx_source}) - "
-        f"equity XTB {report.equity_clp:,.0f} CLP - esquema stats v{STATS_SCHEMA}"
+        f"Ultimo cierre regular ({report.today}) - datos generados {hora_str} - "
+        f"modalidad {report.mode} - FX {fx} (fuente {report.fx_source}, {hora_str}) - "
+        f"equity XTB {report.equity_clp:,.0f} CLP (base unica de pesos y curva) - "
+        f"esquema stats v{STATS_SCHEMA}"
     )
     lines.append(f"Generado {_et_stamp(report.generated_at)} - {_session_hint(report.generated_at)}.")
     lines.append("")
@@ -915,6 +942,7 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
             "ledger, factibilidad y estado de datos se muestran siempre."
         )
         lines.append("")
+    lines.extend(_required_data_section(report))
     lines.extend(_market_section(report))
     lines.extend(_maps_section(report))
     lines.extend(_compliance_section(report))
@@ -963,7 +991,7 @@ def render_stats(report: StatsReport, *, show_context: bool = False) -> str:
 
 
 def _compliance_section(report: StatsReport) -> list[str]:
-    """Panel de cumplimiento v8: niveles anclados a la entrada y reglas P1-P13."""
+    """Panel de cumplimiento v9: niveles anclados a la entrada y reglas P1-P16."""
     data = report.compliance
     if not data:
         return []
@@ -977,10 +1005,14 @@ def _compliance_section(report: StatsReport) -> list[str]:
     lines.append(
         "| Ticker | Peso pat | Peso inv | ATR % | Stop inicial | Stop vigente | Dist. stop precio | "
         "Dist. stop entrada | R | Riesgo % | Peso max abrir | Entrada nueva CLP | Acciones | TP | "
-        "Tipo heredada | Stop viable | Estado |"
+        "Tipo heredada | Stop registrado | Stop viable | Estado | Tipo stop P11 | Stop gana | Riesgo teorico % |"
     )
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|")
+    lines.append(
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|---|---:|"
+    )
     for item in positions:
+        inherited_type = str(item.get("inherited_type") or "-")
+        inherited_label = "0 (sana)" if inherited_type == "0" else inherited_type
         lines.append(
             f"| {item.get('ticker', '')} | {_format('pct', item.get('weight_equity_pct'))} | "
             f"{_format('pct', item.get('weight_invested_pct'))} | "
@@ -989,8 +1021,11 @@ def _compliance_section(report: StatsReport) -> list[str]:
             f"{_format('pct_signed', item.get('stop_dist_entry_pct'))} | {_format('ratio', item.get('r_multiple'))} | "
             f"{_format('pct', item.get('risk_pct'))} | {_format('pct', item.get('new_entry_pct'))} | "
             f"{_format('clp', item.get('new_entry_clp'))} | {_format('qty', item.get('new_entry_shares'))} | "
-            f"{_format('num', item.get('take_profit'))} | {item.get('inherited_type') or '-'} | "
-            f"{'si' if item.get('stop_viable') else 'no'} | {item.get('status', '')} |"
+            f"{_format('num', item.get('take_profit'))} | {inherited_label} | "
+            f"{'si' if item.get('stop_registered') else 'no'} | "
+            f"{'si' if item.get('stop_viable') else 'no'} | {item.get('status', '')} | "
+            f"{item.get('stop_kind') or 'alerta'} | {item.get('stop_source') or '-'} | "
+            f"{_format('pct', item.get('risk_pct_theoretical'))} |"
         )
     lines.append("")
     dynamic = [
@@ -1001,17 +1036,21 @@ def _compliance_section(report: StatsReport) -> list[str]:
     if dynamic:
         lines.append("### Stops dinamicos (solo suben)")
         lines.append("")
-        lines.append("| Ticker | R | Break-even (+1,5R) | Trailing (min 20 ses - 3 ATR) | Stop vigente |")
-        lines.append("|---|---:|---:|---:|---:|")
+        lines.append(
+            "| Ticker | R | Break-even (+1,5R) | Trailing (min 20 ses - 3 ATR, desde +3R) | "
+            "Stop vigente | Stop P4 | Gana |"
+        )
+        lines.append("|---|---:|---:|---:|---:|---:|---|")
         for item in dynamic:
             lines.append(
                 f"| {item.get('ticker')} | {_format('ratio', item.get('r_multiple'))} | "
                 f"{_format('num', item.get('break_even'))} | {_format('num', item.get('trailing_stop'))} | "
-                f"{_format('num', item.get('current_stop'))} |"
+                f"{_format('num', item.get('current_stop'))} | {_format('num', item.get('risk_stop'))} | "
+                f"{item.get('stop_source') or '-'} |"
             )
         lines.append("")
 
-    lines.extend(_compliance_summary_lines(summary))
+    lines.extend(_compliance_summary_lines(summary, positions))
     diffs = [item for item in positions if item.get("stop_xtb_differs") or item.get("tp_xtb_differs")]
     if diffs:
         lines.append("- **XTB vs ledger:**")
@@ -1025,7 +1064,10 @@ def _compliance_section(report: StatsReport) -> list[str]:
     return lines
 
 
-def _compliance_summary_lines(summary: Mapping[str, object]) -> list[str]:
+def _compliance_summary_lines(
+    summary: Mapping[str, object],
+    positions: Sequence[Mapping[str, object]] = (),
+) -> list[str]:
     lines: list[str] = []
     lines.append(
         f"- Riesgo abierto total: {_format('pct', summary.get('open_risk_pct'))} "
@@ -1066,13 +1108,16 @@ def _compliance_summary_lines(summary: Mapping[str, object]) -> list[str]:
         f"(caida ajustada {_format('pct_signed', summary.get('drawdown_pct'))}; "
         f"regimen {summary.get('regime_mode') or 'normal'})."
     )
-    lines.append(f"- Infracciones: {summary.get('infractions', 0)}.")
+    lines.append(f"- Infracciones (stop tocado, P3 o P4): {summary.get('infractions', 0)}.")
     inherited = _mapping(summary.get("inherited_counts"))
     if inherited:
         lines.append(
-            f"- Heredadas: tipo 0 {_format('int', inherited.get('0'))}, "
+            f"- Heredadas: tipo 0 (sana, stop registrado) {_format('int', inherited.get('0'))}, "
             f"tipo A {_format('int', inherited.get('A'))}, tipo B {_format('int', inherited.get('B'))}."
         )
+    registered = sum(1 for item in positions if item.get("stop_registered"))
+    if positions:
+        lines.append(f"- Stops registrados: {registered} de {len(positions)} posiciones.")
     pending = _list(summary.get("decision_pending"))
     if pending:
         lines.append(f"- Heredadas A/B sin decision: {', '.join(str(t) for t in pending)}.")
@@ -1114,21 +1159,38 @@ def _compliance_summary_lines(summary: Mapping[str, object]) -> list[str]:
             )
     if summary.get("drawdown_mode") and summary.get("drawdown_mode") != "normal":
         lines.append(f"- Modo por caida del patrimonio: {summary.get('drawdown_mode')}.")
+    lines.append(
+        f"- P15 venta maxima por sesion: {_format('pct', summary.get('max_sale_per_session_pct'))}; "
+        f"P16 plazo de los recortes: {_format('int', summary.get('reduction_max_weeks'))} semanas."
+    )
+    kinds: dict[str, list[str]] = {}
+    for item in positions:
+        kind = str(item.get("stop_kind") or "alerta")
+        kinds.setdefault(kind, []).append(str(item.get("ticker") or ""))
+    if kinds:
+        detail = "; ".join(f"{name}: {', '.join(tickers)}" for name, tickers in sorted(kinds.items()))
+        lines.append(f"- Tipo de stop (P11): {detail}.")
     return lines
 
 
 def _maps_section(report: StatsReport) -> list[str]:
-    """Mapas editables de factor y tema (v8, seccion 6)."""
+    """Mapas editables de factor y tema (v9, seccion 6)."""
     data = report.maps
     if not data:
         return []
     rows = [item for item in _list(data.get("rows")) if isinstance(item, Mapping)]
     lines = ["## Mapas de factor y tema (base P12)", ""]
     factor_name = str(data.get("factor_name") or "factor")
-    lines.append(
-        f"- Factor **{factor_name}**: {_format('pct', data.get('factor_pct'))} del patrimonio "
-        f"(tope {_format('pct', data.get('factor_max_pct'))})."
-    )
+    if data.get("factor_configured") is False:
+        lines.append(
+            "- **Factor IA: mapa no configurado.** No se puede reconstruir desde el informe; "
+            "hay que declarar los tickers y confirmarlos una sola vez (seccion 6)."
+        )
+    else:
+        lines.append(
+            f"- Factor **{factor_name}**: {_format('pct', data.get('factor_pct'))} del patrimonio "
+            f"(tope {_format('pct', data.get('factor_max_pct'))})."
+        )
     tickers = _list(data.get("factor_tickers"))
     if tickers:
         lines.append(f"- Tickers del factor: {', '.join(str(t) for t in tickers)}.")
@@ -1152,7 +1214,7 @@ def _maps_section(report: StatsReport) -> list[str]:
 
 
 def _lots_section(report: StatsReport) -> list[str]:
-    """Detalle de lotes y promedios a la baja por posicion (regla 8 de v8)."""
+    """Detalle de lotes y promedios a la baja por posicion (regla 8 de v9)."""
     rows = [row for row in report.rows if _list(row.context.get("lots_detail"))]
     if not rows:
         return []
@@ -1221,6 +1283,13 @@ def _ledger_section(report: StatsReport) -> list[str]:
     return lines
 
 
+def _revision_cell(fields: Mapping[str, object], key: str, suppressed_key: str) -> str:
+    """Revision de EPS; ``supr.`` cuando la base era < 0,25 USD."""
+    if fields.get(suppressed_key) is True:
+        return "supr. (base < 0,25 USD)"
+    return _format("pct_signed", fields.get(key))
+
+
 def _earnings_section(report: StatsReport) -> list[str]:
     """Earnings, revisiones de analistas y datos de deterioro de tesis (V1)."""
     if not report.rows:
@@ -1228,23 +1297,31 @@ def _earnings_section(report: StatsReport) -> list[str]:
     lines = ["## Earnings, analistas y deterioro de tesis (V1)", ""]
     lines.append(
         "| Ticker | Earnings | Tipo | Horario | Mov. implicito | Mov. medio historico | "
-        "EPS 60d antes | Revision EPS 60d | Alzas 60d | Bajas 60d | Cambio objetivo 60d |"
+        "EPS 60d antes | Rev. EPS ano actual | Rev. EPS ano prox. | Alzas 60d | Bajas 60d | "
+        "Cambio objetivo 60d | Ultima revision |"
     )
-    lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     any_earnings = False
     fallback_30d = False
     for row in report.rows:
         fields = row.fields
         context = row.context
-        has_earnings = context.get("earnings") not in (None, "", "sin dato")
+        earnings_text = context.get("earnings")
+        has_earnings = earnings_text not in (None, "", "sin dato")
+        if not has_earnings and fields.get("earnings_date"):
+            estimated = " (estimada)" if fields.get("earnings_date_estimated") else ""
+            earnings_text = f"{fields.get('earnings_date')}{estimated}"
+            has_earnings = True
         if not has_earnings and not any(
             fields.get(key) is not None
             for key in (
                 "earnings_timing",
-                "eps_revision_60d_pct",
+                "eps_revision_cy_pct",
+                "eps_revision_ny_pct",
                 "analyst_up_60d",
                 "analyst_up_30d",
                 "target_change_60d_pct",
+                "last_analyst_revision_date",
             )
         ):
             continue
@@ -1257,16 +1334,18 @@ def _earnings_section(report: StatsReport) -> list[str]:
             fallback_30d = fallback_30d or up is not None or down is not None
         kind = "-" if not has_earnings else ("confirmada" if context.get("earnings_confirmed") else "estimada")
         lines.append(
-            f"| {row.ticker} | {context.get('earnings') or '-'} | {kind} | "
+            f"| {row.ticker} | {earnings_text or '-'} | {kind} | "
             f"{fields.get('earnings_timing') or '-'} | {_format('pct_signed', fields.get('earnings_implied_move_pct'))} | "
             f"{_format('pct_signed', fields.get('earnings_avg_move_pct'))} | "
             f"{_format('num', fields.get('eps_consensus_60d_ago'))} | "
-            f"{_format('pct_signed', fields.get('eps_revision_60d_pct'))} | "
+            f"{_revision_cell(fields, 'eps_revision_cy_pct', 'eps_revision_cy_suppressed')} | "
+            f"{_revision_cell(fields, 'eps_revision_ny_pct', 'eps_revision_ny_suppressed')} | "
             f"{_format('int', up)} | {_format('int', down)} | "
-            f"{_format('pct_signed', fields.get('target_change_60d_pct'))} |"
+            f"{_format('pct_signed', fields.get('target_change_60d_pct'))} | "
+            f"{fields.get('last_analyst_revision_date') or '-'} |"
         )
     if not any_earnings:
-        lines.append("| - | sin datos de earnings o revisiones | - | - | - | - | - | - | - | - | - |")
+        lines.append("| - | sin datos de earnings o revisiones | - | - | - | - | - | - | - | - | - | - | - |")
     lines.append("")
     if fallback_30d:
         lines.append(
@@ -1276,10 +1355,11 @@ def _earnings_section(report: StatsReport) -> list[str]:
         lines.append("")
 
     lines.append(
-        "| Ticker | FCF ult. Q | FCF Q-1 | Deuda neta | Var. deuda neta | Margen oper. Y/Y (pb) | "
+        "| Ticker | FCF ult. Q | FCF Q-1 | Deuda neta | Var. deuda neta | Margen oper. Q | "
+        "Margen oper. Y/Y (pb) | Base margen | Extraord. | "
         "Ingresos ult. Q | Ingresos Q-1 | Desacelera | Guia vs consenso | Ultimo reporte | Documento |"
     )
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---|")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|---|---|---|")
     any_v1 = False
     for row in report.rows:
         fields = row.fields
@@ -1300,10 +1380,15 @@ def _earnings_section(report: StatsReport) -> list[str]:
         any_v1 = True
         url = fields.get("last_report_url")
         document = f"[documento]({url})" if isinstance(url, str) and url else "-"
+        extraordinary = fields.get("extraordinary_item")
+        extraordinary_text = "si" if extraordinary is True else ("no" if extraordinary is False else "-")
         lines.append(
             f"| {row.ticker} | {_format('money', fields.get('fcf_last_q'))} | "
             f"{_format('money', fields.get('fcf_prior_q'))} | {_format('money', fields.get('net_debt'))} | "
-            f"{_format('money', fields.get('net_debt_change'))} | {_format('int', fields.get('oper_margin_yoy_bps'))} | "
+            f"{_format('money', fields.get('net_debt_change'))} | "
+            f"{_format('pct', fields.get('oper_margin_last_q'))} | "
+            f"{_format('int', fields.get('oper_margin_yoy_bps'))} | "
+            f"{fields.get('margin_basis') or '-'} | {extraordinary_text} | "
             f"{_format('money', fields.get('revenue_last_q'))} | {_format('money', fields.get('revenue_prior_q'))} | "
             f"{fields.get('revenue_deceleration') or '-'} | {_format('pct_signed', fields.get('guidance_vs_consensus_pct'))} | "
             f"{fields.get('last_report_date') or '-'} "
@@ -1311,12 +1396,44 @@ def _earnings_section(report: StatsReport) -> list[str]:
             f"{document} |"
         )
     if not any_v1:
-        lines.append("| - | sin datos trimestrales | - | - | - | - | - | - | - | - | - | - |")
+        lines.append("| - | sin datos trimestrales | - | - | - | - | - | - | - | - | - | - | - | - | - |")
     lines.append("")
+    lines.append(
+        "- Margen operativo, margen neto, FCF e ingresos salen del estado trimestral "
+        "(``GAAP trimestral``); si no hay trimestral se usa el TTM de ``info`` y la "
+        "columna **Base margen** lo declara. **Extraord. = si** cuando el margen neto "
+        "supera el operativo en el mismo trimestre: hay ganancias no operativas y la "
+        "cifra no cuenta como senal V1 hasta separar lo puntual."
+    )
     lines.append(
         "- Guia vs consenso y cambio del objetivo a 60 dias dependen de fuentes que Yahoo no "
         "siempre publica: si faltan quedan en ``-``. El cambio del objetivo se reconstruye con "
         "el historial diario de la cache cuando hay 60 dias de corridas."
+    )
+    lines.append(
+        "- **Revision EPS (v10):** se separa en **ano en curso** y **proximo ano** desde "
+        "``eps_trend``. Si la base de consenso a 60 dias es menor a 0,25 USD, la cifra se "
+        "muestra como ``supr.``: un centavo sobre una base minima es ruido, no una senal. "
+        "Una cifra a menos de 5 % del umbral es \"casi\", no \"cumplida\"; un margen o EPS "
+        "con partidas extraordinarias no cuenta hasta separar lo puntual."
+    )
+    lines.append(
+        "- **Earnings estimados:** si no hay fecha confirmada se usa la estimacion de "
+        "``calendar`` y se marca ``estimada``; entra en las ventanas <=5/<=10/<=15 sesiones."
+    )
+    lines.append(
+        "- **Desacelera:** se calcula con la serie de ingresos Y/Y de los ultimos 3-4 "
+        "trimestres. ``si`` exige que el ultimo trimestre caiga frente al anterior y frente "
+        "al promedio de los tres previos; con menos de tres valores queda ``-``."
+    )
+    lines.append(
+        "- **Ultima revision / objetivo:** la fecha es el ultimo cambio de recomendacion u "
+        "objetivo. Un potencial > 100 % o una fecha de mas de 90 dias marca el objetivo como "
+        "\"poco fiable\" en la seccion Analistas."
+    )
+    lines.append(
+        "- Las cifras de Yahoo/Finviz no son fuente primaria: para una senal V1 usa el "
+        "documento enlazado en ``Ultimo reporte`` y etiquetalo PRIMARIO o SECUNDARIO."
     )
     lines.append("")
     return lines
@@ -1328,10 +1445,16 @@ def _feasibility_section(report: StatsReport) -> list[str]:
     if not data:
         return []
     lines = ["## Factibilidad y calendario de reduccion (Paso 0b)", ""]
+    limits = _mapping(data.get("limits"))
     lines.append(
         f"Base P12 {_format('clp', data.get('base_p12_clp'))}; caja actual "
         f"{_format('clp', data.get('cash_clp'))}; factor {data.get('factor_name') or '-'}; "
         f"tema agregado {data.get('aggregate_theme') or '-'}."
+    )
+    lines.append(
+        f"P15: maximo {_format('pct', limits.get('max_sale_per_session_pct'))} del patrimonio por "
+        f"sesion; P16: tramos en {_format('int', limits.get('reduction_max_weeks'))} semanas "
+        "(25 % del tamano inicial por semana como maximo)."
     )
     lines.append("")
     lines.append(
@@ -1339,7 +1462,6 @@ def _feasibility_section(report: StatsReport) -> list[str]:
         "P7 min | Banda max | Caja ok | Sobre banda |"
     )
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|")
-    limits = _mapping(data.get("limits"))
     for item in _list(data.get("scenarios")):
         if not isinstance(item, Mapping):
             continue
@@ -1355,8 +1477,11 @@ def _feasibility_section(report: StatsReport) -> list[str]:
     lines.append("")
     calendar = [item for item in _list(data.get("calendar")) if isinstance(item, Mapping)]
     if calendar:
-        lines.append("| Semana | Fecha | Reducciones (ticker: acciones / CLP) | Factor % | Tema % | Caja % |")
-        lines.append("|---:|---|---|---:|---:|---:|")
+        lines.append(
+            "| Semana | Fecha | Reducciones (ticker: acciones / CLP) | Por que esta posicion | "
+            "Factor % | Tema % | Caja % |"
+        )
+        lines.append("|---:|---|---|---|---:|---:|---:|")
         for week in calendar:
             reductions = _list(week.get("reductions"))
             if reductions:
@@ -1366,13 +1491,19 @@ def _feasibility_section(report: StatsReport) -> list[str]:
                     for item in reductions
                     if isinstance(item, Mapping)
                 )
+                why = "; ".join(
+                    f"{item.get('ticker')}: {item.get('why')}"
+                    for item in reductions
+                    if isinstance(item, Mapping) and item.get("why")
+                )
             else:
                 detail = (
                     f"{week.get('ticker')}: {_format('qty', week.get('shares'))} / "
                     f"{_format('clp', week.get('value_clp'))} ({week.get('reason')})"
                 )
+                why = str(week.get("reason") or "")
             lines.append(
-                f"| {_format('int', week.get('week'))} | {week.get('date')} | {detail} | "
+                f"| {_format('int', week.get('week'))} | {week.get('date')} | {detail} | {why} | "
                 f"{_format('pct', week.get('factor_pct'))} | {_format('pct', week.get('theme_pct'))} | "
                 f"{_format('pct', week.get('cash_pct'))} |"
             )
@@ -1407,6 +1538,10 @@ def _data_status_section(report: StatsReport) -> list[str]:
     stale = _list(data.get("stale"))
     if stale:
         lines.append(f"- Series congeladas: {', '.join(str(t) for t in stale)}.")
+    lines.append(
+        "- Filas marcadas **(provisional)** en las tablas: precio de reporte (cache, no "
+        "cotizacion de hoy), serie plana o cobertura < 80 %. Su stop y tecnicos no son firmes."
+    )
     incomplete = [item for item in _list(data.get("incomplete")) if isinstance(item, Mapping)]
     if incomplete:
         detail = "; ".join(
@@ -1634,6 +1769,56 @@ def _extended_hours_section(report: StatsReport) -> list[str]:
 _CLUSTER_LABELS: dict[str, str] = {"semis": "semis", "ia_ampliada": "IA ampliada"}
 
 
+def _required_data_section(report: StatsReport) -> list[str]:
+    """Checklist de los datos que el prompt v9 exige para poder analizar (seccion 7).
+
+    No decide nada: deja a la vista, en una sola tabla, si falta mercado, entrada,
+    curva ajustada por aportes, mapas o el tipo de stop P11. Asi el analisis no
+    tiene que descubrirlo leyendo todo el informe y puede declarar el supuesto.
+    """
+    summary = _mapping(_mapping(report.compliance).get("summary"))
+    rows = [item for item in _list(_mapping(report.compliance).get("positions")) if isinstance(item, Mapping)]
+    curve = summary.get("equity_curve")
+    max_adjusted = curve.get("max_equity_adjusted_clp") if isinstance(curve, Mapping) else None
+    entries = sum(1 for row in report.rows if _num(row.context.get("entry_usd")) is not None)
+    market_ok = bool(report.market) or report.regime is not None
+    factor_ok = bool(report.maps.get("factor_tickers"))
+    themes_ok = bool(report.maps.get("rows"))
+    kinds = sorted({str(item.get("stop_kind") or "alerta") for item in rows})
+    missing: list[str] = []
+    if not market_ok:
+        missing.append("seccion de mercado")
+    if entries < len(report.rows):
+        missing.append("precio medio de entrada USD")
+    if max_adjusted is None:
+        missing.append("patrimonio maximo ajustado por aportes")
+    if not factor_ok:
+        missing.append("mapa de factor IA")
+    if not themes_ok:
+        missing.append("mapa de temas")
+    lines = ["## Datos requeridos por el prompt (seccion 7)", ""]
+    lines.append("| Dato | Estado |")
+    lines.append("|---|---|")
+    lines.append(f"| Seccion de mercado / regimen | {'si' if market_ok else 'no'} |")
+    lines.append(f"| Precio medio de entrada USD | {entries}/{len(report.rows)} posiciones |")
+    lines.append(
+        f"| Patrimonio maximo ajustado por aportes | "
+        f"{_format('clp', max_adjusted) if max_adjusted is not None else 'no disponible'} |"
+    )
+    lines.append(
+        f"| Mapa de factor IA | "
+        f"{'si (' + str(len(_list(report.maps.get('factor_tickers')))) + ' tickers)' if factor_ok else 'sin configurar'} |"
+    )
+    lines.append(f"| Mapa de temas | {'si' if themes_ok else 'sin configurar'} |")
+    lines.append(f"| Tipo de stop P11 | {', '.join(kinds) if kinds else 'sin posiciones'} |")
+    lines.append(f"| Modalidad del stats | {report.mode or 'sin dato'} |")
+    lines.append("")
+    if missing:
+        lines.append(f"- **Falta para el prompt:** {', '.join(missing)}. Se aplica el supuesto declarado y se continua.")
+        lines.append("")
+    return lines
+
+
 def _market_section(report: StatsReport) -> list[str]:
     if not report.market and report.regime is None:
         return []
@@ -1671,6 +1856,24 @@ def _regime_block(regime: MarketRegime) -> list[str]:
         lines.append(f"- A menos de 1 pp del umbral: {', '.join(regime.near_threshold)}.")
     if regime.suspicious:
         lines.append(f"- Benchmarks con dato sospechoso (no cuentan): {', '.join(regime.suspicious)}.")
+        if regime.alt_count is not None:
+            alt_bucket = regime.alt_bucket or "-"
+            lines.append(
+                f"- Escenario sin el sospechoso: **{count}** senales -> **{regime.level}** "
+                f"({regime.mode or 'sin modo'}). Con el dato valido: **{regime.alt_count}** "
+                f"senales (tramo {alt_bucket}) -> **{regime.alt_level}** "
+                f"({regime.alt_mode or 'sin modo'})."
+            )
+            if regime.near_threshold:
+                lines.append(
+                    "- Umbral que cambiaria de modo: "
+                    f"{', '.join(regime.near_threshold)}."
+                )
+            elif regime.alt_mode and regime.alt_mode != regime.mode:
+                lines.append(
+                    f"- El dato sospechoso cambia el modo a **{regime.alt_mode}**; "
+                    "confirmalo antes de usarlo."
+                )
     if regime.portfolio_breadth_pct is not None:
         lines.append(f"- Amplitud de la cartera: {_format('pct', regime.portfolio_breadth_pct)} bajo su SMA200.")
     if regime.usdclp is not None:

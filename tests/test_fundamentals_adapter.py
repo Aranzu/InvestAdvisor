@@ -16,6 +16,8 @@ import pytest
 
 from swing.adapters.fundamentals import (
     YahooFundamentalsProvider,
+    _merge_eps_trend,
+    _merge_quarterly,
     _plus_one_year,
     fundamentals_from_info,
 )
@@ -56,6 +58,11 @@ def test_parsea_datos_v1_earnings_y_revisiones() -> None:
         "_net_debt": 5.0,
         "_net_debt_change": -1.0,
         "_oper_margin_yoy_bps": 125.0,
+        "_oper_margin_last_q": 0.31,
+        "_profit_margin_last_q": 0.36,
+        "_margin_basis": "GAAP trimestral",
+        "_margin_period": "2026-06-30",
+        "_extraordinary_item": True,
         "_revenue_last_q": 100.0,
         "_revenue_prior_q": 90.0,
         "_revenue_growth_last_q": 0.25,
@@ -75,6 +82,11 @@ def test_parsea_datos_v1_earnings_y_revisiones() -> None:
     assert f.fcf_last_q == pytest.approx(20.0)
     assert f.net_debt_change == pytest.approx(-1.0)
     assert f.oper_margin_yoy_bps == pytest.approx(125.0)
+    assert f.oper_margin_last_q == pytest.approx(0.31)
+    assert f.profit_margin_last_q == pytest.approx(0.36)
+    assert f.margin_basis == "GAAP trimestral"
+    assert f.margin_period == dt.date(2026, 6, 30)
+    assert f.extraordinary_item is True
     assert f.revenue_growth_last_q == pytest.approx(0.25)
     assert f.eps_revision_60d == pytest.approx(0.05)
     assert f.analyst_up_30d == 3
@@ -83,6 +95,113 @@ def test_parsea_datos_v1_earnings_y_revisiones() -> None:
     assert f.earnings_implied_move == pytest.approx(0.10)
     assert f.last_report_date == dt.date(2026, 8, 26)
     assert f.last_report_url == "https://sec.gov/doc"
+
+
+def test_margen_alinea_por_fecha_y_marca_extraordinario() -> None:
+    dates = pd.to_datetime(
+        [
+            "2024-12-31",
+            "2025-03-31",
+            "2025-06-30",
+            "2025-09-30",
+            "2025-12-31",
+            "2026-03-31",
+            "2026-06-30",
+            "2026-09-30",
+        ]
+    )
+    revenue = [80.0, 82.0, 84.0, 90.0, 92.0, 95.0, 100.0, 110.0]
+    revenue[4] = float("nan")  # trimestre intermedio faltante: no debe correr el Y/Y
+    operating = [8.0, 10.0, 12.0, 18.0, 20.0, 22.0, 25.0, 33.0]
+    net_income = [9.0, 11.0, 13.0, 20.0, 22.0, 24.0, 27.0, 40.0]
+    financials = pd.DataFrame(
+        {"Total Revenue": revenue, "Operating Income": operating, "Net Income": net_income},
+        index=dates,
+    ).T
+
+    class FakeTicker:
+        quarterly_financials = financials
+        quarterly_cashflow = pd.DataFrame()
+        quarterly_balance_sheet = pd.DataFrame()
+
+    merged: dict[str, object] = {}
+    _merge_quarterly(FakeTicker(), merged)
+
+    # 2026-09-30 contra 2025-09-30 (por fecha), no contra el trimestre que
+    # quedaba en la posicion -5 despues de descartar el NaN de 2025-12-31.
+    assert merged["_margin_period"] == "2026-09-30"
+    assert merged["_oper_margin_yoy_bps"] == pytest.approx((33.0 / 110.0 - 18.0 / 90.0) * 10_000.0)
+    assert merged["_oper_margin_last_q"] == pytest.approx(33.0 / 110.0)
+    assert merged["_profit_margin_last_q"] == pytest.approx(40.0 / 110.0)
+    assert merged["_revenue_growth_last_q"] == pytest.approx(110.0 / 90.0 - 1.0)
+    assert merged["_margin_basis"] == "GAAP trimestral"
+    assert merged["_extraordinary_item"] is True
+
+
+def test_margen_ttm_declara_base_y_extraordinario() -> None:
+    f = fundamentals_from_info(
+        "A",
+        {"profitMargins": 0.30, "operatingMargins": 0.20},
+        today=TODAY,
+    )
+    assert f.margin_basis == "TTM (info)"
+    assert f.extraordinary_item is True
+    # Sin ganancia no operativa el flag es False, no None.
+    normal = fundamentals_from_info(
+        "B",
+        {"profitMargins": 0.10, "operatingMargins": 0.20},
+        today=TODAY,
+    )
+    assert normal.extraordinary_item is False
+
+
+def test_revision_eps_separa_ano_actual_y_proximo_y_suprime_base_pequena() -> None:
+    frame = pd.DataFrame(
+        {
+            "current": [2.0, 3.0],
+            "60daysAgo": [1.8, 2.0],
+        },
+        index=["0y", "+1y"],
+    )
+
+    class FakeTicker:
+        eps_trend = frame
+
+    merged: dict[str, object] = {}
+    _merge_eps_trend(FakeTicker(), merged)
+    assert merged["_eps_revision_cy"] == pytest.approx((2.0 - 1.8) / 1.8)
+    assert merged["_eps_revision_ny"] == pytest.approx((3.0 - 2.0) / 2.0)
+    assert merged.get("_eps_revision_cy_suppressed") is None
+
+    # Base < 0,25 USD: la cifra se suprime y se marca el motivo.
+    small = pd.DataFrame({"current": [0.12], "60daysAgo": [0.05]}, index=["0y"])
+
+    class SmallTicker:
+        eps_trend = small
+
+    suppressed: dict[str, object] = {}
+    _merge_eps_trend(SmallTicker(), suppressed)
+    assert "_eps_revision_cy" not in suppressed
+    assert suppressed["_eps_revision_cy_suppressed"] is True
+
+
+def test_crecimiento_ingresos_publica_la_serie_de_trimestres() -> None:
+    dates = pd.to_datetime(
+        ["2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30"]
+    )
+    revenue = [100.0, 100.0, 100.0, 100.0, 125.0, 130.0]
+    financials = pd.DataFrame({"Total Revenue": revenue}, index=dates).T
+
+    class FakeTicker:
+        quarterly_financials = financials
+        quarterly_cashflow = pd.DataFrame()
+        quarterly_balance_sheet = pd.DataFrame()
+
+    merged: dict[str, object] = {}
+    _merge_quarterly(FakeTicker(), merged)
+    # Cuatro trimestres con su Y/Y, del mas viejo al mas nuevo; 2026-03 = +25 %,
+    # 2026-06 = +30 %.
+    assert merged["_revenue_growth_quarters"] == pytest.approx((0.25, 0.30))
 
 
 def test_cache_con_esquema_viejo_se_refresca(tmp_path: Path) -> None:

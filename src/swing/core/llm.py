@@ -117,8 +117,8 @@ class LLMReview:
 
     @property
     def confidence_score(self) -> int:
-        """Confianza 1-10 derivada del enum, para la tabla."""
-        return {"LOW": 3, "MEDIUM": 6, "HIGH": 8}[self.confidence.value]
+        """Conviccion 4/6/8 derivada del enum (prompt v9, seccion 8)."""
+        return {"LOW": 4, "MEDIUM": 6, "HIGH": 8}[self.confidence.value]
 
     def broken_is_confirmed(self, today: dt.date, *, window_days: int = 14) -> bool:
         """``BROKEN`` exige >= 2 hechos recientes, o 1 con fuente concreta (seccion 12)."""

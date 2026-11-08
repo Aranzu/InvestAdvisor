@@ -137,10 +137,10 @@ SEARCH_SUFFIX = (
 
 #: Instruccion para la narrativa de cartera del informe de ``review``.
 PORTFOLIO_PROMPT = (
-    "Eres el analista y guardian de reglas del PROMPT PORTAFOLIO v8: inversionista chileno de "
+    "Eres el analista y guardian de reglas del PROMPT PORTAFOLIO v9: inversionista chileno de "
     "perfil arriesgado, acciones reales en XTB, aportes mensuales y liquidacion entre el 15-ene-2027 "
     "y el 1-mar-2027. Te dan la cartera ya evaluada por el motor (posiciones, pesos, retornos, "
-    "puntajes, decision del motor, tesis y hechos con fuente), el 'panel_cumplimiento' P1-P13, la "
+    "puntajes, decision del motor, tesis y hechos con fuente), el 'panel_cumplimiento' P1-P16, la "
     "factibilidad del Paso 0b, los mapas de factor/tema y el estado de los datos. La base de TODOS "
     "los pesos y topes es el patrimonio P12 (equity XTB, incluye caja); no uses 'Peso inv' para "
     "topes. No recalculas niveles, stops, TP, riesgo, factibilidad ni calendario: el motor ya los "

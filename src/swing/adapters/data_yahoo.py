@@ -161,14 +161,62 @@ def _offline_bars(request: FetchRequest) -> pd.DataFrame:
 
 
 def _yfinance_earnings(symbol: str, limit: int) -> pd.DataFrame | None:
-    """Fechas de reporte que publica el provider (decision D1)."""
+    """Fechas de reporte que publica el provider (decision D1).
+
+    Si ``get_earnings_dates`` no trae una fecha futura, se usa ``Ticker.calendar``
+    como **estimacion**: el frame se marca en ``attrs["estimated"]`` para que el
+    llamador lo publique como "estimada, no confirmada" en vez de "sin dato".
+    """
     import yfinance as yf
 
+    ticker = yf.Ticker(symbol)
     try:
-        frame = yf.Ticker(symbol).get_earnings_dates(limit=limit)
+        frame = ticker.get_earnings_dates(limit=limit)
+    except Exception:
+        frame = None
+    if isinstance(frame, pd.DataFrame) and _has_future_earnings(frame):
+        return frame
+    estimate = _calendar_earnings(ticker)
+    if estimate is not None:
+        return estimate
+    return frame if isinstance(frame, pd.DataFrame) else None
+
+
+def _has_future_earnings(frame: pd.DataFrame) -> bool:
+    today = dt.date.today()
+    try:
+        return any((day := _as_date(value)) is not None and day > today for value in frame.index)
+    except Exception:
+        return False
+
+
+def _calendar_earnings(ticker: object) -> pd.DataFrame | None:
+    """``Ticker.calendar`` -> frame de una fila marcado como estimado."""
+    try:
+        calendar = ticker.calendar  # type: ignore[attr-defined]
     except Exception:
         return None
-    return frame if isinstance(frame, pd.DataFrame) else None
+    values: object = None
+    if isinstance(calendar, Mapping):
+        values = calendar.get("Earnings Date")
+    elif isinstance(calendar, pd.DataFrame):
+        for key in ("Earnings Date", "EarningsDate"):
+            if key in calendar.columns:
+                values = calendar[key].tolist()
+                break
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    days = [day for value in values if (day := _as_date(value)) is not None]
+    if not days:
+        return None
+    frame = pd.DataFrame(
+        {"Earnings Date": [dt.datetime.combine(day, dt.time()) for day in days]},
+        index=pd.to_datetime([day.isoformat() for day in days]),
+    )
+    frame.attrs["estimated"] = True
+    return frame
 
 
 def _yfinance_quote_snapshot(symbol: str) -> dict[str, object] | None:
@@ -307,7 +355,12 @@ class YahooDataProvider:
         upcoming = [day for day in (_as_date(value) for value in frame.index) if day is not None and day > today]
         if not upcoming:
             return EarningsInfo.unknown("yfinance:get_earnings_dates")
-        return EarningsInfo(date=min(upcoming), source="yfinance:get_earnings_dates", confirmed=True)
+        estimated = bool(getattr(frame, "attrs", {}).get("estimated"))
+        return EarningsInfo(
+            date=min(upcoming),
+            source="yfinance:calendar" if estimated else "yfinance:get_earnings_dates",
+            confirmed=not estimated,
+        )
 
     def quote_snapshot(self, ticker: str) -> Mapping[str, object] | None:
         """Foto de cotizacion de Yahoo (precio y horario extendido), best effort.

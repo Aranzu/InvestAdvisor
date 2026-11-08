@@ -474,7 +474,7 @@ class ReviewConfig(StrictModel):
 
 
 class ComplianceConfig(StrictModel):
-    """Parametros P1-P13 del ``PROMPT PORTAFOLIO`` v8.
+    """Parametros P1-P16 del ``PROMPT PORTAFOLIO`` v9.
 
     Viven en ``config/config.yaml`` (no en el codigo) porque son la politica del
     usuario: el motor solo los aplica. El ``stats`` los usa para calcular el panel
@@ -511,6 +511,9 @@ class ComplianceConfig(StrictModel):
     defensive_drawdown_pct: float = Field(gt=0.0, le=100.0)
     purchases_until: dt.date
     liquidate_until: dt.date
+    # P15 / P16: ritmo de ventas y plazo de los recortes escalonados.
+    max_sale_per_session_pct: float = Field(default=10.0, gt=0.0, le=100.0)
+    reduction_max_weeks: int = Field(default=4, ge=1, le=52)
     # TP y medicion.
     take_profit_max_upside_pct: float = Field(gt=0.0, le=200.0)
     take_profit_min_analysts: int = Field(ge=0, le=1000)

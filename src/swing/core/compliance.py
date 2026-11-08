@@ -1,4 +1,4 @@
-"""Panel de cumplimiento del ``PROMPT PORTAFOLIO`` v8 (P1-P13).
+"""Panel de cumplimiento del ``PROMPT PORTAFOLIO`` v9 (P1-P16).
 
 Modulo **puro**: recibe los hechos ya resueltos (entrada, precio, ATR, valor y el
 estado previo del ledger) y devuelve los niveles y el estado de cada posicion.
@@ -77,11 +77,27 @@ class LedgerEntry:
     decision_date: dt.date | None = None
     reduction_tranches_done: tuple[str, ...] = ()
     stop_kind: str = ""
+    stop_source: str = ""
+    """Componente que gana el stop vigente (``inicial``, ``transicion``, ``break-even``...)."""
 
     @property
     def inherited(self) -> bool:
-        """Una heredada A/B sigue pendiente; el tipo 0 ya tiene su stop P8."""
-        return self.inherited_type in {"A", "B"}
+        """True si la posicion no nacio de una entrada nueva (tipos 0/A/B).
+
+        El tipo 0 es una heredada **sana**: su stop P8 ya esta registrado y no
+        requiere decision. Antes ``inherited`` excluia el tipo 0 y el panel se
+        contradecia (``HEREDADA_TIPO_0`` con ``inherited: false``).
+        """
+        return self.inherited_type in {"0", "A", "B"}
+
+    @property
+    def stop_registered(self) -> bool:
+        """True cuando la posicion tiene un stop P8 registrado.
+
+        Lo tienen las entradas normales, las heredadas tipo 0 y las A/B ya adoptadas.
+        Solo las A/B sin decision viven con un stop teorico no registrado.
+        """
+        return self.inherited_type not in {"A", "B"} or self.decision == "Si"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -100,6 +116,7 @@ class LedgerEntry:
             "decision_date": self.decision_date.isoformat() if self.decision_date else None,
             "reduction_tranches_done": list(self.reduction_tranches_done),
             "stop_kind": self.stop_kind,
+            "stop_source": self.stop_source,
             # Campo historico: se conserva para que un lector viejo no se rompa.
             "inherited": self.inherited,
         }
@@ -135,6 +152,7 @@ class LedgerEntry:
             decision_date=_opt_date(data.get("decision_date")),
             reduction_tranches_done=_opt_str_tuple(data.get("reduction_tranches_done")),
             stop_kind=str(data.get("stop_kind") or ""),
+            stop_source=str(data.get("stop_source") or ""),
         )
 
 
@@ -163,7 +181,9 @@ class ComplianceRow:
     status: str
     inherited: bool = False
     inherited_type: str = ""
-    stop_viable: bool = False
+    stop_registered: bool = False
+    """``True`` si el stop esta registrado: tipo 0 sano o heredada A/B adoptada."""
+    stop_viable: bool = True
     transition_date: dt.date | None = None
     adoption_date: dt.date | None = None
     decision: str = ""
@@ -175,6 +195,11 @@ class ComplianceRow:
     new_entry_pct: float | None = None
     break_even: float | None = None
     trailing_stop: float | None = None
+    stop_source: str = ""
+    risk_stop: float | None = None
+    risk_source: str = ""
+    risk_pct_theoretical: float | None = None
+    """Riesgo P4 con el stop teorico; solo difiere en heredadas sin adoptar."""
     stop_xtb: float | None = None
     tp_xtb: float | None = None
     stop_xtb_differs: bool = False
@@ -184,7 +209,7 @@ class ComplianceRow:
 
 @dataclass(frozen=True, slots=True)
 class ComplianceSummary:
-    """Agregados del panel: limites P1-P13 y modo vigente."""
+    """Agregados del panel: limites P1-P16 y modo vigente."""
 
     open_risk_pct: float | None = None
     max_open_risk_pct: float | None = None
@@ -221,6 +246,8 @@ class ComplianceSummary:
     max_weight_hold_pct: float | None = None
     max_weight_trim_pct: float | None = None
     max_risk_position_pct: float | None = None
+    max_sale_per_session_pct: float | None = None
+    reduction_max_weeks: int | None = None
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -334,7 +361,7 @@ def plan_position(
     value_clp: float | None,
     patrimonio_clp: float | None,
     weight_invested_pct: float | None,
-    high_20: float | None,
+    min_20: float | None,
     previous: LedgerEntry | None,
     stop_xtb: float | None,
     tp_xtb: float | None,
@@ -372,15 +399,17 @@ def plan_position(
             risk_pct=None,
             max_weight_open_pct=None,
             status=STATUS_NO_STOP,
-            inherited=prev_type in {"A", "B"},
+            inherited=prev_type in {"0", "A", "B"},
             inherited_type=prev_type,
+            stop_registered=prev_type not in {"A", "B"}
+            or (previous.decision if previous is not None else "") == "Si",
             stop_viable=viable,
             transition_date=previous.transition_date if previous is not None else None,
             adoption_date=previous.adoption_date if previous is not None else None,
             decision=previous.decision if previous is not None else "",
             decision_date=previous.decision_date if previous is not None else None,
             reduction_tranches_done=previous.reduction_tranches_done if previous is not None else (),
-            stop_kind=previous.stop_kind if previous is not None and previous.stop_kind else stop_kind,
+            stop_kind=stop_kind or (previous.stop_kind if previous is not None else ""),
             stop_xtb=stop_xtb,
             tp_xtb=tp_xtb,
             stop_xtb_differs=stop_xtb is not None,
@@ -397,53 +426,77 @@ def plan_position(
         kind = ""
     else:
         kind = inherited_type(price, initial, cfg)
+    decision = previous.decision if previous is not None else ""
+    adopted = decision == "Si"
 
-    current = max(previous_stop, initial) if previous_stop is not None else initial
     trans = previous.transition_stop if previous is not None else None
     trans_date = previous.transition_date if previous is not None else None
     if kind in {"A", "B"}:
         computed, viable = transition_stop(price, atr, cfg)
         if trans is None:
+            # Propuesta: se recalcula en cada corrida hasta que se adopte (P13).
             trans = computed
         if previous is not None and previous.transition_stop is not None:
             # Ya adoptada: el stop de transicion quedo fijado y no se re-evalua.
             viable = True
-        decision = previous.decision if previous is not None else ""
-        if decision == "Si" and trans is not None:
-            # La heredada adoptada re-ancla su stop en el de transicion: el P8
-            # teorico puede estar sobre el precio (tipo A) y no es un stop real.
-            # Desde ahi solo sube.
-            if previous is None or previous.transition_stop is None:
-                current = trans
-            else:
-                current = max(previous.transition_stop, trans)
     else:
         viable = True
     stop_viable = viable if kind in {"A", "B"} else True
 
-    # El trailing solo aplica a una posicion ya adoptada (sin decision pendiente).
-    trail = (
-        None
-        if kind in {"A", "B"}
-        else _trailing_stop(
-            entry=entry,
-            price=price,
-            high_20=high_20,
-            atr=atr,
-            r_value=r_value,
-            r_multiple=r_multiple,
-            cfg=cfg,
-        )
-    )
-    if trail is not None and trail < price:
-        # Un trailing que ya esta sobre el mercado no se aplica (seria un stop
-        # inmediato): el stop inicial si puede quedar arriba y eso es una heredada.
-        current = max(current, trail)
-
+    # --- Jerarquia unica del stop vigente (v10, seccion 4) -------------------
+    # vigente = max(inicial/transicion, break-even +1,5R, entrada+1R +3R,
+    #               trailing min_20 - 3xATR desde +3R)
     break_even = entry if (r_multiple is not None and r_multiple >= cfg.breakeven_r) else None
+    enhancer = entry + r_value if (r_multiple is not None and r_multiple >= cfg.enhancer_r) else None
     trailing_level = (
-        high_20 - cfg.trailing_atr_mult * atr if high_20 is not None and atr is not None and atr > 0.0 else None
+        min_20 - cfg.trailing_atr_mult * atr if min_20 is not None and atr is not None and atr > 0.0 else None
     )
+    # El trailing solo entra desde +3R; antes queda solo como referencia.
+    trailing_applies = trailing_level if enhancer is not None else None
+
+    prev_source = ""
+    if previous is not None:
+        prev_source = previous.stop_source or (
+            "inicial" if abs(previous.current_stop - previous.initial_stop) <= 1e-9 else "previo"
+        )
+    # El P8 teorico de una heredada tipo A puede estar sobre el precio: al
+    # adoptar manda el stop de transicion y el teorico deja de arrastrarse.
+    keep_previous = previous_stop is not None and not (
+        kind in {"A", "B"} and adopted and prev_source == "inicial"
+    )
+
+    base = (trans, "transicion") if (kind in {"A", "B"} and adopted and trans is not None) else (initial, "inicial")
+    candidates: list[tuple[float, str]] = [base]
+    if keep_previous:
+        candidates.append((previous_stop, prev_source or "previo"))
+    if break_even is not None:
+        candidates.append((break_even, "break-even"))
+    if enhancer is not None:
+        candidates.append((enhancer, "+1R"))
+    if trailing_applies is not None:
+        candidates.append((trailing_applies, "trailing"))
+    current, stop_source = max(candidates, key=lambda item: item[0])
+
+    # P4 de una heredada: manda el stop de transicion (propuesto o fijado), no
+    # el P8 teorico (v10 ap. A.2). El teorico se informa como segunda columna.
+    if kind in {"A", "B"} and not adopted:
+        risk_candidates: list[tuple[float, str]] = []
+        if trans is not None:
+            risk_candidates.append((trans, "transicion"))
+        if keep_previous and prev_source in {"transicion", "break-even", "+1R", "trailing"}:
+            risk_candidates.append((previous_stop, prev_source))
+        if break_even is not None:
+            risk_candidates.append((break_even, "break-even"))
+        if enhancer is not None:
+            risk_candidates.append((enhancer, "+1R"))
+        if trailing_applies is not None:
+            risk_candidates.append((trailing_applies, "trailing"))
+        if risk_candidates:
+            risk_stop, risk_source = max(risk_candidates, key=lambda item: item[0])
+        else:
+            risk_stop, risk_source = current, stop_source
+    else:
+        risk_stop, risk_source = current, stop_source
 
     tp, tp_formula = take_profit(
         price=price,
@@ -455,19 +508,15 @@ def plan_position(
 
     stop_dist_price = (price - current) / price * 100.0 if price > 0.0 else None
     stop_dist_entry = (entry - current) / entry * 100.0 if entry > 0.0 else None
-    risk_pct = None
-    if (
-        value_clp is not None
-        and value_clp > 0.0
-        and patrimonio_clp is not None
-        and patrimonio_clp > 0.0
-        and stop_dist_price is not None
-    ):
-        risk_pct = value_clp * max(0.0, stop_dist_price) / 100.0 / patrimonio_clp * 100.0
+    risk_dist_price = (price - risk_stop) / price * 100.0 if price > 0.0 else None
+    risk_pct = _risk_pct(value_clp, patrimonio_clp, risk_dist_price)
+    risk_pct_theoretical = (
+        _risk_pct(value_clp, patrimonio_clp, stop_dist_price) if risk_stop != current else None
+    )
 
     max_weight = None
-    if stop_dist_price is not None and stop_dist_price > 0.0:
-        max_weight = cfg.risk_per_open_pct / stop_dist_price * 100.0
+    if risk_dist_price is not None and risk_dist_price > 0.0:
+        max_weight = cfg.risk_per_open_pct / risk_dist_price * 100.0
         high_atr = atr_pct is not None and atr_pct > cfg.high_atr_pct
         p2 = cfg.max_weight_open_high_atr_pct if high_atr else cfg.max_weight_open_pct
         max_weight = min(max_weight, p2)
@@ -513,20 +562,25 @@ def plan_position(
         risk_pct=risk_pct,
         max_weight_open_pct=max_weight,
         status=status,
-        inherited=kind in {"A", "B"},
+        inherited=kind in {"0", "A", "B"},
         inherited_type=kind,
+        stop_registered=kind not in {"A", "B"} or adopted,
         stop_viable=stop_viable,
         transition_date=trans_date,
         adoption_date=previous.adoption_date if previous is not None else None,
         decision=previous.decision if previous is not None else "",
         decision_date=previous.decision_date if previous is not None else None,
         reduction_tranches_done=previous.reduction_tranches_done if previous is not None else (),
-        stop_kind=previous.stop_kind if previous is not None and previous.stop_kind else stop_kind,
+        stop_kind=stop_kind or (previous.stop_kind if previous is not None else ""),
         new_entry_clp=entry_clp,
         new_entry_shares=entry_shares,
         new_entry_pct=entry_pct,
         break_even=break_even,
         trailing_stop=trailing_level,
+        stop_source=stop_source,
+        risk_stop=risk_stop,
+        risk_source=risk_source,
+        risk_pct_theoretical=risk_pct_theoretical,
         stop_xtb=stop_xtb,
         tp_xtb=tp_xtb,
         stop_xtb_differs=_differs(stop_xtb, current),
@@ -540,26 +594,21 @@ def _is_inherited(price: float, initial: float, cfg: ComplianceConfig) -> bool:
     return inherited_type(price, initial, cfg) in {"A", "B"}
 
 
-def _trailing_stop(
-    *,
-    entry: float,
-    price: float,
-    high_20: float | None,
-    atr: float | None,
-    r_value: float,
-    r_multiple: float | None,
-    cfg: ComplianceConfig,
+def _risk_pct(
+    value_clp: float | None,
+    patrimonio_clp: float | None,
+    distance_pct: float | None,
 ) -> float | None:
-    """Break-even a +1,5R, entrada +1R a +3R y luego max 20 sesiones - 3 ATR."""
-    candidates: list[float] = []
-    if r_multiple is not None:
-        if r_multiple >= cfg.enhancer_r:
-            candidates.append(entry + r_value)
-        if r_multiple >= cfg.breakeven_r:
-            candidates.append(entry)
-    if high_20 is not None and atr is not None and atr > 0.0:
-        candidates.append(high_20 - cfg.trailing_atr_mult * atr)
-    return max(candidates) if candidates else None
+    """P4: ``peso x distancia al stop`` como % del patrimonio."""
+    if (
+        value_clp is None
+        or value_clp <= 0.0
+        or patrimonio_clp is None
+        or patrimonio_clp <= 0.0
+        or distance_pct is None
+    ):
+        return None
+    return value_clp * max(0.0, distance_pct) / 100.0 / patrimonio_clp * 100.0
 
 
 def _status(
@@ -685,11 +734,11 @@ def summarize(
         for row in rows
         if row.risk_pct is not None and row.risk_pct > cfg.max_risk_position_pct
     )
+    # Infracciones = reglas duras incumplidas, no decisiones pendientes. Una
+    # heredada tipo A/B sin decision se informa aparte (``decision_pending``) y
+    # una tipo 0 es sana: su stop P8 ya esta registrado.
     infractions = sum(
-        1
-        for row in rows
-        if (row.status != STATUS_OK and row.status != STATUS_INHERITED_0)
-        or (row.inherited_type in {"A", "B"} and row.decision not in {"Si", "No"})
+        1 for row in rows if row.status in {STATUS_STOPPED, STATUS_OVERRISK, STATUS_OVERWEIGHT}
     )
     draw_mode = mode_from_drawdown(drawdown_pct, cfg)
     mode = regime_mode if _MODE_RANK.get(regime_mode, 0) >= _MODE_RANK.get(draw_mode, 0) else draw_mode
@@ -726,10 +775,12 @@ def summarize(
         max_weight_hold_pct=cfg.max_weight_hold_pct,
         max_weight_trim_pct=cfg.max_weight_hold_trim_pct,
         max_risk_position_pct=cfg.max_risk_position_pct,
+        max_sale_per_session_pct=cfg.max_sale_per_session_pct,
+        reduction_max_weeks=cfg.reduction_max_weeks,
     )
 
 
-#: Temas que el prompt v8 agrega en "semiconductores y equipos" (seccion 6).
+#: Temas que el prompt v9 agrega en "semiconductores y equipos" (seccion 6).
 _SEMIS_THEMES = frozenset({"semiconductors", "semiconductors_ai", "technology", "semis"})
 
 

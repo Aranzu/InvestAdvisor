@@ -69,29 +69,56 @@ class Fundamentals:
     net_debt: float | None = None
     net_debt_change: float | None = None
     oper_margin_yoy_bps: float | None = None
+    oper_margin_last_q: float | None = None
+    """Margen operativo del ultimo trimestre reportado (fraccion)."""
+    profit_margin_last_q: float | None = None
+    """Margen neto del mismo trimestre (fraccion); sirve para detectar partidas no operativas."""
+    margin_basis: str | None = None
+    """Base declarada del margen (p. ej. ``GAAP trimestral`` o ``TTM (info)``)."""
+    margin_period: dt.date | None = None
+    """Cierre del trimestre usado por el margen y el Y/Y."""
+    extraordinary_item: bool | None = None
+    """``True`` si el margen neto supera el operativo: hay ganancias no operativas."""
     revenue_last_q: float | None = None
     revenue_prior_q: float | None = None
     revenue_growth_last_q: float | None = None
     """Crecimiento de ingresos Y/Y del ultimo trimestre (fraccion)."""
     revenue_growth_prior_q: float | None = None
     """Crecimiento de ingresos Y/Y del trimestre anterior (fraccion)."""
+    revenue_growth_quarters: tuple[float, ...] = ()
+    """Serie de crecimiento Y/Y de los ultimos 3-4 trimestres, del mas viejo al mas nuevo."""
     guidance_vs_consensus: float | None = None
     """Guia de la empresa contra consenso (fraccion). ``None`` si la fuente no la publica."""
 
     # Revisiones de analistas.
     eps_consensus_60d_ago: float | None = None
     eps_revision_60d: float | None = None
-    """Revision del consenso de EPS en 60 dias (fraccion)."""
+    """Revision del consenso de EPS a 60 dias (fraccion); se conserva por compatibilidad."""
+    eps_revision_current_year: float | None = None
+    """Revision de EPS del ano en curso a 60 dias (fraccion)."""
+    eps_revision_next_year: float | None = None
+    """Revision de EPS del proximo ano a 60 dias (fraccion)."""
+    eps_revision_current_year_suppressed: bool = False
+    """``True`` si la base era < 0,25 USD y la cifra se suprimio por ruido."""
+    eps_revision_next_year_suppressed: bool = False
     analyst_up_60d: int | None = None
     analyst_down_60d: int | None = None
     analyst_up_30d: int | None = None
     analyst_down_30d: int | None = None
+    last_analyst_revision_date: dt.date | None = None
+    """Fecha del ultimo cambio de recomendacion/objetivo (``upgrades_downgrades``)."""
     target_change_60d: float | None = None
     """Cambio del objetivo medio de analistas en 60 dias (fraccion)."""
+    target_as_of: dt.date | None = None
+    """Fecha de referencia del objetivo medio (ultima revision o fecha de la ficha)."""
 
     # Earnings.
     earnings_timing: str | None = None
     """``antes del cierre`` / ``despues del cierre`` / ``sin confirmar``."""
+    earnings_date: dt.date | None = None
+    """Proximo reporte segun la fuente de fundamentales (puede ser estimado)."""
+    earnings_date_estimated: bool = False
+    """``True`` si la fecha vino de ``calendar`` y no de reportes confirmados."""
     earnings_implied_move: float | None = None
     """Movimiento implicito del straddle ATM (fraccion), si hay opciones."""
     earnings_avg_move: float | None = None

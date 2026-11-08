@@ -173,6 +173,7 @@ def _collect_and_save_stats(
     show_context: bool = False,
     config_dir: Path = DEFAULT_CONFIG_DIR,
     write_json: bool = False,
+    stop_kind: str = "",
 ) -> tuple[StatsReport, Path, Path | None]:
     """Arma, escribe el Markdown y, si se pide, el JSON; devuelve el informe.
 
@@ -227,6 +228,7 @@ def _collect_and_save_stats(
         factors=factors,
         ledger=_load_ledger(ledger_file),
         ledger_path=ledger_file,
+        stop_kind=stop_kind,
     )
     informe = _render_stats(stats_report, show_context=show_context)
     if out is not None:
@@ -278,6 +280,13 @@ def stats(
         bool,
         typer.Option("--json", help="Escribe tambien el JSON estructurado. Por defecto solo el Markdown."),
     ] = False,
+    stop_tipo: Annotated[
+        str,
+        typer.Option(
+            "--stop-tipo",
+            help="P11: 'orden' si el Stop real sigue vigente con el mercado cerrado; 'alerta' si es alerta de precio. Vacio conserva el ledger (alerta por defecto).",
+        ),
+    ] = "",
 ) -> None:
     """Ficha por posicion abierta con la mayor cantidad de campos posible (tipo Finviz).
 
@@ -321,6 +330,7 @@ def stats(
         show_context=incluir_contexto,
         config_dir=config_dir,
         write_json=write_json,
+        stop_kind=stop_tipo,
     )
     typer.echo(path.read_text(encoding="utf-8").rstrip())
     typer.echo("")
@@ -489,7 +499,7 @@ def review(
         str,
         typer.Option(
             "--formato",
-            help="Formato del informe: informe (prompt v8), detalle, tabla o acciones (tabla unica).",
+            help="Formato del informe: informe (prompt v9), detalle, tabla o acciones (tabla unica).",
         ),
     ] = "informe",
     refresh_contexto: Annotated[
@@ -503,6 +513,13 @@ def review(
             help="Escribe el informe de stats con el contexto informativo completo (dividendos, desempeno, liquidez, insiders, materias primas). Por defecto si; --sin-contexto lo oculta. Mercado, mapas, ledger y factibilidad se muestran siempre.",
         ),
     ] = True,
+    stop_tipo: Annotated[
+        str,
+        typer.Option(
+            "--stop-tipo",
+            help="P11: 'orden' si el Stop real sigue vigente con el mercado cerrado; 'alerta' si es alerta de precio. Vacio conserva el ledger (alerta por defecto).",
+        ),
+    ] = "",
 ) -> None:
     """Funcion 1: genera ``stats`` y luego recomienda sobre tus posiciones.
 
@@ -511,7 +528,7 @@ def review(
     reporte, adopta las posiciones (stop inicial derivado de
     ``legacy.max_loss_from_cost_pct`` si el broker no trae Sell Stop), corre las diez
     reglas de salida de la seccion 5.7 --las mismas del motor de decisiones--
-    y dictamina por posicion: la regla de mayor precedencia o MANTENER. El informe v8
+    y dictamina por posicion: la regla de mayor precedencia o MANTENER. El informe v9
     agrega ordenes de la proxima sesion, factibilidad del Paso 0b, calendario de
     reduccion y decisiones de adopcion de heredadas 0/A/B. La IA pondera
     la ficha completa de stats (todos los campos de la posicion), fundamentales,
@@ -590,6 +607,7 @@ def review(
         out_dir=out.parent if out is not None else None,
         show_context=incluir_contexto,
         config_dir=config_dir,
+        stop_kind=stop_tipo,
     )
     typer.echo(f"  stats escrito en {stats_md}")
     fundamentals: dict[str, Fundamentals] = {}

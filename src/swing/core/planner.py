@@ -12,8 +12,8 @@ Es la capa pura entre ``decide()`` (que decide) y la CLI (que lee disco y red):
   nivel que cuida la utilidad y no el piso de perdida.
 - ``render_review`` y ``render_table`` arman los formatos ``detalle`` y ``tabla``.
 - ``build_review_report`` y ``render_review_report`` arman el informe del comando
-  ``review`` con el formato del ``PROMPT PORTAFOLIO v8``: cobertura, veredicto,
-  factibilidad, ordenes, panel P1-P13, tabla de decision, calendario, auditoria,
+  ``review`` con el formato del ``PROMPT PORTAFOLIO v9``: cobertura, veredicto,
+  factibilidad, ordenes, panel P1-P16, tabla de decision, calendario, auditoria,
   adopcion de heredadas, cobertura de datos, alertas, supuestos,
   fuentes, registro, que cambio, desvios y oportunidades.
 - ``render_action_table`` resume ese mismo informe en una tabla unica de acciones
@@ -51,8 +51,9 @@ if TYPE_CHECKING:
 #: Tolerancia de volumen para no dejar un tramo residual por redondeo.
 VOLUME_EPSILON = 1e-9
 
-#: Confianza (1-10) de la tabla cuando no hay opinion de la IA: neutra.
-DEFAULT_CONFIDENCE_SCORE = 5
+#: Conviccion de la tabla cuando no hay opinion de la IA: 4 (sin primario).
+#: El prompt v9 solo admite 4, 6 u 8.
+DEFAULT_CONFIDENCE_SCORE = 4
 
 
 def adopt_positions(
@@ -415,7 +416,7 @@ def render_table(
         trade = judgment.trade
         review = by_ticker.get(trade.ticker)
         ret = (trade.close / trade.entry_price - 1.0) * 100.0 if trade.entry_price > 0 else 0.0
-        confidence = review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE
+        confidence = _conviction(review.confidence_score if review is not None else DEFAULT_CONFIDENCE_SCORE)
         accion = review.accion if (review is not None and review.accion) else _table_engine_action(judgment, trade)
         fundamento = (
             review.fundamento if (review is not None and review.fundamento) else _engine_fundamento(judgment, trade)
@@ -531,6 +532,16 @@ class AssetReview:
     """Tipo de documento primario (8-K, 6-K, 10-Q, 10-K)."""
     averaged_down: str | None = None
     """``si``/``no``: promedio a la baja historico detectado por el stats (regla 8)."""
+    rsi_percentile: float | None = None
+    """``RSI pct 1a`` del stats, para el ritmo de ventas del Paso 0c."""
+    perf_month_pct: float | None = None
+    """Variacion de 1 mes, informativa para el costo de vender en sobreventa."""
+    high_20: float | None = None
+    """Maximo de 20 sesiones (ventana del trailing del motor)."""
+    low_20: float | None = None
+    """Minimo de 20 sesiones (lectura literal de la formula del prompt)."""
+    atr: float | None = None
+    """ATR(14) del stats, para verificar el trailing a mano."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,7 +579,7 @@ class ReviewReport:
     previous: Mapping[str, DecisionRecord] = field(default_factory=dict)
     """Registro de la corrida anterior, para la seccion "Que cambio"."""
     compliance: Mapping[str, object] = field(default_factory=dict)
-    """Panel de cumplimiento P1-P13 del stats (resumen y filas por posicion)."""
+    """Panel de cumplimiento P1-P16 del stats (resumen y filas por posicion)."""
     feasibility: Mapping[str, object] = field(default_factory=dict)
     """Paso 0b del stats: escenarios y calendario semanal de reduccion."""
     maps: Mapping[str, object] = field(default_factory=dict)
@@ -871,6 +882,11 @@ def _asset_from_trade(
         averaged_down=(
             str(_row_context(row, "averaged_down")) if _row_context(row, "averaged_down") else None
         ),
+        rsi_percentile=_as_float(_row_field(row, "rsi_percentile")),
+        perf_month_pct=_as_float(_row_field(row, "perf_month")),
+        high_20=_as_float(_row_field(row, "high_20")),
+        low_20=_as_float(_row_field(row, "low_20")),
+        atr=_as_float(_row_field(row, "atr")),
     )
 
 
@@ -1035,15 +1051,15 @@ def review_narrative_facts(report: ReviewReport) -> dict[str, object]:
 
 
 def render_review_report(report: ReviewReport) -> str:
-    """Informe de review con el formato del ``PROMPT PORTAFOLIO v8``.
+    """Informe de review con el formato del ``PROMPT PORTAFOLIO v9``.
 
     Sigue las secciones del prompt: cobertura, veredicto, factibilidad (Paso 0b),
-    ordenes de la proxima sesion, panel P1-P13 (base P12), tabla de decision,
+    ordenes de la proxima sesion, panel P1-P16 (base P12), tabla de decision,
     calendario de reduccion, auditoria y adopcion de heredadas, cobertura de datos,
     alertas, supuestos, fuentes, registro, que cambio, desvios y oportunidades.
     """
     lines: list[str] = []
-    lines.append(f"# Review de cartera v8 - cuenta {report.account}")
+    lines.append(f"# Review de cartera v9 - cuenta {report.account}")
     lines.append("")
     lines.append(
         f"Datos al {report.today} - regimen {report.regime} - FX {report.fx:.2f} - "
@@ -1052,6 +1068,7 @@ def render_review_report(report: ReviewReport) -> str:
     lines.append("")
     lines.extend(_coverage_line(report))
     lines.extend(_section_veredicto(report))
+    lines.extend(_section_interpretacion(report))
     lines.extend(_section_feasibility(report))
     lines.extend(_section_orders(report))
     lines.extend(_section_panel(report))
@@ -1093,14 +1110,75 @@ def _compliance_row(report: ReviewReport, ticker: str) -> Mapping[str, object]:
 
 
 def _coverage_line(report: ReviewReport) -> list[str]:
-    """Linea 0 del formato v6: cobertura de la corrida y modo del stats."""
+    """Linea 0 del formato v9: cobertura, datos ausentes, fila a mano y modo."""
     narrative = report.narrative
     if narrative is not None and narrative.cobertura:
         coverage = _cell(narrative.cobertura)
     else:
         coverage = "sin narrativa de IA en esta corrida; datos del motor y del stats."
     mode = report.mode or "sin dato"
-    return [f"**Cobertura:** {coverage} **Modo del stats:** {mode}.", ""]
+    missing = _missing_required_data(report)
+    missing_txt = ", ".join(missing) if missing else "ninguno"
+    return [
+        f"**Cobertura:** {coverage} **Modo del stats:** {mode}. "
+        f"**Datos requeridos ausentes:** {missing_txt}. "
+        f"**Verificación fila a mano:** {_hand_check(report)}",
+        "",
+    ]
+
+
+def _missing_required_data(report: ReviewReport) -> list[str]:
+    """Datos que el prompt v9 pide en la seccion 7 y no llegaron en esta corrida."""
+    out: list[str] = []
+    summary = _compliance_summary(report)
+    curve = summary.get("equity_curve")
+    if not isinstance(curve, Mapping) or curve.get("max_equity_adjusted_clp") is None:
+        out.append("patrimonio maximo ajustado")
+    if not report.maps.get("factor_tickers"):
+        out.append("mapa de factor IA")
+    if not report.maps.get("rows"):
+        out.append("mapa de temas")
+    if not report.assets:
+        out.append("posiciones")
+    if any(asset.entry_usd is None for asset in report.assets):
+        out.append("precio medio de entrada USD")
+    if not report.macro_data.get("VIX") and report.macro is None:
+        out.append("seccion de mercado")
+    return out
+
+
+def _hand_check(report: ReviewReport) -> str:
+    """Recalcula a mano una fila del panel: peso y trailing (seccion 7 de v9)."""
+    rows = _compliance_rows(report)
+    for asset in report.assets:
+        row = rows.get(asset.ticker)
+        if row is None:
+            continue
+        value = _as_float(row.get("value_clp")) or asset.value_clp
+        panel_weight = _as_float(row.get("weight_equity_pct"))
+        if value is not None and report.equity_clp > 0.0 and panel_weight is not None:
+            weight = value / report.equity_clp * 100.0
+            ok = abs(weight - panel_weight) <= 0.05
+            weight_txt = (
+                f"peso {panel_weight:.2f} % = {value:,.0f}/{report.equity_clp:,.0f} "
+                f"({weight:.2f} %, {'cuadra' if ok else 'NO cuadra'})"
+            )
+        else:
+            weight_txt = "peso sin datos para verificar"
+        source = asset.low_20
+        atr = asset.atr
+        panel_trailing = _as_float(row.get("trailing_stop"))
+        if source is not None and atr is not None and panel_trailing is not None:
+            expected = source - 3.0 * atr
+            ok = abs(expected - panel_trailing) <= 0.01
+            trailing_txt = (
+                f"trailing {panel_trailing:.2f} = min 20 ses ({source:.2f}) - 3xATR ({atr:.2f}) "
+                f"= {expected:.2f} ({'cuadra' if ok else 'NO cuadra'})"
+            )
+        else:
+            trailing_txt = "trailing sin datos para verificar"
+        return f"{asset.ticker}: {weight_txt}; {trailing_txt}."
+    return "sin fila con datos suficientes para recalcular."
 
 
 def _feasibility_line(report: ReviewReport) -> str:
@@ -1160,8 +1238,9 @@ def _data_status_line(report: ReviewReport) -> str:
 
 
 def _section_veredicto(report: ReviewReport) -> list[str]:
-    """## 1. Veredicto: regimen/modo, riesgo, caja y acciones obligatorias."""
-    lines = ["## 1. Veredicto", ""]
+    """## 1. Que hacer el proximo lunes: regimen/modo, cifras y acciones."""
+    session = _next_session(report.today)
+    lines = [f"## 1. Veredicto: que hacer el proximo lunes ({session.isoformat()})", ""]
     narrative = report.narrative
     if narrative is not None and narrative.veredicto:
         lines.append(narrative.veredicto)
@@ -1183,6 +1262,10 @@ def _section_veredicto(report: ReviewReport) -> list[str]:
     if post_cash is not None:
         cash += f" -> {post_cash:.1f} % post-venta"
     lines.append(f"- **Riesgo abierto / factor IA / caja:** {risk} (P5 {max_risk}); {factor}; {cash}.")
+    orders = _next_session_orders(report)
+    sold = sum((_as_float(item.get("value_clp")) or 0.0) for item in orders)
+    sold_pct = sold / report.equity_clp * 100.0 if report.equity_clp > 0.0 else 0.0
+    lines.append(f"- **Total a vender el proximo lunes:** {sold:,.0f} CLP ({sold_pct:.2f} % del patrimonio).")
     feasibility = _feasibility_line(report)
     if feasibility:
         lines.append(feasibility)
@@ -1190,24 +1273,76 @@ def _section_veredicto(report: ReviewReport) -> list[str]:
     if data_line:
         lines.append(data_line)
     obligations = _obligations(report)
-    lines.append(f"- **ACCIONES OBLIGATORIAS:** {obligations or 'ninguna por regla'}.")
-    orders = _next_session_orders(report)
-    sales = [item for item in orders if item.get("action") == "VENDER"]
-    vendidos = ", ".join(
-        f"{item['ticker']} {(_as_float(item.get('fraction')) or 0.0) * 100:.0f} %" for item in sales
-    ) or "nada"
-    lines.append(f"- **VENDER:** {vendidos}.")
-    recortes = [item for item in orders if item.get("action") == "RECORTAR"]
-    recorte_text = ", ".join(
-        f"{item['ticker']} {(_as_float(item.get('fraction')) or 0.0) * 100:.0f} %" for item in recortes
-    ) or "nada"
-    lines.append(f"- **RECORTAR:** {recorte_text}.")
+    lines.append(f"- **ACCIONES OBLIGATORIAS (REGLA):** {obligations or 'ninguna por regla'}.")
+    rules = [item for item in orders if item.get("kind") == "REGLA"]
+    ideas = [item for item in orders if item.get("kind") == "JUICIO"]
+    lines.append(
+        "- **DISCRECIONALES (JUICIO):** "
+        + (
+            ", ".join(
+                f"{item['ticker']} {(_as_float(item.get('fraction')) or 0.0) * 100:.0f} % "
+                f"({_cell(str(item.get('reason')))})"
+                for item in ideas
+            )
+            or "ninguna"
+        )
+        + "."
+    )
+    lines.append(
+        "- **ORDENES REGLA:** "
+        + (
+            ", ".join(
+                f"{item['ticker']} {(_as_float(item.get('fraction')) or 0.0) * 100:.0f} % "
+                f"({_cell(str(item.get('reason')))})"
+                for item in rules
+            )
+            or "ninguna"
+        )
+        + "."
+    )
     con_orden = {str(item.get("ticker")) for item in orders}
     mantener = [asset.ticker for asset in report.assets if asset.ticker not in con_orden]
     lines.append(f"- **MANTENER:** {', '.join(mantener) if mantener else 'nada'}.")
     lines.append("")
     lines.extend(_macro_lines(report.macro, report.macro_data))
     return lines
+
+
+def _section_interpretacion(report: ReviewReport) -> list[str]:
+    """## 2. Decisiones de interpretacion de esta corrida (max. 5 lineas)."""
+    lines = ["## 1b. Mis decisiones de interpretacion", ""]
+    summary = _compliance_summary(report)
+    notes: list[str] = []
+    cap = _as_float(summary.get("max_sale_per_session_pct")) or 10.0
+    weeks = _as_float(summary.get("reduction_max_weeks")) or 4.0
+    notes.append(
+        f"P15/P16: apliqué el tope de {cap:.2f} % por sesión y {_format_weeks(weeks)}; la alternativa "
+        "era ejecutar todo de una vez (más irreversible)."
+    )
+    notes.append(
+        "Pesos: usé el patrimonio P12 (equity XTB, incluye caja), no 'Peso inv'."
+    )
+    notes.append(
+        "Trailing: usé el mínimo de 20 sesiones - 3xATR, y solo desde +3R; el break-even (+1,5R) y "
+        "la entrada +1R (+3R) se aplican al stop vigente. La columna 'Stop gana' dice qué componente manda."
+    )
+    if any(asset.eps_revision_60d_pct is not None for asset in report.assets):
+        notes.append(
+            "Revision EPS 60d: columna ambigua (año actual vs próximo); no la cuento como señal V1 "
+            "sin confirmación."
+        )
+    rows = _compliance_rows(report)
+    kinds = sorted({str(row.get("stop_kind") or "alerta") for row in rows.values()})
+    if kinds:
+        notes.append(f"Stop P11: los stops se tratan como {', '.join(kinds)}; no se convierten en orden real.")
+    lines.extend(f"- {note}" for note in notes[:5])
+    lines.append("")
+    return lines
+
+
+def _format_weeks(value: object) -> str:
+    number = _as_float(value)
+    return f"{int(number)} semanas" if number is not None else "-"
 
 
 def _pct_or_dash(value: object) -> str:
@@ -1333,13 +1468,13 @@ def _action_row(report: ReviewReport, asset: AssetReview) -> str:
     puntaje = f"{asset.axes.formatted()} -> {format_rating(asset.axes.total)}" if asset.axes is not None else "-"
     return (
         f"| {asset.ticker} | {_return_cell(asset)} | {asset.weight_pct:.1f} -> {post:.1f} | "
-        f"{_action_text(report, asset)} | {puntaje} | {asset.confidence} | {_cell(asset.fundamento)} |"
+        f"{_action_text(report, asset)} | {puntaje} | {_conviction(asset.confidence)} | {_cell(asset.fundamento)} |"
     )
 
 
 def _action_text(report: ReviewReport, asset: AssetReview) -> str:
     """Accion de la tabla: la orden de la proxima sesion, o la decision si no hay."""
-    for order in _next_session_orders(report):
+    for order in _all_orders(report):
         if order.get("ticker") != asset.ticker:
             continue
         fraction = _as_float(order.get("fraction")) or 0.0
@@ -1366,7 +1501,7 @@ def _post_weight(report: ReviewReport, asset: AssetReview) -> float:
 
 
 def _order_fraction(report: ReviewReport, ticker: str) -> float:
-    for order in _next_session_orders(report):
+    for order in _all_orders(report):
         if order.get("ticker") == ticker:
             return _as_float(order.get("fraction")) or 0.0
     return 0.0
@@ -1386,13 +1521,16 @@ def _post_sale_cash_pct(report: ReviewReport) -> float | None:
     return (report.cash_clp + sold) / report.equity_clp * 100.0
 
 
-def _next_session_orders(report: ReviewReport) -> list[dict[str, object]]:
-    """Ordenes de la proxima sesion, una por ticker y con la mayor fraccion.
+def _all_orders(report: ReviewReport) -> list[dict[str, object]]:
+    """Todas las ventas de la corrida, antes de repartirlas por sesion (P15).
 
-    Cruza tres fuentes: la accion del motor/IA (``sell_fraction``), el panel de
-    cumplimiento (stop, P3, P4, P13, heredadas sin decision) y el calendario de
-    factibilidad (semana 0 y semana 1). Si dos reglas afectan al mismo activo se
-    ejecuta la mayor, no la suma (precedencia v8).
+    Cruza la accion del motor/IA, el panel de cumplimiento (stop, P3, P4, P13,
+    heredadas sin decision) y el calendario de factibilidad (semanas 0 y 1). Si dos
+    reglas afectan al mismo activo se ejecuta la mayor, no la suma.
+
+    ``kind`` etiqueta la recomendacion como ``REGLA`` (obligatoria) o ``JUICIO``
+    (discrecional, con su V#). ``exception`` marca las ventas que P15 deja fuera
+    del tope por sesion: stop tocado, modo defensivo y exceso de peso o riesgo.
     """
     assets = {asset.ticker: asset for asset in report.assets}
     rows = _compliance_rows(report)
@@ -1401,22 +1539,43 @@ def _next_session_orders(report: ReviewReport) -> list[dict[str, object]]:
     p4_max = _as_float(summary.get("max_risk_position_pct")) or 1.5
     selected: dict[str, dict[str, object]] = {}
 
-    def add(ticker: str, fraction: float, reason: str) -> None:
+    def add(ticker: str, fraction: float, reason: str, kind: str, *, exception: bool = False) -> None:
         if fraction <= 0.0 or ticker not in assets:
             return
         fraction = min(1.0, fraction)
         current = selected.get(ticker)
         current_fraction = _as_float(current.get("fraction")) if current is not None else None
-        if current_fraction is None or fraction > current_fraction:
-            selected[ticker] = {"ticker": ticker, "fraction": fraction, "reason": reason}
+        should_replace = current_fraction is None or fraction > current_fraction + 1e-9
+        if (
+            current is not None
+            and abs(fraction - (current_fraction or 0.0)) <= 1e-9
+            and exception
+            and not current.get("exception")
+        ):
+            # Misma fraccion, pero una regla con excepcion de P15 manda sobre la
+            # accion generica del motor/IA.
+            should_replace = True
+        if should_replace:
+            selected[ticker] = {
+                "ticker": ticker,
+                "fraction": fraction,
+                "reason": reason,
+                "kind": kind,
+                "exception": exception,
+            }
 
     for asset in report.assets:
-        if asset.sell_fraction > 0.0:
-            if asset.verdict is not None and asset.verdict.motives:
-                motive = ", ".join(item.code for item in asset.verdict.motives)
-            else:
-                motive = asset.decision or "motor/IA"
-            add(asset.ticker, asset.sell_fraction, f"motor/IA: {motive}")
+        if asset.sell_fraction <= 0.0:
+            continue
+        motives = [item.code for item in asset.verdict.motives] if asset.verdict is not None else []
+        discretionary = any(code.startswith("V") for code in motives)
+        reason = ", ".join(motives) if motives else (asset.decision or "motor/IA")
+        add(
+            asset.ticker,
+            asset.sell_fraction,
+            reason,
+            "JUICIO" if discretionary else "REGLA",
+        )
 
     for ticker, row in rows.items():
         if ticker not in assets:
@@ -1425,20 +1584,32 @@ def _next_session_orders(report: ReviewReport) -> list[dict[str, object]]:
         inherited_type = str(row.get("inherited_type") or "")
         decision = str(row.get("decision") or "")
         if status == "STOP_TOCADO":
-            add(ticker, 1.0, "R3.2 stop tocado (salir 100 %)")
+            add(ticker, 1.0, "R3.2 stop tocado (salir 100 %)", "REGLA", exception=True)
         elif inherited_type in {"A", "B"} and decision not in {"Si", "No"}:
             if row.get("stop_viable") is False:
-                add(ticker, 1.0, "P13 sin stop viable (salir)")
+                add(ticker, 1.0, "P13 sin stop viable (salir)", "REGLA", exception=True)
         elif inherited_type in {"A", "B"} and decision == "No":
-            add(ticker, 0.25, "R5 salida en tramos de 25 %")
+            add(ticker, 0.25, "R5 salida en tramos de 25 %", "REGLA")
         if status == "SOBRE_PESO":
             weight = _as_float(row.get("weight_equity_pct"))
             if weight is not None and weight > p3_target:
-                add(ticker, 1.0 - p3_target / weight, f"R3.3 recortar a {p3_target:.0f} %")
+                add(
+                    ticker,
+                    1.0 - p3_target / weight,
+                    f"R3.3 recortar a {p3_target:.0f} %",
+                    "REGLA",
+                    exception=True,
+                )
         if status == "SOBRE_RIESGO":
             risk = _as_float(row.get("risk_pct"))
             if risk is not None and risk > p4_max:
-                add(ticker, 1.0 - p4_max / risk, f"R3.4 recortar a {p4_max:.2f} % de riesgo")
+                add(
+                    ticker,
+                    1.0 - p4_max / risk,
+                    f"R3.4 recortar a {p4_max:.2f} % de riesgo",
+                    "REGLA",
+                    exception=True,
+                )
 
     calendar = report.feasibility.get("calendar")
     if isinstance(calendar, list):
@@ -1460,52 +1631,191 @@ def _next_session_orders(report: ReviewReport) -> list[dict[str, object]]:
                 candidate = assets.get(ticker)
                 if candidate is None or value is None or not candidate.value_clp:
                     continue
-                add(ticker, value / candidate.value_clp, f"{reason} ({item.get('reason') or 'reduccion'})")
+                add(
+                    ticker,
+                    value / candidate.value_clp,
+                    f"{reason} ({item.get('reason') or 'reduccion'})",
+                    "REGLA",
+                )
 
     orders: list[dict[str, object]] = []
     for ticker, item in selected.items():
         asset = assets[ticker]
         row = rows.get(ticker, {})
         fraction = _as_float(item.get("fraction")) or 0.0
+        value_clp = (asset.value_clp or 0.0) * fraction
         orders.append(
             {
                 "ticker": ticker,
                 "action": "VENDER" if fraction >= 0.999 else "RECORTAR",
                 "fraction": fraction,
                 "shares": asset.shares * fraction,
+                "value_clp": value_clp,
                 "price": asset.price,
                 "stop": row.get("current_stop"),
+                "stop_kind": row.get("stop_kind") or "alerta",
                 "reason": item["reason"],
+                "kind": item["kind"],
+                "exception": bool(item.get("exception")),
             }
         )
-    return sorted(orders, key=lambda item: (0 if item["action"] == "VENDER" else 1, str(item["ticker"])))
+    return sorted(
+        orders,
+        key=lambda item: (
+            0 if item.get("exception") else 1,
+            0 if item["action"] == "VENDER" else 1,
+            str(item["ticker"]),
+        ),
+    )
 
 
-def _section_orders(report: ReviewReport) -> list[str]:
-    """## 2. Ordenes de la proxima sesion (lo que el usuario ejecuta)."""
-    lines = [f"## 2. Ordenes de la proxima sesion ({report.today})", ""]
+def _split_by_session(report: ReviewReport) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """``(ordenes de la proxima sesion, excedente diferido)`` aplicando P15.
+
+    Las excepciones de P15 se ejecutan sin tope. El resto se corta al llegar al
+    maximo por sesion y el remanente pasa a la sesion siguiente sin cambiar la
+    prioridad ni el motivo.
+    """
+    summary = _compliance_summary(report)
+    cap_pct = _as_float(summary.get("max_sale_per_session_pct")) or 10.0
+    cap_clp = report.equity_clp * cap_pct / 100.0
+    defensive = str(summary.get("mode") or "") == "defensivo"
+    first: list[dict[str, object]] = []
+    deferred: list[dict[str, object]] = []
+    used = 0.0
+    for order in _all_orders(report):
+        value = _as_float(order.get("value_clp")) or 0.0
+        if defensive or bool(order.get("exception")) or cap_clp <= 0.0:
+            first.append(order)
+            continue
+        remaining = cap_clp - used
+        if remaining <= 0.0:
+            deferred.append(order)
+            continue
+        if value <= remaining or value <= 0.0:
+            first.append(order)
+            used += value
+            continue
+        fraction = _as_float(order.get("fraction")) or 0.0
+        part = remaining / value
+        first.append(
+            {
+                **order,
+                "fraction": fraction * part,
+                "shares": (_as_float(order.get("shares")) or 0.0) * part,
+                "value_clp": remaining,
+                "action": "RECORTAR",
+                "reason": f"{order.get('reason')} (P15: resto a la sesion siguiente)",
+            }
+        )
+        deferred.append(
+            {
+                **order,
+                "fraction": fraction * (1.0 - part),
+                "shares": (_as_float(order.get("shares")) or 0.0) * (1.0 - part),
+                "value_clp": value - remaining,
+                "reason": f"{order.get('reason')} (P15: excedente)",
+            }
+        )
+        used = cap_clp
+    return first, deferred
+
+
+def _next_session_orders(report: ReviewReport) -> list[dict[str, object]]:
+    """Ordenes de la proxima sesion, ya repartidas con el tope P15."""
+    return _split_by_session(report)[0]
+
+
+def _deferred_orders(report: ReviewReport) -> list[dict[str, object]]:
+    """Excedente que P15 manda a la sesion siguiente."""
+    return _split_by_session(report)[1]
+
+
+def _section_orders(report: ReviewReport, session: dt.date | None = None) -> list[str]:
+    """## 3. Ordenes de la proxima sesion, con tipo de orden y tope P15."""
+    session = session or _next_session(report.today)
+    lines = [f"## 2. Ordenes de la proxima sesion ({session.isoformat()})", ""]
     orders = _next_session_orders(report)
     if not orders:
         lines.append("Sin ordenes para la proxima sesion: no hay ventas obligatorias ni recortes activos.")
         lines.append("")
         return lines
-    lines.append("| Activo | Accion | Acciones | Precio ref. | Stop vigente | Motivo |")
-    lines.append("|---|---|---:|---:|---:|---|")
+    order_type = _order_type(report, orders)
+    lines.append("| Activo | Accion | Acciones | Tipo de orden | Stop vigente | Tipo stop P11 | Motivo |")
+    lines.append("|---|---|---:|---|---:|---|---|")
     for order in orders:
         fraction = _as_float(order.get("fraction")) or 0.0
         shares = _as_float(order.get("shares")) or 0.0
         lines.append(
-            f"| {order['ticker']} | {order['action']} {fraction * 100:.0f} % | "
-            f"{shares:.4f} | {_num_or_dash(order.get('price'))} | "
-            f"{_num_or_dash(order.get('stop'))} | {_cell(str(order.get('reason')))} |"
+            f"| {order['ticker']} | {order['action']} {fraction * 100:.0f} % [{order.get('kind')}] | "
+            f"{shares:.4f} | {order_type} | {_num_or_dash(order.get('stop'))} | "
+            f"{order.get('stop_kind') or 'alerta'} | {_cell(str(order.get('reason')))} |"
         )
+    sold = sum((_as_float(item.get("value_clp")) or 0.0) for item in orders)
+    pct = sold / report.equity_clp * 100.0 if report.equity_clp > 0.0 else 0.0
+    summary = _compliance_summary(report)
+    cap = _as_float(summary.get("max_sale_per_session_pct")) or 10.0
     lines.append("")
     lines.append(
+        f"Total de la sesion: **{sold:,.0f} CLP ({pct:.2f} % del patrimonio)**; "
+        f"P15 = {cap:.2f} %."
+    )
+    deferred = _deferred_orders(report)
+    if deferred:
+        detail = "; ".join(
+            f"{item.get('ticker')} {(_as_float(item.get('fraction')) or 0.0) * 100:.0f} % "
+            f"({(_as_float(item.get('shares')) or 0.0):.4f} acc.)"
+            for item in deferred
+        )
+        lines.append(f"Diferido por P15 a la sesion siguiente: {detail}.")
+    lines.append(f"Paso 0c: {_paso_0c_line(report, orders)}")
+    lines.append(
         "Las acciones son fraccionarias (XTB). Si dos reglas afectan al mismo activo, se ejecuta "
-        "la mayor, no la suma. El stop vigente y el TP salen del panel P1-P13."
+        "la mayor, no la suma. El stop vigente y el TP salen del panel P1-P16."
     )
     lines.append("")
     return lines
+
+
+def _next_session(today: dt.date) -> dt.date:
+    """Proxima sesion regular real despues del dia del stats."""
+    return SessionCalendar.us().next_session(today)
+
+
+def _order_type(report: ReviewReport, orders: Sequence[Mapping[str, object]]) -> str:
+    """Paso 0c: limite +3 % de lunes a jueves y mercado el viernes si hay sobreventa."""
+    if _oversold_majority(report, orders):
+        return "limite +3 % (lun-jue) / mercado (vie)"
+    return "mercado"
+
+
+def _oversold_majority(report: ReviewReport, orders: Sequence[Mapping[str, object]]) -> bool:
+    assets = {asset.ticker: asset for asset in report.assets}
+    sold = [assets.get(str(order.get("ticker"))) for order in orders]
+    known = [asset for asset in sold if asset is not None and asset.rsi_percentile is not None]
+    if not known:
+        return False
+    low = [asset for asset in known if (asset.rsi_percentile or 100.0) < 10.0]
+    return len(low) * 2 > len(known)
+
+
+def _paso_0c_line(report: ReviewReport, orders: Sequence[Mapping[str, object]]) -> str:
+    assets = {asset.ticker: asset for asset in report.assets}
+    sold = [assets.get(str(order.get("ticker"))) for order in orders]
+    known = [asset for asset in sold if asset is not None and asset.rsi_percentile is not None]
+    low = [asset for asset in known if (asset.rsi_percentile or 100.0) < 10.0]
+    if not known:
+        return "sin RSI pct 1a suficiente para evaluar sobreventa; orden a mercado."
+    if len(low) * 2 <= len(known):
+        return (
+            f"{len(low)} de {len(known)} ventas con RSI pct 1a < 10; "
+            "no es mayoria, se usa orden a mercado."
+        )
+    return (
+        f"{len(low)} de {len(known)} ventas con RSI pct 1a < 10: sobreventa mayoritaria. "
+        "Costo potencial: hasta 3 % sobre el ultimo cierre por usar limite de lunes a jueves; "
+        "no cambia la regla ni el tamano total. Viernes pasa a mercado."
+    )
 
 
 def _section_feasibility(report: ReviewReport) -> list[str]:
@@ -1553,9 +1863,29 @@ def _section_calendar(report: ReviewReport) -> list[str]:
     """## 5. Calendario semanal de reduccion (25 % por semana)."""
     data = report.feasibility
     calendar = data.get("calendar") if isinstance(data, Mapping) else None
-    lines = ["## 5. Calendario de reduccion", ""]
+    lines = ["## 5. Calendario de reduccion (P16, fechas reales)", ""]
     if not isinstance(calendar, list) or not calendar:
-        lines.append("Sin reducciones escalonadas: el factor y el tema estan dentro de sus topes.")
+        summary = _compliance_summary(report)
+        factor_over = False
+        raw_pcts = summary.get("factor_pcts")
+        raw_max = summary.get("factor_max_pct")
+        if isinstance(raw_pcts, Mapping) and isinstance(raw_max, Mapping):
+            for name, pct in raw_pcts.items():
+                value = _as_float(pct)
+                top = _as_float(raw_max.get(name))
+                if value is not None and top is not None and value > top:
+                    factor_over = True
+                    break
+        biggest = _as_float(summary.get("biggest_theme_pct"))
+        theme_top = _as_float(summary.get("max_theme_pct"))
+        theme_over = biggest is not None and theme_top is not None and biggest > theme_top
+        if factor_over or theme_over:
+            lines.append(
+                "Sin calendario de factibilidad en el stats, pero el panel marca un tope excedido: "
+                "hay que recalcular el calendario P16 antes de ejecutar."
+            )
+        else:
+            lines.append("Sin reducciones escalonadas: el factor y el tema estan dentro de sus topes.")
         lines.append("")
         return lines
     lines.append("| Semana | Fecha | Reducciones (ticker: acciones / CLP) | Factor % | Tema % | Caja % |")
@@ -1583,9 +1913,10 @@ def _section_calendar(report: ReviewReport) -> list[str]:
         )
     lines.append("")
     lines.append(
-        "Cada tramo reduce 25 % del tamaño que la posicion tenia al inicio de la reduccion; "
-        "se detiene en cuanto el panel marca cumplimiento. La caja puede superar la banda mientras "
-        "una regla obligue a reducir (R3.7)."
+        "Cada tramo reduce 25 % del tamaño que la posicion tenia al inicio de la reduccion, como "
+        "maximo, repartido en tramos iguales dentro de P16 (4 semanas); se detiene en cuanto el "
+        "panel marca cumplimiento. La caja puede superar la banda mientras una regla obligue a "
+        "reducir (R3.7)."
     )
     lines.append("")
     return lines
@@ -1602,7 +1933,7 @@ def _section_adoption(report: ReviewReport) -> list[str]:
     if not inherited:
         return []
     assets = {asset.ticker: asset for asset in report.assets}
-    lines = ["### Decision de adopcion de heredadas", ""]
+    lines = ["### 6b. Decision de adopcion de heredadas", ""]
     lines.append(
         "| Ticker | Tipo | Precio | Stop P8 | Stop transicion | Viable | Decision | Sugerencia | "
         "Conviccion | Fuente | Evidencia |"
@@ -1625,7 +1956,7 @@ def _section_adoption(report: ReviewReport) -> list[str]:
         else:
             suggestion = "Si (provisional: recortar y stop P13)"
         evidence = _cell(asset.fundamento) if asset is not None else "-"
-        confidence = asset.confidence if asset is not None else "-"
+        confidence = _conviction(asset.confidence) if asset is not None else "-"
         source = "-"
         if asset is not None and asset.facts:
             source = _source_kind(asset.facts[0].source_url)
@@ -1646,9 +1977,9 @@ def _section_adoption(report: ReviewReport) -> list[str]:
 
 
 def _section_panel(report: ReviewReport) -> list[str]:
-    """## 3. Panel de cumplimiento P1-P13, ya calculado por el motor (base P12)."""
+    """## 4. Panel de cumplimiento P1-P16, ya calculado por el motor (base P12)."""
     summary = _compliance_summary(report)
-    lines = ["## 3. Panel de cumplimiento (P1-P13, base P12)", ""]
+    lines = ["## 3. Panel de cumplimiento (P1-P13, base P12) - v9 P1-P16", ""]
     if not summary:
         lines.append("Sin panel de cumplimiento en el stats de esta corrida.")
         lines.append("")
@@ -1694,7 +2025,7 @@ def _section_panel(report: ReviewReport) -> list[str]:
     pending = summary.get("decision_pending")
     pending_list = pending if isinstance(pending, list) else []
     lines.append(
-        f"| Heredadas tipo 0 / A / B | {int(_as_float(inherited_counts.get('0')) or 0)} / "
+        f"| Heredadas tipo 0 (sana) / A / B | {int(_as_float(inherited_counts.get('0')) or 0)} / "
         f"{int(_as_float(inherited_counts.get('A')) or 0)} / "
         f"{int(_as_float(inherited_counts.get('B')) or 0)} | - | "
         f"{'ALERTA' if pending_list else 'OK'} |"
@@ -1726,7 +2057,7 @@ def _section_panel(report: ReviewReport) -> list[str]:
     )
     infractions = _as_float(summary.get("infractions")) or 0.0
     lines.append(
-        f"| Infracciones | {int(infractions)} | 0 | {'ALERTA' if infractions > 0 else 'OK'} |"
+        f"| Infracciones (stop, P3, P4) | {int(infractions)} | 0 | {'ALERTA' if infractions > 0 else 'OK'} |"
     )
     for window, key in ((5, "earnings_5"), (10, "earnings_10"), (15, "earnings_15")):
         tickers = summary.get(key)
@@ -1741,6 +2072,25 @@ def _section_panel(report: ReviewReport) -> list[str]:
             f"{_num_or_dash(summary.get('beta_qqq'))} | - | info |"
         )
     lines.append(f"| Modo vigente | {summary.get('mode') or 'normal'} | - | - |")
+    orders = _next_session_orders(report)
+    sold_pct = sum(
+        (_as_float(item.get("value_clp")) or 0.0) for item in orders if not item.get("exception")
+    ) / report.equity_clp * 100.0 if report.equity_clp > 0.0 else 0.0
+    cap = summary.get("max_sale_per_session_pct")
+    lines.append(
+        f"| P15 venta proxima sesion (sin excepciones) | {sold_pct:.2f} % | <= {_pct_or_dash(cap)} | "
+        f"{_state(sold_pct, cap)} |"
+    )
+    lines.append(
+        f"| P16 plazo de recortes | {int(_as_float(summary.get('reduction_max_weeks')) or 0)} semanas | "
+        "<= 4 semanas | info |"
+    )
+    kinds: dict[str, list[str]] = {}
+    for ticker, row in rows.items():
+        kinds.setdefault(str(row.get("stop_kind") or "alerta"), []).append(ticker)
+    if kinds:
+        detail = "; ".join(f"{name}: {', '.join(tickers)}" for name, tickers in sorted(kinds.items()))
+        lines.append(f"| P11 tipo de stop | {detail} | - | info |")
     curve = summary.get("equity_curve")
     if isinstance(curve, Mapping) and curve.get("max_equity_clp") is not None:
         lines.append(
@@ -1775,30 +2125,83 @@ def _state_min(value: object, limit: object) -> str:
 
 
 def _section_decisiones(report: ReviewReport) -> list[str]:
-    """## 4. Tabla de decision: SALIR, RECORTAR, decidir heredadas y mantener."""
-    lines = ["## 4. Tabla de decision (SALIR, RECORTAR, luego MANTENER)", ""]
+    """## 5. Tabla de decision: solo las posiciones que cambian."""
+    changing = _changing_assets(report)
+    lines = ["## 4. Tabla de decision (SALIR, RECORTAR, luego MANTENER) - solo posiciones que cambian", ""]
+    if not changing:
+        if report.assets:
+            detail = "; ".join(
+                f"{asset.ticker} (Stop vigente {_cell(_stop_cell(report, asset))}; "
+                f"TP {_cell(_tp_cell(report, asset))}; Riesgo % {_risk_cell(report, asset)}; "
+                f"Motivo {_cell(_motive_cell(report, asset))}; "
+                f"Disparador {_cell(_revision_trigger(asset))})"
+                for asset in report.assets
+            )
+            lines.append(f"Sin posiciones que cambien: **MANTENER:** {detail}.")
+        else:
+            lines.append("Sin posiciones que cambien: **MANTENER:** nada.")
+        lines.append(
+            "Peso sobre el patrimonio (P12, incluye caja); el stop y el TP salen del panel P1-P16."
+        )
+        lines.append("")
+        return lines
     lines.append(
         "| Activo | Retorno USD (CLP) | Peso P12 (actual -> post) | Accion (% y n.º) | Motivo | "
-        "Stop vigente | TP | Riesgo % | Conv. | Disparador de revision |"
+        "Stop vigente | TP | Riesgo % | Conv. 4/6/8 | Disparador |"
     )
     lines.append("|---|---|---:|---|---|---|---|---:|---:|---|")
-    for asset in sorted(report.assets, key=lambda item: _action_order(report, item)):
+    for asset in sorted(changing, key=lambda item: _action_order(report, item)):
         post = _post_weight(report, asset)
         lines.append(
             f"| {asset.ticker} | {_return_cell(asset)} | "
             f"{asset.weight_pct:.1f} -> {post:.1f} | {_cell(_action_text(report, asset))} | "
             f"{_motive_cell(report, asset)} | {_cell(_stop_cell(report, asset))} | "
             f"{_cell(_tp_cell(report, asset))} | {_risk_cell(report, asset)} | "
-            f"{asset.confidence} | {_cell(_revision_trigger(asset))} |"
+            f"{_conviction(asset.confidence)} | {_cell(_revision_trigger(asset))} |"
         )
     lines.append("")
+    keep = [asset for asset in report.assets if asset not in changing]
+    if keep:
+        detail = "; ".join(
+            f"{asset.ticker} (Stop vigente {_cell(_stop_cell(report, asset))}; TP {_cell(_tp_cell(report, asset))})"
+            for asset in keep
+        )
+        lines.append(f"**MANTENER:** {detail}.")
+    else:
+        lines.append("**MANTENER:** nada.")
     lines.append(
         "Peso sobre el patrimonio (P12, incluye caja); 'post' aplica las ventas sin renormalizar. "
-        "La accion, el porcentaje y el volumen los fija el motor; la IA aporta el fundamento. "
-        "Motivos V1-V8 y reglas R# del prompt v8; el stop y el TP salen del panel P1-P13."
+        "Cada fila va etiquetada REGLA o JUICIO en el motivo. Motivos V1-V8 y reglas R# del "
+        "prompt v9; el stop y el TP salen del panel P1-P16."
     )
     lines.append("")
     return lines
+
+
+def _changing_assets(report: ReviewReport) -> list[AssetReview]:
+    """Activos con orden de venta o con una heredada A/B pendiente de decision."""
+    ordered = {str(item.get("ticker")) for item in _next_session_orders(report)}
+    ordered.update(str(item.get("ticker")) for item in _deferred_orders(report))
+    out: list[AssetReview] = []
+    for asset in report.assets:
+        row = _compliance_row(report, asset.ticker)
+        inherited = str(row.get("inherited_type") or "") in {"A", "B"}
+        pending = inherited and str(row.get("decision") or "") not in {"Si", "No"}
+        if asset.ticker in ordered or pending or asset.sell_fraction > 0.0:
+            out.append(asset)
+    return out
+
+
+def _conviction(value: object) -> str:
+    """Normaliza la conviccion a los unicos valores del prompt v9: 4, 6 u 8."""
+    number = _as_float(value)
+    if number is None:
+        return "4"
+    if number <= 4:
+        return "4"
+    if number <= 6:
+        return "6"
+    return "8"
 
 
 def _stop_cell(report: ReviewReport, asset: AssetReview) -> str:
@@ -1854,9 +2257,10 @@ _STATUS_RULE = {
 
 def _motive_cell(report: ReviewReport, asset: AssetReview) -> str:
     """Motivo de la orden de la proxima sesion; si no hay, los V de la IA o la regla."""
-    for order in _next_session_orders(report):
+    for order in _all_orders(report):
         if order.get("ticker") == asset.ticker:
-            return str(order.get("reason") or "orden")
+            tag = order.get("kind") or "REGLA"
+            return f"{tag}: {order.get('reason') or 'orden'}"
     verdict = asset.verdict
     if verdict is not None and verdict.motives:
         return ", ".join(motive.code for motive in verdict.motives)
@@ -1886,11 +2290,11 @@ def _revision_trigger(asset: AssetReview) -> str:
 def _section_auditoria(report: ReviewReport) -> list[str]:
     """## 6. Auditoria de ventas: motivo admitido, hechos y filtro fundamental.
 
-    Solo audita lo que se vende o es candidato a vender. El filtro v6 pide reporte
+    Solo audita lo que se vende o es candidato a vender. El filtro v9 pide reporte
     primario y 3 hechos a favor y 3 en contra; cuando el ``stats`` no alcanza, se
     declara **cobertura insuficiente** y el fail-safe dice no vender.
     """
-    lines = ["## 6. Auditoria de ventas", ""]
+    lines = ["## 6. Auditoria de ventas y adopcion de heredadas", ""]
     candidates = [asset for asset in report.assets if _is_sell_candidate(asset)]
     if not candidates:
         lines.append("Sin ventas ni candidatos a vender en esta corrida.")
@@ -1923,7 +2327,8 @@ def _section_auditoria(report: ReviewReport) -> list[str]:
             lines.append(f"- Hechos fechados con fuente ({len(asset.facts)}):")
             for fact in asset.facts:
                 source = f" ({fact.source_url})" if fact.source_url else ""
-                lines.append(f"    - {fact.date.isoformat()}: {fact.fact}{source}")
+                kind = _source_kind(fact.source_url)
+                lines.append(f"    - {fact.date.isoformat()}: {fact.fact}{source} [{kind}]")
             if len(asset.facts) < 6:
                 lines.append(
                     "- **Cobertura insuficiente para vender**: el prompt pide 3 hechos a favor y "
@@ -1936,7 +2341,8 @@ def _section_auditoria(report: ReviewReport) -> list[str]:
             )
         lines.append(
             "- Mejor argumento de quien mantendria: con informacion incompleta, la asimetria de "
-            "errores favorece MANTENER con vigilancia (regla 1 de v8) salvo que el TP ejecute la venta."
+            "errores favorece MANTENER con vigilancia (regla 1 de v9) salvo que el TP ejecute la venta. "
+            "No alcanza para sostener la tesis si falta el reporte primario o las senales V1 con cifra."
         )
         if verdict is not None and not verdict.motives and not verdict.triggers:
             lines.append(
@@ -1957,7 +2363,7 @@ def _is_sell_candidate(asset: AssetReview) -> bool:
 
 def _section_cobertura(report: ReviewReport) -> list[str]:
     """## 7. Cobertura por activo: reporte, revisiones, earnings y confianza."""
-    lines = ["## 7. Cobertura", ""]
+    lines = ["## 7. Cobertura de datos (solo investigadas)", ""]
     narrative = report.narrative
     if narrative is not None and narrative.cobertura:
         lines.append(narrative.cobertura)
@@ -1967,7 +2373,14 @@ def _section_cobertura(report: ReviewReport) -> list[str]:
         "Earnings | Confianza de datos |"
     )
     lines.append("|---|---|---:|---|---:|---:|---|---|")
-    for asset in sorted(report.assets, key=lambda item: -item.weight_pct):
+    researched = [
+        asset
+        for asset in report.assets
+        if asset.facts or asset.last_report_date or _is_sell_candidate(asset)
+    ]
+    if not researched:
+        lines.append("| - | - | - | sin activos investigados en esta corrida | - | - | - | - |")
+    for asset in sorted(researched, key=lambda item: -item.weight_pct):
         if asset.last_report_date:
             reporte = asset.last_report_date
             if asset.last_report_type:
@@ -1992,13 +2405,14 @@ def _section_cobertura(report: ReviewReport) -> list[str]:
         cov = f"{asset.coverage_pct:.0f} %" if asset.coverage_pct is not None else "-"
         lines.append(
             f"| {asset.ticker} | {asset.theme} | {asset.weight_pct:.1f} % | {reporte} | "
-            f"{revision} | {target_change} | {earnings} | {cov} / {asset.confidence}/10 |"
+            f"{revision} | {target_change} | {earnings} | {cov} / conv. {_conviction(asset.confidence)} |"
         )
     lines.append("")
     lines.append(
         "El reporte primario se toma del ``stats`` cuando existe (8-K/6-K/10-Q/10-K); "
         "si no, se usa el hecho mas reciente con URL y se marca primario solo si la fuente "
-        "es SEC/CMF/IR. Las revisiones a 60 d son las del consenso que publica la fuente."
+        "es SEC/CMF/IR. La ``Revision EPS 60d`` es ambigua (año actual vs próximo) y no cuenta "
+        "como señal V1 sin confirmar con una fuente."
     )
     lines.append("")
     return lines
@@ -2046,6 +2460,28 @@ def _section_alertas(report: ReviewReport) -> list[str]:
             bullets.append(f"{ticker}: heredada tipo {inherited_type} sin decision (R5).")
         if inherited_type in {"A", "B"} and row.get("stop_viable") is False:
             bullets.append(f"{ticker}: P13 sin stop viable; la salida es obligatoria.")
+    summary = _compliance_summary(report)
+    for window, key in ((5, "earnings_5"), (10, "earnings_10"), (15, "earnings_15")):
+        tickers = summary.get(key)
+        if isinstance(tickers, list) and tickers:
+            bullets.append(f"Earnings en <= {window} sesiones: {', '.join(str(t) for t in tickers)}.")
+    early = [
+        asset.ticker
+        for asset in report.assets
+        if asset.sessions_open is not None and asset.sessions_open < 10 and asset.sell_fraction > 0.0
+    ]
+    if early:
+        bullets.append(
+            f"Ventas con menos de 10 sesiones desde la entrada: {', '.join(early)}; "
+            "aviso previo a recomendar la salida."
+        )
+    deferred = _deferred_orders(report)
+    if deferred:
+        bullets.append(
+            "P15: el excedente de ventas pasa a la sesion siguiente ("
+            + ", ".join(f"{item.get('ticker')} {(_as_float(item.get('fraction')) or 0.0) * 100:.0f} %" for item in deferred)
+            + ")."
+        )
     if isinstance(report.data_status, Mapping):
         if report.data_status.get("close_confirmed") is False:
             bullets.append("Datos de cierre no confirmados; el informe es provisional.")
@@ -2117,7 +2553,7 @@ def _top(value: float | None) -> str:
 
 
 def _section_supuestos(report: ReviewReport) -> list[str]:
-    """## 9. Supuestos y vacios, incluidos los limites propios de v8."""
+    """## 10. Supuestos y vacios, incluidos los limites propios de v9."""
     lines = ["## 9. Supuestos y vacios", ""]
     narrative = report.narrative
     wrote = False
@@ -2133,8 +2569,13 @@ def _section_supuestos(report: ReviewReport) -> list[str]:
         "El stop de transicion de una heredada se fija una vez (P13) y tampoco baja."
     )
     lines.append(
-        "- Los TP son ordenes reales de venta; los SL son alertas de vigilancia (P11) sin "
-        "ejecucion automatica. Una alerta disparada obliga a reevaluar la tesis, no a vender."
+        "- Los TP son ordenes reales de venta; el tipo de stop (P11) se toma del ledger o de "
+        "``--stop-tipo``: ``orden`` si el Stop real sigue vigente con el mercado cerrado; "
+        "``alerta`` si es precio de alerta y salida en la siguiente sesion."
+    )
+    lines.append(
+        "- P15 limita la venta por sesion y P16 reparte los recortes por tope/adopcion en tramos "
+        "iguales dentro de 4 semanas; el excedente no se suma en la misma sesion."
     )
     lines.append(
         "- Si el stop de transicion no es viable (1,5 x ATR > 15 %), la salida es obligatoria "
@@ -2174,30 +2615,37 @@ def _section_fuentes(report: ReviewReport) -> list[str]:
 
 def _section_registro(report: ReviewReport) -> list[str]:
     """## 11. Registro de decisiones: una linea por activo, para medir a 30/90 dias."""
-    lines = ["## 11. Registro de decisiones", ""]
+    lines = ["## 11. Registro de decisiones (solo filas que cambian)", ""]
     if not report.records:
         lines.append("Sin registro en esta corrida.")
         lines.append("")
         return lines
     assets = {asset.ticker: asset for asset in report.assets}
+    changing = {asset.ticker for asset in _changing_assets(report)}
+    rows = _compliance_rows(report)
+    selected = [record for record in report.records if record.ticker in changing]
+    if not selected:
+        lines.append("Sin filas que cambien en esta corrida.")
+        lines.append("")
+        return lines
     lines.append(
-        "| Fecha | Activo | Accion y % | Precio ref. | Entrada USD | TP (orden) | Alerta(s) SL | "
-        "Objetivo tesis | Motivo | Disparador |"
+        "| Fecha | Ticker | Accion y % | Precio ref. | Entrada USD | Stop inicial | Stop vigente | "
+        "TP | Motivo | Disparador | OVERRIDE |"
     )
-    lines.append("|---|---|---|---:|---:|---:|---|---:|---|---|")
-    for record in report.records:
+    lines.append("|---|---|---|---:|---:|---:|---:|---:|---|---|---|")
+    for record in selected:
         asset = assets.get(record.ticker)
-        objective = record.objective if record.objective is not None else (asset.target if asset else None)
+        row = rows.get(record.ticker, {})
         lines.append(
             f"| {record.date} | {record.ticker} | {_cell(_record_action(record, asset))} | "
             f"{_fmt_num(record.price)} | {_fmt_num(record.entry_usd)} | "
-            f"{_fmt_num(record.take_profit)} | {_record_sl(record)} | {_fmt_num(objective)} | "
-            f"{record.motive or '-'} | {record.trigger or '-'} |"
+            f"{_num_or_dash(row.get('initial_stop'))} | {_num_or_dash(row.get('current_stop'))} | "
+            f"{_fmt_num(record.take_profit)} | {record.motive or '-'} | {record.trigger or '-'} | no |"
         )
     lines.append("")
     lines.append(
         "El registro se guarda en ``state/`` y se compara con la corrida anterior: sirve para "
-        "medir la decision a 30 y 90 dias y para vigilar que las alertas SL no bajen."
+        "medir la decision a 30 y 90 dias y para vigilar que los stops no bajen."
     )
     lines.append("")
     return lines
@@ -2284,12 +2732,20 @@ def _tp_change(lines: list[str], record: DecisionRecord, before: DecisionRecord)
 
 def _section_desvios(report: ReviewReport) -> list[str]:
     """## 13. Desvios del periodo: OVERRIDE registrados (ninguno por ahora)."""
-    return [
+    lines = [
         "## 13. Desvios del periodo",
         "",
-        "Sin OVERRIDE registrados en esta corrida: las decisiones siguen las reglas duras del prompt v8.",
+        "Sin OVERRIDE registrados en esta corrida: las decisiones siguen las reglas duras del prompt v9.",
         "",
     ]
+    post = _post_sale_cash_pct(report)
+    if post is not None and post > 20.0:
+        lines.append(
+            f"- La caja post-venta quedaria en {post:.1f} % (> 20 %): si quieres, activo el modulo "
+            "OPORTUNIDADES para evaluar compras o refuerzos con ese presupuesto."
+        )
+        lines.append("")
+    return lines
 
 
 def _section_oportunidades(report: ReviewReport) -> list[str]:

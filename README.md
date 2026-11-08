@@ -54,7 +54,7 @@ Market)** con el precio de pre/after market (variación y hora ET) y su volumen.
 
 Además, **todo lo que se puede derivar se calcula en código** (no lo inventa la IA):
 
-- **Panel de cumplimiento (P1-P13)**: la sección de arriba del informe, única fuente de
+- **Panel de cumplimiento (P1-P16)**: la sección de arriba del informe, única fuente de
   verdad para stops y riesgo. La base de **todos** los pesos y topes es el patrimonio
   (P12: equity XTB, incluye caja): publica **Peso pat** y **Peso max abrir**, y deja
   **Peso inv** solo como dato informativo. Una fila por posición con ATR %, **stop
@@ -79,7 +79,7 @@ Además, **todo lo que se puede derivar se calcula en código** (no lo inventa l
   con fecha y ajustado por aportes en CLP** y el modo P9 (cautela ≥ 8 %, defensivo ≥ 15 %).
 - **Contexto de mercado siempre visible**: VIX y su variación a 1 mes, SPY vs SMA200,
   10Y vs SMA200, DXY vs SMA200, QQQ a 1 mes y USD/CLP. No requiere `--contexto`.
-- **Régimen v8 de seis señales**: VIX > 20, SPY bajo su SMA200, 10Y > 10 % sobre su
+- **Régimen v9 de seis señales**: VIX > 20, SPY bajo su SMA200, 10Y > 10 % sobre su
   SMA200, DXY > 5 % sobre su SMA200, QQQ ≤ −8 % en un mes y VIX ≥ +40 % en un mes.
   0-1 = bajo, 2-3 = medio (cautela), ≥4 = alto (defensivo). Publica las señales
   cumplidas, las que están a menos de 1 pp del umbral y los benchmarks **sospechosos**
@@ -133,15 +133,15 @@ del panel.
 
 `review` es la **función de gestión**: primero escribe el informe de `stats` (y reutiliza
 sus fundamentales) y después recomienda sobre tus posiciones. Adopta lo abierto y corre
-las diez reglas de salida del prompt v8 sin mirar el universo ni proponer entradas. La IA
+las diez reglas de salida del prompt v9 sin mirar el universo ni proponer entradas. La IA
 (siempre encendida cuando hay clave; sin clave el informe sale igual, con
 un aviso) entrega su veredicto (`BUY/HOLD/SELL/WATCH`) y **decide** mantener o vender;
 el motor sigue fijando stop, meta y tamaño. Hay cuatro formatos con `--formato`:
 
-- `informe` (por defecto): sigue el **formato del `PROMPT PORTAFOLIO v8`**:
+- `informe` (por defecto): sigue el **formato del `PROMPT PORTAFOLIO v9`**:
   0. cobertura y modo del stats, 1. veredicto (régimen/modo, riesgo abierto, factor IA
   base P12, caja resultante), **Paso 0b: factibilidad**, 2. **órdenes de la próxima
-  sesión** (ticker, acciones, acción y stop), 3. panel de cumplimiento P1-P13 (base P12),
+  sesión** (ticker, acciones, acción, tipo de orden y stop), 3. panel de cumplimiento P1-P16 (base P12),
   4. tabla de decisión (SALIR, RECORTAR, luego MANTENER), 5. calendario de reducción,
   6. auditoría de ventas y **decisión de adopción de heredadas 0/A/B**, 7. cobertura de
   datos, 8. alertas, 9. supuestos y vacíos, 10. fuentes clave, 11. registro de decisiones,
@@ -325,9 +325,9 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 | `core/sizing.py` | 5.5, 5.6 | Riesgo → notional, topes, tramos, `SINGLE` |
 | `core/exits.py` | 5.7, 4.3, 4.6 | Precedencia de las diez reglas y transiciones de §5.6 |
 | `core/portfolio.py` | 5.5, 5.8 | Heat, pérdida mensual, topes por ticker y tema, `CAP_TRIM` |
-| `core/compliance.py` | - | Panel P1-P13: stop anclado a la entrada, P13, heredadas 0/A/B, TP, estados y resumen |
+| `core/compliance.py` | - | Panel P1-P16: stop anclado a la entrada, P13, heredadas 0/A/B, TP, estados y resumen |
 | `core/equity_curve.py` | — | Curva de patrimonio ajustada por aportes (valor cuota base 100) y modo P9 |
-| `core/verdict.py` | - | `PROMPT PORTAFOLIO` v8 como código puro: niveles, disparadores y ejes |
+| `core/verdict.py` | - | `PROMPT PORTAFOLIO` v9 como código puro: niveles, disparadores y ejes |
 | `core/engine.py` | 5, 11.3 | `decide()`: la única función que decide (entradas y salidas) |
 | `core/report.py` | — | Modelo del export de XTB y agregación filas → posiciones |
 | `core/analysis.py` | 5.7, 5.8 | Valua la cartera y genera hallazgos, acciones y veredicto por posición |
@@ -398,7 +398,7 @@ de `cli.py`. `cli.py` queda con los comandos Typer y la presentación de argumen
 - `docs/USO.md` — guía operativa: flujo semanal, formatos, códigos de salida y claves.
 - `docs/DECISIONES.md` — D1 a D37. Cada ambigüedad del spec que se resolvió y por qué.
   Es lo que hay que leer antes de cuestionar un parámetro.
-- `docs/PROMPT PORTAFOLIO v8.md` - reglas y parámetros P1-P13 del prompt vigente.
+- `docs/PROMPT PORTAFOLIO v9.md` - reglas y parámetros P1-P16 del prompt vigente.
 - `docs/ESTRATEGIA.md` — linaje de cada componente, evidencia, y sobre todo **lo que no
   es fuente de ventaja** (la salida escalonada sube el win rate por construcción).
 - `docs/VERIFICACION_BROKER.md` — checklist pendiente contra la cuenta demo.

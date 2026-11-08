@@ -1,4 +1,4 @@
-# Parametros P1-P13 del PROMPT PORTAFOLIO v8 (seccion 2) y calendario del horizonte.
+# Parametros P1-P16 del PROMPT PORTAFOLIO v9 (seccion 2) y calendario del horizonte.
 # Son politica del usuario: el motor solo los aplica. Cambiarlos aca, no en el codigo.
 
 # P1: riesgo al abrir o anadir, % del patrimonio.
@@ -38,6 +38,11 @@ defensive_drawdown_pct: 15
 # P10: compras nuevas hasta / liquidacion escalonada.
 purchases_until: 2027-01-15
 liquidate_until: 2027-03-01
+# P15: venta maxima por sesion, % del patrimonio (no aplica a stop tocado,
+# modo defensivo ni exceso de peso/riesgo).
+max_sale_per_session_pct: 10
+# P16: plazo maximo de los recortes por tope de factor/tema y por adopcion.
+reduction_max_weeks: 4
 # TP realista: tope de +30 % sobre el precio actual; objetivo de analistas si N >= 10.
 take_profit_max_upside_pct: 30
 take_profit_min_analysts: 10
