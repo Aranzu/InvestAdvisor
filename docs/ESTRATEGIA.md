@@ -1,5 +1,8 @@
 ﻿# Linaje de la estrategia
 
+> Vigente: **v11** (`ESTRATEGIA_v11.md`). Este documento conserva el linaje de metodos y la
+> advertencia de evidencia; los parametros de la tabla de backtest siguen sin validarse.
+
 Fuente: el spec v3.1 seccion 3. Este documento existe para que
 nadie lea el codigo como si fuera un sistema publicado y validado. Es una **sintesis de metodos
 conocidos**, no un sistema unico derivado de una sola fuente.

@@ -569,6 +569,45 @@ class FactorsConfig(StrictModel):
         return self
 
 
+class V11FactorStep(StrictModel):
+    """Escalon del tope del factor IA: vigente desde ``since`` (inclusive)."""
+
+    since: dt.date
+    max_pct: float = Field(gt=0.0, le=100.0)
+
+
+class V11Config(StrictModel):
+    """Reglas de la estrategia v11 (``config/v11.yaml``; ver ``docs/ESTRATEGIA_v11.md``)."""
+
+    start_date: dt.date
+    risk_per_position_pct: float = Field(gt=0.0, le=100.0)
+    hard_stop_max_pct: float = Field(gt=0.0, le=100.0)
+    hard_stop_atr_mult: float = Field(gt=0.0, le=20.0)
+    max_open_risk_pct: float = Field(gt=0.0, le=100.0)
+    max_positions: int = Field(ge=1, le=500)
+    max_theme_pct: float = Field(gt=0.0, le=100.0)
+    max_weight_hold_pct: float = Field(gt=0.0, le=100.0)
+    max_weight_hold_trim_pct: float = Field(gt=0.0, le=100.0)
+    cash_target_pct: float = Field(ge=0.0, le=100.0)
+    defensive_drawdown_pct: float = Field(gt=0.0, le=100.0)
+    alarm_loss_pct: float = Field(gt=0.0, le=100.0)
+    alarm_review_sessions: int = Field(ge=1, le=60)
+    breakeven_r: float = Field(gt=0.0, le=100.0)
+    factor_name: str = "ia_ampliada"
+    factor_schedule: list[V11FactorStep]
+
+    @model_validator(mode="after")
+    def _check(self) -> V11Config:
+        if self.max_weight_hold_trim_pct > self.max_weight_hold_pct:
+            raise ValueError("v11.max_weight_hold_trim_pct no puede superar max_weight_hold_pct")
+        if not self.factor_schedule:
+            raise ValueError("v11.factor_schedule requiere al menos un escalon")
+        dates = [step.since for step in self.factor_schedule]
+        if dates != sorted(dates) or len(set(dates)) != len(dates):
+            raise ValueError("v11.factor_schedule debe estar ordenado por fecha, sin repetidas")
+        return self
+
+
 class RiskConfig(StrictModel):
     risk_per_trade_pct: float = Field(gt=0.0, le=5.0)
     max_position_pct: float = Field(gt=0.0, le=100.0)
@@ -950,6 +989,14 @@ class FundamentalsConfig(StrictModel):
     max_debt_to_equity: float | None = Field(default=None, ge=0.0)
     min_target_upside_pct: float | None = None
     min_analyst_count: int = Field(default=0, ge=0)
+    min_operating_margin: float | None = None
+    """Margen operativo minimo (fraccion; v11: positivo)."""
+    require_positive_fcf: bool = False
+    """Exige FCF del ultimo trimestre reportado > 0 (v11)."""
+    min_f_score: int | None = Field(default=None, ge=0, le=9)
+    """F-Score de Piotroski minimo (v11: 7). ``None`` desactiva la puerta."""
+    min_f_score_computed: int = Field(default=7, ge=1, le=9)
+    """Senales minimas calculables para confiar en el F-Score; con menos, se rechaza."""
     require_target: bool
     require_fundamentals: bool
     score: ScoreAnchors
@@ -986,6 +1033,11 @@ class ScreenerConfig(StrictModel):
     """Con ``exclude_earnings_blackout``, una fecha de earnings ausente **con la fuente
     consultada** tambien rechaza (``INDICATOR_NOT_READY``), como el G6 del motor. Con
     la fuente no disponible (``--offline``) no se puede saber y no filtra."""
+    momentum_lookback_days: int = Field(default=252, ge=21, le=1000)
+    momentum_skip_days: int = Field(default=21, ge=0, le=252)
+    min_momentum_percentile: float | None = Field(default=None, ge=0.0, le=100.0)
+    """Momentum 12-1 (retorno a ``lookback`` sin las ultimas ``skip`` ruedas, Jegadeesh-Titman):
+    percentil minimo dentro del universo (v11: 67, tercio superior). ``None`` desactiva."""
     exclude_held: bool = True
     """No propone comprar lo que ya tenes: si hay export de XTB, los tickers abiertos
     salen del recorte y entra el siguiente. Tambien avisa si un candidato cae en un tema

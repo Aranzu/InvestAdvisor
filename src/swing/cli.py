@@ -27,6 +27,7 @@ from swing.adapters.config_loader import (
     load_factors,
     load_strategy,
     load_themes,
+    load_v11,
     load_watchlist,
 )
 from swing.adapters.data_yahoo import (
@@ -207,6 +208,7 @@ def _collect_and_save_stats(
     try:
         compliance = load_compliance(config_dir / "config.yaml")
         factors = load_factors(config_dir / "factors.yaml")
+        v11_cfg = load_v11(config_dir / "v11.yaml")
     except ConfigError as exc:
         typer.secho(f"FALLA  config: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
@@ -229,6 +231,8 @@ def _collect_and_save_stats(
         ledger=_load_ledger(ledger_file),
         ledger_path=ledger_file,
         stop_kind=stop_kind,
+        v11=v11_cfg,
+        v11_ledger_path=_ledger_path("v11_ledger.json"),
     )
     informe = _render_stats(stats_report, show_context=show_context)
     if out is not None:
@@ -361,6 +365,20 @@ class _Market:
     frames: dict[str, IndicatorFrame]
     snapshot: MarketSnapshot
     missing: list[str]
+
+
+
+def _v11_stops(stats_report: StatsReport) -> dict[str, float]:
+    """Stop duro v11 por ticker (ledger, solo sube); vacio si v11 no esta activo."""
+    v11 = stats_report.compliance.get("v11")
+    rows = v11.get("positions") if isinstance(v11, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row["ticker"]): float(row["hard_stop"])
+        for row in rows
+        if isinstance(row, dict) and row.get("ticker") and isinstance(row.get("hard_stop"), (int, float))
+    }
 
 
 def _load_config(config_dir: Path) -> tuple[StrategyConfig, BrokerConfig, WatchlistConfig, ThemesConfig]:
@@ -618,6 +636,19 @@ def review(
     if pending:
         fprovider = fundamentals_provider_from_project(cache_dir, offline=offline)
         fundamentals.update(fprovider.get_many(pending, today=market.today))
+    # v11: el stop duro del ledger (solo sube) manda sobre el 18 % de la adopcion v10, y el
+    # tope de tema deja de vender (solo avisa y bloquea compras).
+    v11_stops = _v11_stops(stats_report)
+    forced_trims = not v11_stops
+    if v11_stops:
+        book = adopt_positions(
+            reconcile_positions(lots, {}).positions,
+            market.frames,
+            market.strategy,
+            market.calendar,
+            market.today,
+            stop_overrides=v11_stops,
+        )
     recon = reconcile_positions(lots, book)
     state = PortfolioState(
         equity_clp=equity,
@@ -633,14 +664,21 @@ def review(
         market.calendar,
         themes,
         universe=(),
+        forced_trims=forced_trims,
     )
     reviews: list[LLMReview] = []
     macro: LLMReview | None = None
     llm_failed = False
     # La segunda opinion de la IA es obligatoria en este comando (ya no hay --llm).
     wants_search = web_search and not offline
-    client = client_from_env(web_search=wants_search, max_searches=market.strategy.llm.max_searches_per_ticker)
-    if wants_search and search_from_env() is None:
+    client = (
+        client_from_env(web_search=wants_search, max_searches=market.strategy.llm.max_searches_per_ticker)
+        if market.strategy.llm.enabled
+        else None
+    )
+    if not market.strategy.llm.enabled:
+        typer.secho("  IA desactivada (llm.enabled: false): revision determinista", fg=typer.colors.YELLOW)
+    elif wants_search and search_from_env() is None:
         typer.secho(
             "  aviso: sin TAVILY_API_KEY; la IA corre sin busqueda web",
             fg=typer.colors.YELLOW,
@@ -716,6 +754,7 @@ def review(
             universe=(),
             thesis_broken=thesis_broken,
             llm_sell=llm_sell,
+            forced_trims=forced_trims,
         )
 
     if formato == "tabla":
@@ -1085,7 +1124,11 @@ def _run_screener(
     skipped: tuple[str, ...] = ()
     thesis_status: dict[str, str]
     if llm and candidates:
-        client = client_from_env(web_search=web_search, max_searches=strategy.llm.max_searches_per_ticker)
+        client = (
+            client_from_env(web_search=web_search, max_searches=strategy.llm.max_searches_per_ticker)
+            if strategy.llm.enabled
+            else None
+        )
         if client is None:
             thesis_status = {c.ticker: "no_key" for c in candidates}
             typer.secho("  aviso: sin clave del LLM; la tesis de compra se omite", fg=typer.colors.YELLOW)

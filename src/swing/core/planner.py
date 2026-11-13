@@ -62,6 +62,7 @@ def adopt_positions(
     strategy: StrategyConfig,
     calendar: SessionCalendar,
     today: dt.date,
+    stop_overrides: Mapping[str, float] | None = None,
 ) -> dict[str, TradeState]:
     """Reconstruye el libro del motor a partir del reporte (adopcion, seccion 9).
 
@@ -73,7 +74,12 @@ def adopt_positions(
     ``initial_stop``, ya pasado por ``protect_gain`` para que el Chandelier cubra la
     utilidad abierta. ``highest_n`` es el maximo real de ``runner_trail.lookback_days``
     ruedas, que es la ventana del trail.
+
+    ``stop_overrides`` (ticker -> stop duro v11) manda sobre el stop del broker y el derivado
+    del 18 %: es el stop del ledger v11, que solo sube. Con ``stop_overrides`` el
+    ``initial_stop`` (la R) es el override si queda bajo la entrada.
     """
+    overrides = stop_overrides or {}
     book: dict[str, TradeState] = {}
     floor = 1.0 - strategy.legacy.max_loss_from_cost_pct / 100.0
     trail = strategy.exits.runner_trail
@@ -91,6 +97,9 @@ def adopt_positions(
         open_date = min((lot.open_time.date() for lot in position.lots), default=today)
         days_open = calendar.sessions_between(open_date, today)
         highest_n = _recent_high(frame, max(entry, close), trail.lookback_days)
+        override = overrides.get(position.ticker)
+        if override is not None and override > 0.0:
+            initial_stop = override if override < entry else derived_stop
         stop = broker_stop if (broker_stop is not None and broker_stop > 0.0) else initial_stop
         stop = protect_gain(
             stop,
@@ -103,6 +112,8 @@ def adopt_positions(
             tighten_after_days=trail.tighten_after_days,
             tightened_atr_mult=trail.tightened_atr_mult,
         )
+        if override is not None and override > 0.0:
+            stop = override  # el stop duro v11 reemplaza al del broker y al trail v10
         risk = entry - initial_stop
         book[position.ticker] = TradeState(
             ticker=position.ticker,

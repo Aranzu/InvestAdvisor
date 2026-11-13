@@ -21,7 +21,17 @@ from swing.core.models import ThemesConfig, WatchlistConfig
 from swing.core.reasons import Reason
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
-STRATEGY = load_strategy(CONFIG_DIR / "strategy.yaml")
+_BASE = load_strategy(CONFIG_DIR / "strategy.yaml")
+# Estos tests prueban el ranking y las puertas clasicas; el filtro v11 (F-Score, FCF, momentum
+# 12-1) se prueba aparte en tests/test_piotroski.py.
+STRATEGY = _BASE.model_copy(
+    update={
+        "fundamentals": _BASE.fundamentals.model_copy(
+            update={"min_f_score": None, "require_positive_fcf": False, "min_operating_margin": None}
+        ),
+        "screener": _BASE.screener.model_copy(update={"min_momentum_percentile": None}),
+    }
+)
 START = dt.date(2022, 1, 3)
 
 

@@ -8,7 +8,7 @@ factors:
   ia_ampliada:
     max_pct: 40
     # Equipos de semiconductores + proveedores de capex de IA.
-    tickers: [AMD, NVDA, AVGO, ASML, MU, SNDK, AMAT, TSM, ARM, MRVL, QCOM, INTC, KLAC, LRCX, SNPS, CDNS, ANET, VRT, SMCI, DELL, GOOGL, MSFT, AMZN, META, CRM, SPCX, ORCL]
+    tickers: [AMD, NVDA, AVGO, ASML, MU, SNDK, AMAT, TSM, ARM, MRVL, QCOM, INTC, KLAC, LRCX, SNPS, CDNS, ANET, VRT, SMCI, DELL, SPCX]
     themes: [semiconductors, semiconductors_ai, Technology, Communication Services]
 
 # Tema/sector por ticker. Es la fuente de verdad cuando el ticker no esta en el

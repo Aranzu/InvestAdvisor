@@ -205,6 +205,12 @@ fundamentals:
   min_profit_margin: 0.0
   min_revenue_growth: -0.05
   max_debt_to_equity: 3.0
+  # v11 (docs/ESTRATEGIA_v11.md): calidad = F-Score de Piotroski >= 7 (con al menos 7 senales
+  # calculables), margen operativo positivo y FCF positivo del ultimo trimestre.
+  min_operating_margin: 0.0
+  require_positive_fcf: true
+  min_f_score: 7
+  min_f_score_computed: 7
   min_target_upside_pct: 5.0
   min_analyst_count: 0
   require_target: false
@@ -246,6 +252,10 @@ fundamentals:
 
 screener:
   top: 25
+  # v11: momentum 12-1 (retorno a 252 ruedas sin las ultimas 21) en el tercio superior.
+  momentum_lookback_days: 252
+  momentum_skip_days: 21
+  min_momentum_percentile: 67
   min_composite_score: 0.0
   require_fundamentals: false
   # Fraccion del score final que aporta la fuerza relativa (percentil en todo el
@@ -328,7 +338,9 @@ horizon:
   no_entries_days_before: 30
 
 llm:
-  enabled: true
+  # false = sin llamadas a ninguna API de IA: el motor entrega el informe determinista y la
+  # lectura de tesis la hace Claude Code en la sesion (validador final).
+  enabled: false
   # false = la IA puede decidir mantener/vender y recomendar compra (motor fija
   # niveles: stop, meta, tamano). true = conserva el diseno original de solo veto.
   veto_only: false

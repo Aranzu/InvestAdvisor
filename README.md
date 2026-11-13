@@ -8,6 +8,15 @@ Tres funciones, nada más:
 2. `review`: usa `stats` y recomienda mantener, recortar o vender.
 3. `screen`: recomendador de acciones para comprar (S&P 500 + fundamentales).
 
+## Concepto de uso
+
+El usuario deja el export de XTB en `posiciones/` tras el cierre; el motor calcula los
+indicadores y las reglas de riesgo; **Claude Code valida** (tesis, noticias, fundamentales) y
+propone las órdenes y las compras. No hay API de IA externa. El contexto del proyecto vive en
+[`CLAUDE.md`](CLAUDE.md) y el flujo en la skill `/revision-cierre`
+(`.claude/skills/revision-cierre/SKILL.md`). La estrategia vigente es la **v11**
+([`docs/ESTRATEGIA_v11.md`](docs/ESTRATEGIA_v11.md), parámetros en `config/v11.yaml`).
+
 ## Estado
 
 **NO VALIDADO. No operar con dinero real.** El backtest histórico se retiró del proyecto;
@@ -250,7 +259,13 @@ de supervivencia del §11.1.
 
 ## Inteligencia artificial
 
-### Clave del LLM
+### Clave del LLM (opcional; desactivada por defecto)
+
+Con `llm.enabled: false` (valor actual en `config/strategy.yaml`) `review` y `screen` no llaman
+a ninguna API: entregan el informe determinista y la validación la hace Claude Code en la
+sesión. Para volver a usar un proveedor externo, pon `llm.enabled: true` y configura la clave.
+
+#### Clave del LLM
 
 La capa de IA es **obligatoria cuando hay clave**: `review` y `screen` siempre
 piden la opinión (ya no hay `--llm`). La clave se lee del entorno (`SWING_LLM_API_KEY` o

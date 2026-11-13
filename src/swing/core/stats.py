@@ -1051,6 +1051,7 @@ def _compliance_section(report: StatsReport) -> list[str]:
         lines.append("")
 
     lines.extend(_compliance_summary_lines(summary, positions))
+    lines.extend(_v11_section(_mapping(data.get("v11"))))
     diffs = [item for item in positions if item.get("stop_xtb_differs") or item.get("tp_xtb_differs")]
     if diffs:
         lines.append("- **XTB vs ledger:**")
@@ -1060,6 +1061,66 @@ def _compliance_section(report: StatsReport) -> list[str]:
                 f"{_format('num', item.get('current_stop'))}; TP XTB {_format('num', item.get('tp_xtb'))} vs ledger "
                 f"{_format('num', item.get('take_profit'))}."
             )
+    lines.append("")
+    return lines
+
+
+def _v11_section(v11: Mapping[str, object]) -> list[str]:
+    """Panel de la estrategia v11 (``docs/ESTRATEGIA_v11.md``): riesgo de cuenta."""
+    if not v11:
+        return []
+    rows = [item for item in _list(v11.get("positions")) if isinstance(item, Mapping)]
+    summary = _mapping(v11.get("summary"))
+    lines = ["## Panel v11 (stop duro, pesos y alarmas)", ""]
+    if summary.get("bootstrap"):
+        lines.append(
+            "- **Primera corrida v11:** cada posicion queda anclada a su precio de hoy "
+            "(stop duro nuevo desde hoy); desde ahora el stop solo sube."
+        )
+        lines.append("")
+    lines.append(
+        "| Ticker | Peso pat | Ret. vs entrada | Ancla | Stop duro | Dist. stop | Riesgo % | "
+        "Peso max abrir | Alarma (ses.) | Estado |"
+    )
+    lines.append("|---|---:|---:|---|---:|---:|---:|---:|---:|---|")
+    for item in rows:
+        sessions = item.get("alarm_sessions")
+        alarm = "-" if sessions is None else f"{sessions}" + (" (vencida)" if item.get("alarm_overdue") else "")
+        anchor = "entrada" if item.get("anchor") == "entry" else "hoy (transicion)"
+        lines.append(
+            f"| {item.get('ticker')} | {_format('pct', item.get('weight_equity_pct'))} | "
+            f"{_format('pct_signed', item.get('ret_entry_pct'))} | {anchor} | "
+            f"{_format('num', item.get('hard_stop'))} | {_format('pct_signed', item.get('stop_dist_pct'))} | "
+            f"{_format('pct', item.get('risk_pct'))} | {_format('pct', item.get('max_open_weight_pct'))} | "
+            f"{alarm} | {item.get('status', '')} |"
+        )
+    lines.append("")
+    name = summary.get("factor_name") or "factor"
+    lines.append(
+        f"- Posiciones: {summary.get('positions')} (maximo {summary.get('max_positions')}). "
+        f"Riesgo abierto: {_format('pct', summary.get('open_risk_pct'))} "
+        f"(tope {_format('pct', summary.get('max_open_risk_pct'))})."
+    )
+    lines.append(
+        f"- Caja: {_format('pct', summary.get('cash_pct'))} (objetivo blando "
+        f"{_format('pct', summary.get('cash_target_pct'))}). "
+        f"Factor {name}: {_format('pct', summary.get('factor_pct'))} "
+        f"(tope vigente {_format('pct', summary.get('factor_cap_pct'))})."
+    )
+    for label, key in (
+        ("Stop duro tocado (vender 100 % la sesion siguiente)", "stop_touched"),
+        ("Alarma desde la entrada (re-evaluar tesis)", "alarms"),
+        ("Sobre peso maximo (recortar)", "overweight"),
+        ("Sobre riesgo por posicion", "overrisk"),
+    ):
+        names = [str(x) for x in _list(summary.get(key))]
+        if names:
+            lines.append(f"- {label}: {', '.join(names)}.")
+    blocks = [str(x) for x in _list(summary.get("buy_blocks"))]
+    lines.append(f"- Compras nuevas bloqueadas: {'; '.join(blocks)}." if blocks else "- Compras nuevas: sin bloqueos.")
+    pending = [str(x) for x in _list(summary.get("pending"))]
+    if pending:
+        lines.append(f"- Aun sin codificar: {', '.join(pending)}.")
     lines.append("")
     return lines
 

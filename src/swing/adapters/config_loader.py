@@ -7,20 +7,26 @@ configuracion tiene que ser legible por una persona (spec v3.1 seccion 7:
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import ValidationError
 
+from swing.core import v11 as v11_rules
 from swing.core.models import (
     BrokerConfig,
     ComplianceConfig,
     FactorsConfig,
     StrategyConfig,
     ThemesConfig,
+    V11Config,
     WatchlistConfig,
 )
+
+#: Si es ``False`` los loaders devuelven la config v10 tal cual (los tests de umbrales v10 la apagan).
+UNIFY_V11 = True
 
 
 class ConfigError(RuntimeError):
@@ -53,7 +59,16 @@ def _load(path: Path, model: type[Any]) -> Any:
 
 def load_strategy(path: Path | None = None) -> StrategyConfig:
     target = path if path is not None else _default_dir() / "strategy.yaml"
-    return _load(target, StrategyConfig)  # type: ignore[no-any-return]
+    strategy: StrategyConfig = _load(target, StrategyConfig)
+    cfg = load_v11(target.parent / "v11.yaml") if UNIFY_V11 else None
+    if cfg is None:
+        return strategy
+    tickers: tuple[str, ...] = ()
+    factors_path = target.parent / "factors.yaml"
+    if factors_path.is_file():
+        spec = load_factors(factors_path).factors.get(cfg.factor_name)
+        tickers = spec.tickers if spec is not None else ()
+    return v11_rules.unify_strategy(strategy, cfg, today=dt.date.today(), factor_tickers=tickers)
 
 
 def load_broker(path: Path | None = None) -> BrokerConfig:
@@ -74,13 +89,25 @@ def load_themes(path: Path | None = None) -> ThemesConfig:
 def load_compliance(path: Path | None = None) -> ComplianceConfig:
     """Parametros P1-P16 del prompt v9 (``config/config.yaml``)."""
     target = path if path is not None else _default_dir() / "config.yaml"
-    return _load(target, ComplianceConfig)  # type: ignore[no-any-return]
+    compliance: ComplianceConfig = _load(target, ComplianceConfig)
+    cfg = load_v11(target.parent / "v11.yaml") if UNIFY_V11 else None
+    return compliance if cfg is None else v11_rules.unify_compliance(compliance, cfg, today=dt.date.today())
+
+
+def load_v11(path: Path | None = None) -> V11Config | None:
+    """Reglas v11 (``config/v11.yaml``); ``None`` si el archivo no existe."""
+    target = path if path is not None else _default_dir() / "v11.yaml"
+    if not target.is_file():
+        return None
+    return _load(target, V11Config)  # type: ignore[no-any-return]
 
 
 def load_factors(path: Path | None = None) -> FactorsConfig:
     """Definicion de factores y temas (``config/factors.yaml``)."""
     target = path if path is not None else _default_dir() / "factors.yaml"
-    return _load(target, FactorsConfig)  # type: ignore[no-any-return]
+    factors: FactorsConfig = _load(target, FactorsConfig)
+    cfg = load_v11(target.parent / "v11.yaml") if UNIFY_V11 else None
+    return factors if cfg is None else v11_rules.unify_factors(factors, cfg, today=dt.date.today())
 
 
 def _default_dir() -> Path:

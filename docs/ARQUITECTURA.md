@@ -15,6 +15,19 @@ pero nunca fija niveles: stop, meta y tamaño los calcula siempre el motor.
 El producto original (backtest, plan de tickets, journal) se **retiró** del proyecto:
 ya no se instala, no se expone como comando y su código no forma parte del paquete.
 
+## 1b. Estrategia v11 sobre esta arquitectura
+
+- `core/v11.py` (puro): `evaluate()` calcula el panel v11 y el estado nuevo del ledger;
+  `unify_strategy/compliance/factors()` aplican `config/v11.yaml` sobre los valores v10 que
+  se solapan (los loaders de `adapters/config_loader.py` los llaman si existe `v11.yaml`).
+- `services/stats.py`: evalua v11 antes del resumen, reemplaza el stop de las filas por el
+  stop duro v11 (sin heredadas ni adopcion) y relaja los topes de factor/tema del calendario
+  de factibilidad (solo avisan). `services/v11_state.py` persiste `state/v11_ledger.json`.
+- `review` (`cli.py`): re-adopta el libro con `stop_overrides` (stop duro v11) y llama a
+  `decide(..., forced_trims=False)`: el tope de tema ya no vende (`CAP_TRIM` apagado).
+- `screen`: F-Score (`core/piotroski.py`, datos anuales en `adapters/fundamentals.py`,
+  `CACHE_SCHEMA = 5`) y momentum 12-1 (`IndicatorFrame.returns_skipping`) como puertas.
+
 ## 2. Capas
 
 ```

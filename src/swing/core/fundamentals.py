@@ -68,6 +68,8 @@ class Fundamentals:
     fcf_prior_q: float | None = None
     net_debt: float | None = None
     net_debt_change: float | None = None
+    f_score: int | None = None
+    f_score_computed: int | None = None
     oper_margin_yoy_bps: float | None = None
     oper_margin_last_q: float | None = None
     """Margen operativo del ultimo trimestre reportado (fraccion)."""
@@ -440,6 +442,17 @@ def check_fundamentals(
         under(f.return_on_equity, config.min_return_on_equity, "return_on_equity")
     under(f.profit_margin, config.min_profit_margin, "profit_margin")
     under(f.revenue_growth, config.min_revenue_growth, "revenue_growth")
+    under(f.operating_margin, config.min_operating_margin, "operating_margin")
+    if config.require_positive_fcf and f.fcf_last_q is not None and f.fcf_last_q <= 0.0:
+        out.add(Reason.FUNDAMENTAL_GRADE, f"FCF del ultimo trimestre {f.fcf_last_q:,.0f} no es positivo")
+    if config.min_f_score is not None:
+        if f.f_score is None or f.f_score_computed is None or f.f_score_computed < config.min_f_score_computed:
+            out.add(
+                Reason.FUNDAMENTALS_MISSING,
+                f"F-Score no calculable ({f.f_score_computed or 0} de 9 senales; minimo {config.min_f_score_computed})",
+            )
+        elif f.f_score < config.min_f_score:
+            out.add(Reason.FUNDAMENTAL_GRADE, f"F-Score {f.f_score} bajo el minimo {config.min_f_score}")
 
     upside = f.target_upside(price)
     if config.require_target and f.target_mean is None:

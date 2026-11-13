@@ -89,3 +89,31 @@ def test_la_adopcion_toma_el_stop_de_ganancia_ya_colocado_en_el_broker() -> None
     assert trade.stop == pytest.approx(108.0)
     assert trade.initial_stop < trade.entry_price
     assert trade.broker_stop == pytest.approx(108.0)
+
+
+def test_el_stop_duro_v11_manda_sobre_el_stop_del_broker_y_el_piso_v10() -> None:
+    # Cae de 130 a 100: sin override el stop seria el piso v10 (-18 %). Con el stop v11
+    # del ledger (bajo la entrada) ese nivel pasa a ser stop y R.
+    frame = IndicatorFrame.build(_ramp_series("AMD", start=130.0, step=-0.75, bars=41), STRATEGY)
+    assert frame is not None
+    trade = adopt_positions(
+        (_position("AMD", entry=100.0, broker_stop=95.0),),
+        {"AMD": frame},
+        STRATEGY,
+        CAL,
+        TODAY,
+        stop_overrides={"AMD": 70.0},
+    )["AMD"]
+    assert trade.stop == pytest.approx(70.0)
+    assert trade.initial_stop == pytest.approx(70.0)
+
+
+def test_un_stop_v11_sobre_la_entrada_no_rompe_la_r() -> None:
+    # Tras el break-even el stop v11 queda en/sobre la entrada: la R sale del piso.
+    frame = IndicatorFrame.build(_ramp_series("AMD", start=90.0, step=0.5, bars=41), STRATEGY)
+    assert frame is not None
+    trade = adopt_positions(
+        (_position("AMD", entry=100.0),), {"AMD": frame}, STRATEGY, CAL, TODAY, stop_overrides={"AMD": 100.0}
+    )["AMD"]
+    assert trade.stop == pytest.approx(100.0)
+    assert trade.initial_stop < trade.entry_price

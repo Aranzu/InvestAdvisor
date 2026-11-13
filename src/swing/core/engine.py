@@ -199,6 +199,16 @@ class IndicatorFrame:
             return None
         return float(self.close.iloc[i] / base)
 
+    def returns_skipping(self, lookback: int, skip: int) -> float | None:
+        """Retorno entre ``lookback`` y ``skip`` barras atras (momentum 12-1: 252 y 21)."""
+        i = self.n - 1 - skip
+        if i - (lookback - skip) < 0 or lookback <= skip:
+            return None
+        base = self.close.iloc[i - (lookback - skip)]
+        if not isinstance(base, float) or base <= 0.0:
+            return None
+        return float(self.close.iloc[i] / base)
+
 
 def _num(value: object) -> float | None:
     if isinstance(value, (int, float)) and not pd.isna(value):
@@ -236,6 +246,7 @@ class TickerFeatures:
 def relative_strength_percentiles(
     frames: dict[str, IndicatorFrame],
     rs_lookback_days: int,
+    skip_days: int = 0,
 ) -> dict[str, float]:
     """Percentil cross-sectional del retorno a ``rs_lookback_days`` (puerta G4).
 
@@ -246,7 +257,7 @@ def relative_strength_percentiles(
     """
     values: dict[str, float] = {}
     for ticker, frame in frames.items():
-        ret = frame.returns(rs_lookback_days)
+        ret = frame.returns_skipping(rs_lookback_days, skip_days) if skip_days else frame.returns(rs_lookback_days)
         if ret is not None:
             values[ticker] = ret
     if not values:
@@ -406,6 +417,7 @@ def decide(
     thesis_broken: dict[str, bool] | None = None,
     llm_sell: Mapping[str, float] | None = None,
     kill: KillState = KillState.OK,
+    forced_trims: bool = True,
 ) -> NightPlan:
     """Decide que hacer esta corrida, una vez, con datos ya resueltos.
 
@@ -421,6 +433,9 @@ def decide(
     la regla 11 (LLM_SELL, ``veto_only=false``): la IA decide vender y el motor
     fija el volumen. Ambas tienen precedencia baja: una regla mecanica que se
     cumpla manda sobre la opinion de la IA.
+
+    ``forced_trims=False`` (v11) apaga ``CAP_TRIM``: el tope de tema solo avisa y bloquea
+    compras, no vende.
     """
     calendar_ctx = calendar
 
@@ -439,7 +454,7 @@ def decide(
         alerts.append(Alert(reason=Reason.NO_ENTRIES_REGIME, detail="regimen NO_ENTRIES: solo se gestionan salidas"))
 
     # --- Salidas (seccion 5.7) ---
-    trims_by_ticker = {trim.ticker: trim for trim in plan_cap_trims(state, limits)}
+    trims_by_ticker = {trim.ticker: trim for trim in plan_cap_trims(state, limits)} if forced_trims else {}
     break30 = thesis_broken or {}
     sells30 = llm_sell or {}
     judgments: list[TradeExitJudgment] = []

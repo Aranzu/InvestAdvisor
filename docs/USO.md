@@ -14,6 +14,19 @@ Sin clave del LLM, `review` y `screen` funcionan igual en modo determinista (con
 En `.secrets/llm.json`, `model_analysis` usa DeepSeek Pro para el análisis y
 `model_search` usa DeepSeek Flash para las tareas rudimentarias de búsqueda.
 
+## Flujo diario con la estrategia v11
+
+1. Deja el export de XTB en `posiciones/` despues del cierre.
+2. `swing stats` (incluye el **Panel v11**: stop duro, pesos, riesgo, alarma de -20 %) y
+   `swing review` (ordenes por regla, sin IA). Con `llm.enabled: false` no se usa ninguna API.
+3. Claude Code valida con la skill `/revision-cierre` (ver `CLAUDE.md`).
+4. `swing screen` filtra compras con calidad (F-Score >= 7, margen operativo y FCF positivos) y
+   momentum 12-1 en el tercio superior (`config/strategy.yaml`, secciones `fundamentals` y
+   `screener`). Es lento: baja ~500 tickers y sus estados financieros anuales.
+
+`state/v11_ledger.json` guarda el stop duro por ticker (solo sube) y se escribe desde
+`start_date` de `config/v11.yaml`; antes de esa fecha el panel es una vista previa.
+
 ## Flujo semanal (o diario, si queres candidatos frescos)
 
 Las tres funciones del producto:

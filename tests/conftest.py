@@ -13,6 +13,7 @@ import datetime as dt
 from pathlib import Path
 
 import openpyxl
+import pytest
 
 #: Encabezado real del export XTB para cada hoja (Great for los nulos del final).
 CLOSED_HEADER = (
@@ -235,3 +236,39 @@ def build_positions_workbook(
 
     wb.save(path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _aislar_estado_del_usuario(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Los tests no escriben los ledgers reales de ``state/`` (stops y estado v11)."""
+    import swing.cli as cli
+
+    monkeypatch.setattr(cli, "_ledger_path", lambda name="ledger.json": tmp_path / "state" / name)
+
+
+import swing.adapters.config_loader as _loader  # noqa: E402
+
+# Los modulos de test cargan config al importarse (antes de cualquier fixture): la
+# unificacion v11 se apaga aca, a nivel de conftest, y solo test_v11 la enciende.
+_loader.UNIFY_V11 = False
+
+
+@pytest.fixture(autouse=True)
+def _unificacion_v11_solo_en_test_v11(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    """``tests/test_v11.py`` prueba la unificacion; el resto prueba los umbrales v10."""
+    if request.module.__name__.endswith("test_v11"):
+        monkeypatch.setattr(_loader, "UNIFY_V11", True)
+
+
+@pytest.fixture(autouse=True)
+def _llm_activo_en_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``config/strategy.yaml`` trae ``llm.enabled: false`` (sin API); los tests de la IA lo necesitan activo."""
+    import swing.cli as cli
+
+    original = cli.load_strategy
+
+    def _with_llm(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        strategy = original(*args, **kwargs)  # type: ignore[arg-type]
+        return strategy.model_copy(update={"llm": strategy.llm.model_copy(update={"enabled": True})})
+
+    monkeypatch.setattr(cli, "load_strategy", _with_llm)

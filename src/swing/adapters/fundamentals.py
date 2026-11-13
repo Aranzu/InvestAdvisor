@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from swing.core.fundamentals import Fundamentals
+from swing.core.piotroski import AnnualInputs, f_score
 
 #: Devuelve el diccionario crudo de ``Ticker.info`` (o uno equivalente), o ``None``.
 InfoFetcher = Callable[[str], Mapping[str, object] | None]
@@ -38,7 +39,7 @@ SUMMARY_CHARS = 600
 
 #: Version del formato cacheado. Se sube cuando cambia la normalizacion de un
 #: campo, para que lo guardado con la regla vieja no se lea como vigente.
-CACHE_SCHEMA = 4
+CACHE_SCHEMA = 5
 
 
 def yfinance_info(symbol: str) -> Mapping[str, object] | None:
@@ -84,6 +85,7 @@ def yfinance_info(symbol: str) -> Mapping[str, object] | None:
     _merge_eps_revisions(ticker, merged)
     _merge_analyst_revisions(ticker, merged)
     _merge_quarterly(ticker, merged)
+    _merge_annual(ticker, merged)
     _merge_earnings(ticker, merged)
     _merge_primary_document(ticker, merged)
     return merged
@@ -204,6 +206,46 @@ def _merge_analyst_revisions(ticker: object, merged: dict[str, object]) -> None:
         return
     if days:
         merged["_last_analyst_revision_date"] = max(days).isoformat()
+
+
+_ANNUAL_ROWS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "net_income": ("financials", ("Net Income", "Net Income Common Stockholders")),
+    "revenue": ("financials", ("Total Revenue", "Operating Revenue")),
+    "gross_profit": ("financials", ("Gross Profit",)),
+    "total_assets": ("balance_sheet", ("Total Assets",)),
+    "long_term_debt": ("balance_sheet", ("Long Term Debt", "Long Term Debt And Capital Lease Obligation")),
+    "current_assets": ("balance_sheet", ("Current Assets", "Total Current Assets")),
+    "current_liabilities": ("balance_sheet", ("Current Liabilities", "Total Current Liabilities")),
+    "shares": ("balance_sheet", ("Ordinary Shares Number", "Share Issued")),
+    "operating_cash_flow": (
+        "cashflow",
+        ("Operating Cash Flow", "Cash Flow From Continuing Operating Activities"),
+    ),
+}
+
+
+def _merge_annual(ticker: object, merged: dict[str, object]) -> None:
+    """F-Score de Piotroski con los dos ultimos ejercicios anuales (``_f_score``/``_f_score_n``).
+
+    Cada cifra se ancla a la fecha de su ejercicio; si el balance o el flujo no tienen esa
+    fecha, la senal queda sin calcular en vez de comparar ejercicios distintos.
+    """
+    frames = {name: _frame(ticker, name) for name in ("financials", "balance_sheet", "cashflow")}
+    series = {
+        key: _dated_series(frames[frame_name], aliases) for key, (frame_name, aliases) in _ANNUAL_ROWS.items()
+    }
+    dates = sorted(set(series["revenue"]) | set(series["net_income"]))
+    if len(dates) < 2:
+        return
+    current_date, previous_date = dates[-1], dates[-2]
+
+    def inputs(day: dt.date) -> AnnualInputs:
+        return AnnualInputs(**{key: values.get(day) for key, values in series.items()})
+
+    result = f_score(inputs(current_date), inputs(previous_date))
+    if result.computed:
+        merged["_f_score"] = result.score
+        merged["_f_score_n"] = result.computed
 
 
 def _merge_quarterly(ticker: object, merged: dict[str, object]) -> None:
@@ -838,6 +880,8 @@ def fundamentals_from_info(
         fcf_prior_q=_num(info, "_fcf_prior_q"),
         net_debt=_num(info, "_net_debt"),
         net_debt_change=_num(info, "_net_debt_change"),
+        f_score=_int(info, "_f_score"),
+        f_score_computed=_int(info, "_f_score_n"),
         oper_margin_yoy_bps=_num(info, "_oper_margin_yoy_bps"),
         oper_margin_last_q=_num(info, "_oper_margin_last_q"),
         profit_margin_last_q=_num(info, "_profit_margin_last_q"),
@@ -912,6 +956,8 @@ def _payload(f: Fundamentals, history: Sequence[Mapping[str, object]] = ()) -> d
         "fcf_prior_q": f.fcf_prior_q,
         "net_debt": f.net_debt,
         "net_debt_change": f.net_debt_change,
+        "f_score": f.f_score,
+        "f_score_computed": f.f_score_computed,
         "oper_margin_yoy_bps": f.oper_margin_yoy_bps,
         "oper_margin_last_q": f.oper_margin_last_q,
         "profit_margin_last_q": f.profit_margin_last_q,
@@ -948,6 +994,10 @@ def _payload(f: Fundamentals, history: Sequence[Mapping[str, object]] = ()) -> d
         "last_report_type": f.last_report_type,
         "last_report_url": f.last_report_url,
     }
+
+
+def _whole(value: object) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def _from_payload(data: Mapping[str, object]) -> Fundamentals:
@@ -1011,6 +1061,8 @@ def _from_payload(data: Mapping[str, object]) -> Fundamentals:
         fcf_prior_q=num("fcf_prior_q"),
         net_debt=num("net_debt"),
         net_debt_change=num("net_debt_change"),
+        f_score=_whole(data.get("f_score")),
+        f_score_computed=_whole(data.get("f_score_computed")),
         oper_margin_yoy_bps=num("oper_margin_yoy_bps"),
         oper_margin_last_q=num("oper_margin_last_q"),
         profit_margin_last_q=num("profit_margin_last_q"),

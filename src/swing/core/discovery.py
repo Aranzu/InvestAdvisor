@@ -98,7 +98,7 @@ def rank_candidates(
     asi el corte no deja afuera candidatos validos que estaban mas abajo.
     """
     rs_by_ticker = relative_strength_percentiles(dict(frames), strategy.gates.rs_lookback_days)
-    pre = _prefilter(frames, strategy, rs_by_ticker)
+    pre = _prefilter(frames, strategy, rs_by_ticker, _momentum_percentiles(frames, strategy))
     rejected: list[RejectedCandidate] = []
     if not pre:
         return DiscoveryResult(candidates=(), evaluated=len(frames), kept=0, rejected=())
@@ -174,7 +174,8 @@ def _one_per_company(
 def technical_survivors(frames: Mapping[str, IndicatorFrame], strategy: StrategyConfig) -> tuple[str, ...]:
     """Tickers que pasan el prefiltro tecnico (para pedir fundamentales solo de ellos)."""
     rs_by_ticker = relative_strength_percentiles(dict(frames), strategy.gates.rs_lookback_days)
-    return tuple(ticker for ticker, *_ in _prefilter(frames, strategy, rs_by_ticker))
+    pre = _prefilter(frames, strategy, rs_by_ticker, _momentum_percentiles(frames, strategy))
+    return tuple(ticker for ticker, *_ in pre)
 
 
 def earnings_gate_rejection(
@@ -209,10 +210,19 @@ def earnings_gate_rejection(
     return None
 
 
+def _momentum_percentiles(frames: Mapping[str, IndicatorFrame], strategy: StrategyConfig) -> dict[str, float]:
+    """Percentil del momentum 12-1 en el universo; vacio si el piso esta desactivado."""
+    screener = strategy.screener
+    if screener.min_momentum_percentile is None:
+        return {}
+    return relative_strength_percentiles(dict(frames), screener.momentum_lookback_days, screener.momentum_skip_days)
+
+
 def _prefilter(
     frames: Mapping[str, IndicatorFrame],
     strategy: StrategyConfig,
     rs_by_ticker: Mapping[str, float],
+    mom_by_ticker: Mapping[str, float] | None = None,
 ) -> list[tuple[str, float, float, float, float]]:
     """``(ticker, momentum, close, adv_usd, atr_pct)`` de lo que pasa el tecnico."""
     gates = strategy.gates
@@ -245,6 +255,9 @@ def _prefilter(
         if momentum is None or rs is None:
             continue
         if floor is not None and rs < floor:
+            continue
+        mom_floor = strategy.screener.min_momentum_percentile
+        if mom_floor is not None and (mom_by_ticker or {}).get(ticker, -1.0) < mom_floor:
             continue
         atr = feature.atr or 0.0
         pre.append((ticker, momentum, close, feature.adv_usd, atr / close * 100.0))

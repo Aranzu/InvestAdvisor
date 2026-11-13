@@ -1,0 +1,34 @@
+# Reglas de la estrategia v11 (ver docs/ESTRATEGIA_v11.md). Politica del usuario:
+# el motor solo las aplica. Cambiarlas aca, no en el codigo.
+
+# Primera sesion v11. En la primera corrida (sin state/v11_ledger.json) cada
+# posicion abierta recibe un stop duro nuevo desde su precio de ese dia.
+start_date: 2026-11-16
+
+# R1 / R2: riesgo por posicion y stop duro = min(tope %, mult x ATR%) bajo el ancla.
+risk_per_position_pct: 2
+hard_stop_max_pct: 30
+hard_stop_atr_mult: 3
+# R3 / R5: riesgo abierto total y numero maximo de posiciones.
+max_open_risk_pct: 12
+max_positions: 15
+# R7: tema o sector (alerta; bloquea compras, sin ventas forzadas).
+max_theme_pct: 25
+# R4b: peso maximo en mantencion; si lo supera se recorta a trim.
+max_weight_hold_pct: 12
+max_weight_hold_trim_pct: 10
+# R6: caja objetivo, blanda (solo informa).
+cash_target_pct: 10
+# R8: modo defensivo por caida del patrimonio ajustada por aportes.
+defensive_drawdown_pct: 15
+# Alarma desde la entrada: obliga a re-evaluar la tesis dentro de N sesiones.
+alarm_loss_pct: 20
+alarm_review_sessions: 5
+# Break-even: el stop sube al ancla al llegar a +N R.
+breakeven_r: 1.5
+# Tope escalonado del factor IA (bloquea compras; no obliga a vender).
+factor_name: ia_ampliada
+factor_schedule:
+  - {since: 2026-11-16, max_pct: 49}
+  - {since: 2027-02-01, max_pct: 44}
+  - {since: 2027-05-01, max_pct: 40}

@@ -37,11 +37,16 @@ from swing.adapters.data_yahoo import DataUnavailable, YahooDataProvider
 from swing.adapters.finviz import FinvizProvider, FinvizSnapshot
 from swing.adapters.fundamentals import YahooFundamentalsProvider
 from swing.adapters.tradingeconomics import TeCommodity, TradingEconomicsProvider
+from swing.core import v11 as v11_rules
 from swing.core.analysis import Analysis, ExtMarket, Market, PositionView, Quote, analyze
 from swing.core.briefing import build as build_briefing
 from swing.core.calendar import SessionCalendar
 from swing.core.commodities import COMMODITIES, Commodity, CommoditySpec
 from swing.core.compliance import (
+    STATUS_OK,
+    STATUS_OVERRISK,
+    STATUS_OVERWEIGHT,
+    STATUS_STOPPED,
     ComplianceRow,
     ComplianceSummary,
     LedgerEntry,
@@ -55,7 +60,7 @@ from swing.core.fundamentals import Fundamentals
 from swing.core.indicators import atr, heikin_ashi_state, rsi, sma, smoothed_heikin_ashi
 from swing.core.market import PriceSeries
 from swing.core.market_context import MARKET, MarketInstrument, MarketRegime, instrument, regime
-from swing.core.models import ComplianceConfig, FactorsConfig, StrategyConfig
+from swing.core.models import ComplianceConfig, FactorsConfig, StrategyConfig, V11Config
 from swing.core.report import OpenLot, PositionReport
 from swing.core.stats import (
     INSIDER_WINDOW_DAYS,
@@ -68,6 +73,7 @@ from swing.core.stats import (
     merge_fields,
 )
 from swing.services.ledger import save_ledger
+from swing.services.v11_state import load_v11_ledger, save_v11_ledger
 
 #: Sesiones del máximo/mínimo de 52 semanas.
 WEEKS_52_SESSIONS = 252
@@ -111,6 +117,8 @@ def collect_stats(
     ledger: Mapping[str, LedgerEntry] | None = None,
     ledger_path: Path | None = None,
     stop_kind: str = "",
+    v11: V11Config | None = None,
+    v11_ledger_path: Path | None = None,
 ) -> StatsReport:
     """Arma el informe por posición abierta. Nunca levanta por un ticker sin datos."""
     analysis = analyze(model, market, strategy, themes, sectors=sectors)
@@ -208,6 +216,45 @@ def collect_stats(
     if ledger_path is not None:
         save_ledger(ledger_path, new_ledger.values())
     curve = _equity_curve(model, bars, market, price_series, analysis, compliance)
+    v11_result: dict[str, object] | None = None
+    feasibility_cfg, feasibility_factors = compliance, factors
+    if v11 is not None:
+        v11_prior = load_v11_ledger(v11_ledger_path) if v11_ledger_path is not None else {}
+        evaluated = v11_rules.evaluate(
+            [
+                {
+                    "ticker": row.ticker,
+                    "price": row.price,
+                    "entry": row.entry,
+                    "atr_pct": row.atr_pct,
+                    "weight_equity_pct": row.weight_equity_pct,
+                }
+                for row in compliance_rows
+            ],
+            cfg=v11,
+            today=market.today,
+            ledger=v11_prior,
+            factor_tickers=_v11_factor_tickers(factors, v11.factor_name),
+            cash_pct=_as_number(panel.get("cash_pct")),
+            drawdown_pct=curve.drawdown_pct if curve is not None else None,
+        )
+        if v11_ledger_path is not None and v11_rules.should_persist(market.today, v11):
+            save_v11_ledger(v11_ledger_path, evaluated["ledger"])
+        v11_result = {k: v for k, v in evaluated.items() if k != "ledger"}
+        # v11 manda: las filas usan el stop duro (sin heredadas ni adopcion) y los topes
+        # de factor/tema no generan calendario de ventas (solo avisan y bloquean compras).
+        compliance_rows = _v11_normalize_rows(
+            compliance_rows, evaluated["positions"], compliance, equity_clp=analysis.equity_clp
+        )
+        feasibility_cfg = compliance.model_copy(update={"max_theme_pct": 100.0, "max_factor_pct": 100.0})
+        if factors is not None:
+            feasibility_factors = factors.model_copy(
+                update={
+                    "max_factor_pct": 100.0,
+                    "max_theme_pct": 100.0,
+                    "factors": {k: spec.model_copy(update={"max_pct": 100.0}) for k, spec in factors.factors.items()},
+                }
+            )
     summary = summarize(
         compliance_rows,
         cash_pct=_as_number(panel.get("cash_pct")),
@@ -236,13 +283,16 @@ def collect_stats(
         drawdown_mode=curve.mode if curve is not None else "normal",
         suspicious_benchmarks=", ".join(market_regime.suspicious) if market_regime is not None else "",
     )
+    compliance_dict = _compliance_to_dict(compliance_rows, summary, curve, today=market.today, compliance=compliance)
+    if v11_result is not None:
+        compliance_dict["v11"] = v11_result
     closed = _closed_history(analysis, SessionCalendar.us())
     generated_at = dt.datetime.now(dt.UTC).replace(tzinfo=None)
     feasibility = build_feasibility(
         compliance_rows,
         summary,
-        cfg=compliance,
-        factor_cfg=factors,
+        cfg=feasibility_cfg,
+        factor_cfg=feasibility_factors,
         themes=theme_map,
         equity_clp=analysis.equity_clp,
         cash_clp=analysis.cash_clp,
@@ -303,7 +353,7 @@ def collect_stats(
             if strategy.briefing is not None
             else None
         ),
-        compliance=_compliance_to_dict(compliance_rows, summary, curve, today=market.today, compliance=compliance),
+        compliance=compliance_dict,
         maps=map_rows,
         feasibility=feasibility,
         data_status=data_status,
@@ -781,6 +831,68 @@ def _cash_history(model: PositionReport, analysis: Analysis) -> dict[str, object
         "net_contributions_clp": deposits - withdrawals,
         "recent_flows": recent,
     }
+
+
+def _v11_normalize_rows(
+    rows: Sequence[ComplianceRow],
+    v11_positions: Sequence[Mapping[str, object]],
+    cfg: ComplianceConfig,
+    *,
+    equity_clp: float | None,
+) -> list[ComplianceRow]:
+    """Filas del panel con el stop duro v11 como unico stop (sin heredadas A/B ni adopcion)."""
+    stops = {
+        str(item["ticker"]): float(item["hard_stop"])  # type: ignore[arg-type]
+        for item in v11_positions
+        if item.get("ticker") and isinstance(item.get("hard_stop"), (int, float))
+    }
+    out: list[ComplianceRow] = []
+    for row in rows:
+        stop = stops.get(row.ticker)
+        if stop is None or row.price is None or row.price <= 0.0:
+            out.append(row)
+            continue
+        dist_price = (row.price - stop) / row.price * 100.0
+        dist_entry = (row.entry - stop) / row.entry * 100.0 if row.entry else None
+        risk = (
+            row.value_clp * max(0.0, dist_price) / 100.0 / equity_clp * 100.0
+            if row.value_clp and equity_clp and equity_clp > 0.0
+            else None
+        )
+        if row.price <= stop:
+            status = STATUS_STOPPED
+        elif risk is not None and risk > cfg.max_risk_position_pct:
+            status = STATUS_OVERRISK
+        elif row.weight_equity_pct is not None and row.weight_equity_pct > cfg.max_weight_hold_pct:
+            status = STATUS_OVERWEIGHT
+        else:
+            status = STATUS_OK
+        out.append(
+            replace(
+                row,
+                current_stop=stop,
+                risk_stop=stop,
+                stop_source="stop duro v11",
+                stop_dist_price_pct=dist_price,
+                stop_dist_entry_pct=dist_entry,
+                risk_pct=risk,
+                risk_pct_theoretical=None,
+                break_even=None,
+                trailing_stop=None,
+                status=status,
+                inherited=False,
+                inherited_type="",
+                stop_registered=True,
+                stop_viable=True,
+                decision="",
+            )
+        )
+    return out
+
+
+def _v11_factor_tickers(factors: FactorsConfig | None, name: str) -> tuple[str, ...]:
+    spec = factors.factors.get(name) if factors is not None else None
+    return tuple(spec.tickers) if spec is not None else ()
 
 
 def _compliance_to_dict(
